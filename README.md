@@ -4,6 +4,8 @@ AI shopping agents are starting to place real orders, and merchants have no way 
 
 **Status: in progress.** Built for the PayPal AI Hackathon.
 
+**Live API:** https://LEASH-API-URL.onrender.com (TODO: fill in after the first Render deploy). Health check at `/health`, docs at `/docs`. It's a free instance, so the first request after 15 idle minutes takes about a minute.
+
 ## Local setup (Windows PowerShell)
 
 ```powershell
@@ -27,7 +29,7 @@ python check_setup.py
 Easiest on Windows: a free Render Postgres, nothing to install. (It expires after 30 days, fine for dev. Both of us can share one.)
 
 1. dashboard.render.com > **New** > **Postgres**.
-2. Name it `leash-dev`, pick the region closest to you, plan **Free**, then **Create Database**.
+2. Name it `leash-db`, region **Oregon** (the API runs there too), plan **Free**, then **Create Database**. The free plan allows one database, so we share it.
 3. When it's ready, copy the **External Database URL** into `DATABASE_URL` in your `.env`. Paste it as is, the app switches `postgres://` to the psycopg driver.
 4. Create the tables:
 
@@ -52,6 +54,15 @@ ruff check .
 pytest
 ```
 
+## Deploy (Render)
+
+`render.yaml` is a Render Blueprint for the API: a free Python web service in Oregon that deploys on every push to `main`. The database (`leash-db`) already exists and isn't in the Blueprint; its **Internal Database URL** goes in the service's `DATABASE_URL`.
+
+- Build: `pip install -r requirements.txt` (Python version from `.python-version`)
+- Start: `alembic upgrade head && uvicorn backend.app.main:app --host 0.0.0.0 --port $PORT`. Migrations run at start because pre-deploy commands are paid-plan only.
+- Secrets (`DATABASE_URL`, `PAYPAL_CLIENT_ID`, `PAYPAL_CLIENT_SECRET`, `ANTHROPIC_API_KEY`) are set in the Render dashboard, never in the file.
+- After each merge to `main`, CI waits for `/health` on Render if the repo has a `RENDER_URL` secret.
+
 ## Architecture
 
 TODO
@@ -62,7 +73,20 @@ TODO
 
 ## Demo
 
-TODO
+TODO: demo video and walkthrough.
+
+### Week 1 end-to-end check
+
+`backend/scripts/week1_e2e.py` runs the whole money flow against a running API: creates a mandate (Claude parses it), places an order with the saved PayPal vault id (authorized with no buyer action) and captures it, places a second one and voids it, then reads both back from PayPal (authorization `CAPTURED` + capture `COMPLETED`, and authorization `VOIDED`).
+
+It needs `spikes/.vault_token.json` (run `python spikes/spike2_vault.py` once) and the PayPal keys in your local `.env` for the read-back.
+
+```powershell
+python backend/scripts/week1_e2e.py                                      # local API on :8000
+python backend/scripts/week1_e2e.py https://LEASH-API-URL.onrender.com   # Render
+```
+
+It's sandbox, so no real money moves. Each run costs one small Claude call.
 
 ## Tools used
 
