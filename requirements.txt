@@ -1,3 +1,9 @@
 requests
 python-dotenv
 anthropic
+fastapi
+uvicorn[standard]
+pydantic-settings
+sqlalchemy
+alembic
+psycopg[binary]

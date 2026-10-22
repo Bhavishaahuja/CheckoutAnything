@@ -9,3 +9,5 @@ select = ["E", "W", "F", "B"]
 
 [tool.pytest.ini_options]
 testpaths = ["backend/tests"]
+# so tests can import backend.app the same way uvicorn does
+pythonpath = ["."]
