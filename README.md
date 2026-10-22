@@ -4,7 +4,7 @@ AI shopping agents are starting to place real orders, and merchants have no way 
 
 **Status: in progress.** Built for the PayPal AI Hackathon.
 
-**Live API:** https://LEASH-API-URL.onrender.com (TODO: fill in after the first Render deploy). Health check at `/health`, docs at `/docs`. It's a free instance, so the first request after 15 idle minutes takes about a minute.
+**Live API:** https://leash-api-q3rw.onrender.com (sandbox). Health check at [`/health`](https://leash-api-q3rw.onrender.com/health), interactive docs at [`/docs`](https://leash-api-q3rw.onrender.com/docs). It's a free instance, so the first request after 15 idle minutes takes about a minute.
 
 ## Local setup (Windows PowerShell)
 
@@ -70,7 +70,8 @@ pytest
 - Build: `pip install -r requirements.txt` (Python version from `.python-version`)
 - Start: `alembic upgrade head && uvicorn backend.app.main:app --host 0.0.0.0 --port $PORT`. Migrations run at start because pre-deploy commands are paid-plan only.
 - Secrets (`DATABASE_URL`, `PAYPAL_CLIENT_ID`, `PAYPAL_CLIENT_SECRET`, `ANTHROPIC_API_KEY`) are set in the Render dashboard, never in the file.
-- After each merge to `main`, CI waits for `/health` on Render if the repo has a `RENDER_URL` secret.
+- After each merge to `main`, CI waits for `/health` on Render (the repo's `RENDER_URL` secret is set).
+- Live at https://leash-api-q3rw.onrender.com. The week 1 end-to-end script passed against it on 2026-10-22: mandate parsed, vault order authorized with no buyer action and captured, second order voided, PayPal confirmed `CAPTURED` / `COMPLETED` / `VOIDED`.
 
 ## Architecture
 
@@ -92,7 +93,7 @@ It needs `spikes/.vault_token.json` (run `python spikes/spike2_vault.py` once) a
 
 ```powershell
 python backend/scripts/week1_e2e.py                                      # local API on :8000
-python backend/scripts/week1_e2e.py https://LEASH-API-URL.onrender.com   # Render
+python backend/scripts/week1_e2e.py https://leash-api-q3rw.onrender.com  # Render
 ```
 
 It's sandbox, so no real money moves. Each run costs one small Claude call.
