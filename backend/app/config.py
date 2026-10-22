@@ -14,6 +14,10 @@ class Settings(BaseSettings):
     paypal_client_secret: str = ""
     paypal_base_url: str = "https://api-m.sandbox.paypal.com"
     paypal_webhook_id: str = ""
+    # where PayPal sends the buyer after approving (or cancelling) an order with no vault id.
+    # placeholders until the confirm page exists
+    paypal_return_url: str = "https://example.com/return"
+    paypal_cancel_url: str = "https://example.com/cancel"
 
     # sandbox logins, only used by scripts and the demo
     sandbox_merchant_email: str = ""
