@@ -9,7 +9,7 @@ Throwaway scripts that prove one PayPal flow works in sandbox before we build it
 
 ## Spike 2 findings
 
-Run status: script written against the docs and schema, waiting on a first sandbox run. Update "What worked" with real output after running.
+Run status: **confirmed in sandbox on 2026-10-21.** Two full runs and two `reuse` runs, every step passed: wallet saved as `VAULTED`, order 2 authorized with zero buyer clicks, every authorization voided and read back as `VOIDED`.
 
 ### Sandbox setup (one time)
 
@@ -29,16 +29,49 @@ python spikes/spike2_vault.py          # full flow, approve once in the browser 
 python spikes/spike2_vault.py reuse    # skip order 1, pay again with the saved vault id
 ```
 
-### What worked (from docs + schema, confirm on first run)
+### What worked (confirmed in sandbox)
 
 - **Order 1** (`$18.00`, intent `AUTHORIZE`) with `payment_source.paypal.attributes.vault` set to `store_in_vault: ON_SUCCESS`, `usage_type: MERCHANT`, `customer_type: CONSUMER`, `usage_pattern: IMMEDIATE`. Create returns `PAYER_ACTION_REQUIRED` and a `payer-action` link. The buyer approves once, we call `/authorize`, and the response carries `payment_source.paypal.attributes.vault` with `id`, `status: VAULTED` and `customer.id`.
-- **Order 2** (`$24.00`, intent `AUTHORIZE`) with only `payment_source.paypal.vault_id` plus a `stored_credential` (`payment_initiator: MERCHANT`, `usage: SUBSEQUENT`, `usage_pattern: IMMEDIATE`). The schema example shows this is **single step**: create returns `status: COMPLETED` with `purchase_units[0].payments.authorizations[0]` already present (`status: CREATED`). No approval link, no `/authorize` call. That's the "agent pays without a popup" moment.
+- **Order 2** (`$24.00`, intent `AUTHORIZE`) with only `payment_source.paypal.vault_id` plus a `stored_credential` (`payment_initiator: MERCHANT`, `usage: SUBSEQUENT`, `usage_pattern: IMMEDIATE`). Confirmed **single step**: create returns `status: COMPLETED` with `purchase_units[0].payments.authorizations[0]` already present (`status: CREATED`). No approval link, no `/authorize` call, the fallback in the script never fired. That's the "agent pays without a popup" moment.
+- `reuse` works: a later run with only the saved vault id authorizes again with no browser.
 - Void + read back work the same as spike 1 (`POST /v2/payments/authorizations/{id}/void`, then GET shows `VOIDED`).
+- Authorizations expire **29 days** after they're created (`expiration_time`). That's our outer limit for the human to approve a flagged order.
+
+Sandbox output from the second full run (vault id and customer id redacted):
+
+```
+Order 1 created: 69C607189A9551146 | status: PAYER_ACTION_REQUIRED
+PayPal confirms the buyer approved.
+
+Order 1 authorized!
+  order status: COMPLETED
+  authorization id: 9Y730309503246338
+  authorization status: CREATED
+  expires: 2026-11-20T01:56:52Z
+
+PayPal saved the wallet!
+  vault id: XXXX
+  vault status: VAULTED
+  customer id: XXXX
+
+Order 2 created: 6D481471RE3820347 | status: COMPLETED
+
+Order 2 authorized with zero buyer clicks!
+  order status: COMPLETED
+  authorization id: 1J1905088C2319210
+  authorization status: CREATED
+  expires: 2026-11-20T01:56:55Z
+
+Voiding 2 authorization(s) so the sandbox stays clean...
+  9Y730309503246338: VOIDED
+  1J1905088C2319210: VOIDED
+```
 
 ### Gotchas
 
 - **Save happens after the money step.** `ON_SUCCESS` means PayPal only vaults once the authorization succeeds, so the vault id shows up in the **authorize** response, not the create response.
-- **Vault can lag.** The docs say authorize can succeed with `vault.status: APPROVED` and no `id` yet. The script re-reads the order a few times. In the real app, also listen for the `VAULT.PAYMENT-TOKEN.CREATED` webhook.
+- **Vault can lag.** The docs say authorize can succeed with `vault.status: APPROVED` and no `id` yet. The script re-reads the order a few times. In the real app, also listen for the `VAULT.PAYMENT-TOKEN.CREATED` webhook. (Didn't happen in our runs, it came back `VAULTED` right away every time.)
+- **Same buyer, same vault id.** Running order 1 again with the same sandbox buyer returned the **same** vault id and customer id as the earlier run, not new ones. That fits `permit_multiple_payment_tokens` defaulting to `false`. In the DB, treat the vault id as unique per buyer: update the existing row, don't insert a duplicate.
 - **Need `Prefer: return=representation`** or the vault block isn't in the response.
 - **Order 2 is already authorized when created.** Don't call `/authorize` on it. The script only does that as a fallback if no authorization comes back.
 - **Odd line in PayPal's doc:** the save-with-purchase page has a box saying "Don't save PayPal as a payment method during purchase" and points to their best practices guide. The alternative is Vault v3 setup tokens (save without a purchase). Fine for sandbox; worth a look before we pitch this as the production flow.
