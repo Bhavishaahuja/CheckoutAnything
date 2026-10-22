@@ -76,7 +76,7 @@ On any error, also log `debug_id` from the error body. PayPal support asks for i
 
 ## Spike 3 findings
 
-Run status: `list` runs against sandbox (200, zero disputes so far, so the app has Disputes API access). `show` and `evidence` are waiting on a buyer-created dispute. Update "Does evidence work in sandbox" with real output after running.
+Run status: `list` and `show` work against a real sandbox INR dispute on a spike 1 capture. The first `evidence` run sent `OTHER` and PayPal rejected it (`400 INVALID_REQUEST`, `EVIDENCE_TYPE_IS_NOT_ALLOWED`) because the dispute asked for `PROOF_OF_FULFILLMENT`. The script now sends the requested type by default. Re-run `evidence` and update "Does evidence work in sandbox" with the output.
 
 ### Sandbox setup (one time)
 
@@ -106,7 +106,16 @@ Fallback if the UI fights you: there's a sandbox-only `POST /v1/customer/dispute
 
 ### Does evidence work in sandbox
 
-From the docs and schema: **yes**. PayPal's sandbox test plan has a merchant filing evidence type `OTHER` with notes and documents on a buyer-created INR case and getting a `200 OK`. Confirm with our own run.
+From the docs and schema: **yes, but only with the evidence type PayPal requested.** PayPal's sandbox test plan files `PROOF_OF_FULFILLMENT`, `PROOF_OF_REFUND` or `OTHER` on an INR case, each one only when the dispute's `evidences[]` lists that type as `REQUESTED_FROM_SELLER`. Our INR dispute only requested `PROOF_OF_FULFILLMENT`, so `OTHER` bounced. Confirm the `PROOF_OF_FULFILLMENT` run goes through.
+
+**PayPal only accepts the requested evidence type.** Read `evidences[]` from show dispute details, take the `evidence_type` of entries where `source` is `REQUESTED_FROM_SELLER`, and send that. Anything else gets `EVIDENCE_TYPE_IS_NOT_ALLOWED`. The script does this by default, `--type` overrides it for experiments:
+
+```powershell
+python spikes/spike3_disputes.py evidence PP-R-XXXX-XXXXXXXX               # sends what PayPal asked for
+python spikes/spike3_disputes.py evidence PP-R-XXXX-XXXXXXXX --type OTHER  # force a type
+```
+
+For `PROOF_OF_FULFILLMENT` the script sends `evidence_info.tracking_info` with `carrier_name: OTHER`, `carrier_name_other: Fernwood Freight` and a made-up `FWF...` tracking number, plus the notes and the PDF. `carrier_name` and `tracking_number` are required. `carrier_name` is an enum of real carriers, so `OTHER` + `carrier_name_other` (required with `OTHER`) keeps it fictional.
 
 How it works:
 - `POST /v1/customer/disputes/{id}/provide-evidence`, `multipart/form-data`.
@@ -133,7 +142,27 @@ Source: the stage/status table in https://developer.paypal.com/platforms/dispute
 
 - **No `.txt` files.** Evidence files must be `.jpg`, `.jpeg`, `.gif`, `.png` or `.pdf`, under 10 MB each and 50 MB per call. The script builds a tiny one-page PDF by hand so we don't need a PDF library. Leash's real evidence will be a PDF too.
 - **Don't set Content-Type yourself** on the multipart call. Let `requests` do it, it has to include the boundary.
-- **Look at what PayPal asked for.** `evidences[]` entries with `source: REQUESTED_FROM_SELLER` say which `evidence_type` PayPal wants. INR cases can ask for `PROOF_OF_FULFILLMENT` (tracking) or `PROOF_OF_REFUND` (refund id). Our mandate proof is `OTHER`. The script prints the requested types so we learn which ones a sandbox INR asks for.
+- **Send what PayPal asked for, nothing else.** Learned the hard way: `OTHER` on an INR case that requested `PROOF_OF_FULFILLMENT` got `400 EVIDENCE_TYPE_IS_NOT_ALLOWED`. The buyer's own entry shows up in `evidences[]` too (type `CREATE`, source `SUBMITTED_BY_BUYER`), so filter on `source`.
+- **Our mandate proof fits `UNAUTHORISED` best.** That's the "I didn't authorize this" case, and it accepts `OTHER` (notes + documents), which is exactly the mandate PDF. INR does **not** accept `OTHER`, so on an INR case the mandate PDF has to ride along as the document on a `PROOF_OF_FULFILLMENT` submission.
+- **`PROOF_OF_REFUND` needs a real refund id** (`evidence_info.refund_ids`). The script refuses it since the spike doesn't issue refunds.
+
+### What each dispute reason asks for
+
+From https://developer.paypal.com/platforms/disputes/reference/dispute-reasons:
+
+| Dispute reason | Evidence types accepted | What to send |
+| --- | --- | --- |
+| `MERCHANDISE_OR_SERVICE_NOT_RECEIVED` (INR) | `PROOF_OF_FULFILLMENT`, `PROOF_OF_REFUND` | Fulfillment: carrier + tracking number, or notes/documents (e.g. proof of delivery signature). Refund: refund id |
+| `MERCHANDISE_OR_SERVICE_NOT_AS_DESCRIBED` (SNAD) | `OTHER`, `PROOF_OF_REFUND` | Other: notes/documents (product description, item URL, return policy, contract, affidavit). Refund: refund id |
+| `UNAUTHORISED` | `PROOF_OF_FULFILLMENT`, `PROOF_OF_REFUND`, `OTHER` | Fulfillment: carrier + tracking. Refund: refund id. Other: notes/documents (e.g. proof of delivery signature, receipt copy). **Leash mandate proof goes here** |
+| `CREDIT_NOT_PROCESSED` | `PROOF_OF_REFUND`, `OTHER` | Refund id, or notes/documents (e.g. credit due reason) |
+| `DUPLICATE_TRANSACTION` | `PROOF_OF_REFUND`, `OTHER` | Refund id, or notes/documents |
+| `INCORRECT_AMOUNT` | `PROOF_OF_REFUND`, `OTHER` | Refund id for the difference, or notes/documents (e.g. price difference reason) |
+| `PAYMENT_BY_OTHER_MEANS` | `PROOF_OF_REFUND`, `OTHER` | Refund id, or notes/documents |
+| `CANCELED_RECURRING_BILLING` | `PROOF_OF_REFUND`, `OTHER` | Refund id, or notes/documents (e.g. subscription agreement) |
+| `OTHER` | `PROOF_OF_REFUND`, `OTHER` | Refund id, or notes/documents |
+
+Even within a reason, PayPal decides per dispute which of these it requests. Always go by `REQUESTED_FROM_SELLER` on the actual dispute.
 - **Watch the deadline.** `seller_response_due_date` is when the dispute auto-closes in the buyer's favor if we don't answer. That's the field the dashboard should count down.
 - **List is a summary.** It doesn't include `disputed_transactions` or `evidences`. Call show for each dispute you care about.
 - **Webhooks.** In the real app, subscribe to dispute events instead of polling `list`.
@@ -150,7 +179,7 @@ Source: the stage/status table in https://developer.paypal.com/platforms/dispute
 | `dispute_state` | `dispute_state` |
 | `lifecycle_stage` | `dispute_life_cycle_stage` |
 | `amount_value`, `amount_currency` | `dispute_amount.value` / `.currency_code` |
-| `paypal_capture_id` | `disputed_transactions[0].seller_transaction_id`. This is the join to our order row, confirm it equals the spike 1 capture id |
+| `paypal_capture_id` | `disputed_transactions[0].seller_transaction_id`. **Confirmed it equals our capture id** (`0BF84704GR0419844`, captured in spike 1). This is the join to our order row. The buyer side has a different id (`buyer_transaction_id`), don't mix them up |
 | `seller_response_due_at` | `seller_response_due_date` |
 | `created_at`, `updated_at` | `create_time`, `update_time` |
 | `outcome` | `dispute_outcome.outcome_code` once resolved |

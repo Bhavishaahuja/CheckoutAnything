@@ -6,6 +6,11 @@
 #   python spikes/spike3_disputes.py list                  open disputes for our merchant
 #   python spikes/spike3_disputes.py show <dispute_id>     reason, status, amount, due date
 #   python spikes/spike3_disputes.py evidence <dispute_id> file a note + a small PDF, read back
+#   python spikes/spike3_disputes.py evidence <dispute_id> --type OTHER   force an evidence type
+#
+# By default "evidence" sends the type PayPal asked for (evidences[] with source
+# REQUESTED_FROM_SELLER). PayPal rejects anything else with EVIDENCE_TYPE_IS_NOT_ALLOWED,
+# we found that out the hard way sending OTHER on an INR case.
 #
 # Before running: the sandbox app needs Customer disputes on, and you need a dispute to
 # look at. Steps for both are in spikes/README.md under "Spike 3 findings".
@@ -26,6 +31,13 @@
 #     https://developer.paypal.com/disputes/set-up
 #   File rules (.jpg .jpeg .gif .png .pdf only, under 10 MB each, 50 MB per call):
 #     https://developer.paypal.com/disputes/supported-file-sizes-types
+#   Which evidence types each dispute reason accepts (INR: PROOF_OF_FULFILLMENT or
+#   PROOF_OF_REFUND only, no OTHER. UNAUTHORISED: fulfillment, refund, or OTHER):
+#     https://developer.paypal.com/platforms/disputes/reference/dispute-reasons
+#   Schema bits used for PROOF_OF_FULFILLMENT (same schema.yaml as above):
+#     evidence_info.tracking_info[] requires carrier_name + tracking_number.
+#     carrier_name is an enum of real carriers, so we send OTHER plus carrier_name_other
+#     (free text, mandatory when carrier_name is OTHER) to keep the carrier fictional
 
 import json
 import os
@@ -225,13 +237,13 @@ def build_tiny_pdf(lines):
     return pdf
 
 
-def evidence_lines(dispute):
+def evidence_lines(dispute, extra_lines):
     # stand-in for what Leash will really file: the mandate + the approval record.
     # fictional store, fictional mandate
     transaction_ids = []
     for transaction in dispute.get("disputed_transactions", []):
         transaction_ids.append(str(transaction.get("seller_transaction_id")))
-    return [
+    lines = [
         "Leash proof of intent: Fernwood Supply Co",
         "",
         "Dispute: " + str(dispute.get("dispute_id")),
@@ -243,11 +255,77 @@ def evidence_lines(dispute):
         "  Merchant: Fernwood Supply Co",
         "",
         "Order checked against mandate: clean match, auto-captured.",
-        "This is a sandbox test document from the Leash spike.",
     ]
+    for line in extra_lines:
+        lines.append(line)
+    lines.append("This is a sandbox test document from the Leash spike.")
+    return lines
 
 
-def provide_evidence(token, dispute_id):
+def requested_evidence_types(dispute):
+    # what PayPal wants from us. PayPal only accepts these, anything else gets
+    # EVIDENCE_TYPE_IS_NOT_ALLOWED
+    requested = []
+    for evidence in dispute.get("evidences", []):
+        if evidence.get("source") != "REQUESTED_FROM_SELLER":
+            continue
+        evidence_type = evidence.get("evidence_type")
+        if evidence_type and evidence_type not in requested:
+            requested.append(evidence_type)
+    return requested
+
+
+def pick_evidence_type(requested_types, type_override):
+    if type_override:
+        if requested_types and type_override not in requested_types:
+            print("Heads up: forcing", type_override, "but PayPal asked for", requested_types)
+            print("Expect EVIDENCE_TYPE_IS_NOT_ALLOWED.")
+        return type_override
+    if requested_types:
+        if len(requested_types) > 1:
+            print("PayPal asked for more than one type, sending the first:", requested_types[0])
+        return requested_types[0]
+    # nothing specific requested. OTHER is notes + documents, which is what Leash files
+    return "OTHER"
+
+
+def build_evidence(evidence_type, file_name):
+    # one entry for the "input" part. every type gets notes + our PDF,
+    # PROOF_OF_FULFILLMENT also needs tracking info
+    notes = (
+        "Buyer's shopping agent placed this order inside the buyer's pre-set mandate "
+        "(limit 50.00 USD, outdoor gear, Fernwood Supply Co). Mandate attached."
+    )
+    evidence = {"evidence_type": evidence_type}
+    pdf_extra_lines = []
+
+    if evidence_type == "PROOF_OF_FULFILLMENT":
+        # fictional carrier and tracking number. carrier_name has to be from PayPal's
+        # enum, OTHER lets us name our own carrier in carrier_name_other
+        tracking_number = "FWF" + str(uuid.uuid4().int)[:12]
+        evidence["evidence_info"] = {
+            "tracking_info": [
+                {
+                    "carrier_name": "OTHER",
+                    "carrier_name_other": "Fernwood Freight",
+                    "tracking_number": tracking_number,
+                }
+            ]
+        }
+        notes += " Shipped via Fernwood Freight, tracking " + tracking_number + "."
+        pdf_extra_lines.append("Shipped via Fernwood Freight, tracking " + tracking_number)
+    elif evidence_type == "PROOF_OF_REFUND":
+        # needs evidence_info.refund_ids from a real refund we issued. not in this spike
+        print("PROOF_OF_REFUND needs a refund id from an actual refund, this spike doesn't")
+        print("issue refunds. Try --type with one of the other requested types.")
+        sys.exit(1)
+
+    evidence["notes"] = notes
+    evidence["documents"] = [{"name": file_name}]
+    return evidence, pdf_extra_lines
+
+
+def provide_evidence(token, dispute_id, type_override=None):
     before = get_dispute(token, dispute_id)
     print("Before:")
     print_dispute(before)
@@ -258,28 +336,16 @@ def provide_evidence(token, dispute_id):
         print("Evidence is only allowed while status is WAITING_FOR_SELLER_RESPONSE.")
         sys.exit(1)
 
-    # tell us what PayPal asked for. we send OTHER (notes + document), which is what
-    # Leash evidence really is. if PayPal only asked for tracking or a refund id, we'll learn
-    requested_types = []
-    for evidence in before.get("evidences", []):
-        if evidence.get("source") == "REQUESTED_FROM_SELLER":
-            requested_types.append(evidence.get("evidence_type"))
+    requested_types = requested_evidence_types(before)
     print("\nPayPal requested from seller:", requested_types or "nothing specific")
+    evidence_type = pick_evidence_type(requested_types, type_override)
+    print("Sending evidence type:", evidence_type)
 
     file_name = "leash-proof-of-intent.pdf"
-    pdf_bytes = build_tiny_pdf(evidence_lines(before))
+    evidence, pdf_extra_lines = build_evidence(evidence_type, file_name)
+    pdf_bytes = build_tiny_pdf(evidence_lines(before, pdf_extra_lines))
 
-    evidence_input = {
-        "evidences": [
-            {
-                "evidence_type": "OTHER",
-                "notes": "Buyer's shopping agent placed this order inside the buyer's "
-                "pre-set mandate (limit 50.00 USD, outdoor gear, Fernwood Supply Co). "
-                "Mandate attached.",
-                "documents": [{"name": file_name}],
-            }
-        ]
-    }
+    evidence_input = {"evidences": [evidence]}
 
     # multipart/form-data: an "input" part with the JSON, plus the file part.
     # schema names the file part "evidence-file", the docs sample uses "file1".
@@ -339,7 +405,7 @@ def provide_evidence(token, dispute_id):
 
 
 if __name__ == "__main__":
-    usage = "Usage: python spikes/spike3_disputes.py list | show <id> | evidence <id>"
+    usage = "Usage: python spikes/spike3_disputes.py list | show <id> | evidence <id> [--type T]"
     command = sys.argv[1] if len(sys.argv) > 1 else None
 
     # check args before spending a token call
@@ -349,6 +415,9 @@ if __name__ == "__main__":
         print_dispute(get_dispute(get_token(), sys.argv[2]))
     elif command == "evidence" and len(sys.argv) == 3:
         provide_evidence(get_token(), sys.argv[2])
+    elif command == "evidence" and len(sys.argv) == 5 and sys.argv[3] == "--type":
+        # e.g. --type OTHER. uppercase so --type other works too
+        provide_evidence(get_token(), sys.argv[2], sys.argv[4].upper())
     else:
         print(usage)
         sys.exit(1)
