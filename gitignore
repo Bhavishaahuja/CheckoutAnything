@@ -1,0 +1,17 @@
+# secrets
+.env
+
+# python
+.venv/
+__pycache__/
+*.pyc
+
+# frontend (for later)
+node_modules/
+dist/
+
+# editor / OS junk
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
