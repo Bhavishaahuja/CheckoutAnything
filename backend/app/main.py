@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from backend.app import orders
+from backend.app import mandates, orders
 from backend.app.config import get_settings
 
 app = FastAPI(title="Leash API")
@@ -21,6 +21,8 @@ app.add_middleware(
 )
 
 
+# mandates first since orders get checked against them
+app.include_router(mandates.router)
 app.include_router(orders.router)
 
 

@@ -45,6 +45,15 @@ uvicorn backend.app.main:app --reload
 
 Then open http://127.0.0.1:8000/health (should say `{"status": "ok"}`) or http://127.0.0.1:8000/docs.
 
+### Check mandate parsing
+
+`POST /mandates` uses Claude to turn the shopper's words into rules. The prompt lives in `backend/app/prompts/mandate.py`. After changing it, run the sample requests (6 real Claude calls, needs `ANTHROPIC_API_KEY`):
+
+```powershell
+python backend/scripts/try_mandates.py                              # calls Claude directly, no DB needed
+python backend/scripts/try_mandates.py --api http://127.0.0.1:8000  # through the running API
+```
+
 Run the checks CI runs:
 
 ```powershell
