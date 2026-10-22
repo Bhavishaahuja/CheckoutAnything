@@ -62,3 +62,34 @@ jobs:
         if: steps.check.outputs.exists == 'true'
         working-directory: frontend
         run: npm run build
+
+  render-health:
+    # only after a merge to main, once tests passed. Render redeploys on the same push
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [backend, frontend]
+    runs-on: ubuntu-latest
+    env:
+      # secrets can't be used in "if:" directly, so go through an env var
+      RENDER_URL: ${{ secrets.RENDER_URL }}
+    steps:
+      - name: Skip without RENDER_URL
+        if: env.RENDER_URL == ''
+        run: echo "No RENDER_URL repo secret, skipping the live health check"
+
+      - name: Wait for /health on Render
+        if: env.RENDER_URL != ''
+        run: |
+          # the new deploy takes a few minutes and a free service may be asleep,
+          # so poll for up to about 10 minutes
+          url="${RENDER_URL%/}/health"
+          for attempt in $(seq 1 40); do
+            code=$(curl -s -o health.json -w "%{http_code}" --max-time 30 "$url" || true)
+            if [ "$code" = "200" ]; then
+              echo "Healthy on attempt $attempt: $(cat health.json)"
+              exit 0
+            fi
+            echo "Attempt $attempt: got $code, trying again in 15s"
+            sleep 15
+          done
+          echo "Render never answered 200 on $url"
+          exit 1

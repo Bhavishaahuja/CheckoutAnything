@@ -1,0 +1,33 @@
+# Render Blueprint for the Leash API. Spec: https://render.com/docs/blueprint-spec
+#
+# The Postgres database (leash-db, Oregon, free) already exists and isn't declared here.
+# Its URL goes in DATABASE_URL by hand (use the Internal Database URL, same region).
+
+services:
+  - type: web
+    name: leash-api
+    runtime: python
+    plan: free
+    # same region as leash-db so the internal database URL works
+    region: oregon
+    branch: main
+    # deploy on every push to main
+    autoDeployTrigger: commit
+    buildCommand: pip install -r requirements.txt
+    # preDeployCommand is paid-plan only, so migrations run right before uvicorn starts.
+    # if a migration fails, uvicorn never starts and the deploy fails its health check
+    startCommand: alembic upgrade head && uvicorn backend.app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      # sync: false means Render asks for the value in the dashboard and never reads it
+      # from this file
+      - key: DATABASE_URL
+        sync: false
+      - key: PAYPAL_CLIENT_ID
+        sync: false
+      - key: PAYPAL_CLIENT_SECRET
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: PAYPAL_BASE_URL
+        value: https://api-m.sandbox.paypal.com
