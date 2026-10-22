@@ -22,6 +22,29 @@ Copy-Item .env.example .env
 python check_setup.py
 ```
 
+### Database
+
+Easiest on Windows: a free Render Postgres, nothing to install. (It expires after 30 days, fine for dev. Both of us can share one.)
+
+1. dashboard.render.com > **New** > **Postgres**.
+2. Name it `leash-dev`, pick the region closest to you, plan **Free**, then **Create Database**.
+3. When it's ready, copy the **External Database URL** into `DATABASE_URL` in your `.env`. Paste it as is, the app switches `postgres://` to the psycopg driver.
+4. Create the tables:
+
+   ```powershell
+   alembic upgrade head
+   ```
+
+After changing `backend/app/models.py`, make a migration with `alembic revision --autogenerate -m "what changed"`, read it over, then `alembic upgrade head`.
+
+### Run the API
+
+```powershell
+uvicorn backend.app.main:app --reload
+```
+
+Then open http://127.0.0.1:8000/health (should say `{"status": "ok"}`) or http://127.0.0.1:8000/docs.
+
 Run the checks CI runs:
 
 ```powershell
