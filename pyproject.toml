@@ -1,0 +1,11 @@
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+extend-exclude = ["frontend"]
+
+[tool.ruff.lint]
+# pycodestyle errors/warnings, pyflakes, bugbear
+select = ["E", "W", "F", "B"]
+
+[tool.pytest.ini_options]
+testpaths = ["backend/tests"]
