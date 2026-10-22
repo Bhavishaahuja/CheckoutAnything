@@ -4,7 +4,19 @@ import enum
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import JSON, DateTime, Enum, ForeignKey, Integer, Numeric, String, Text, func
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    DateTime,
+    Enum,
+    ForeignKey,
+    Integer,
+    Numeric,
+    String,
+    Text,
+    func,
+    true,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from backend.app.db import Base
@@ -62,6 +74,10 @@ class Mandate(Base):
     # structured version Claude/the rules check against (categories, limits, etc)
     rules: Mapped[dict] = mapped_column(JSON)
     max_price: Mapped[Decimal | None] = mapped_column(Numeric(10, 2))
+    # True: total may equal max_price ("up to $120"). False: must be below it ("under $120")
+    max_price_inclusive: Mapped[bool] = mapped_column(
+        Boolean, default=True, server_default=true()
+    )
     merchant: Mapped[str | None] = mapped_column(String(200))
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = created_at_column()
