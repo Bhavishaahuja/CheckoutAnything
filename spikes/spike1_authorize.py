@@ -110,6 +110,31 @@ def create_order(token):
     return order["id"], order["status"], approve_link
 
 
+def get_order_status(token, order_id):
+    # GET /v2/checkout/orders/{id} flips to APPROVED once the buyer clicks through
+    response = requests.get(
+        PAYPAL_BASE + "/v2/checkout/orders/" + order_id,
+        headers=paypal_headers(token),
+        timeout=30,
+    )
+    if response.status_code != 200:
+        show_error("Read order", response)
+    return response.json()["status"]
+
+
+def wait_for_approval(token, order_id, approve_link):
+    # don't trust the Enter key, ask PayPal if the buyer actually approved
+    while True:
+        input("Press Enter here once you've approved... ")
+        status = get_order_status(token, order_id)
+        if status == "APPROVED":
+            print("PayPal confirms the buyer approved.")
+            return
+        print("\nPayPal still says:", status)
+        print("Finish approving here (click the final Continue/Pay button):")
+        print(approve_link)
+
+
 def authorize_order(token, order_id):
     response = requests.post(
         PAYPAL_BASE + "/v2/checkout/orders/" + order_id + "/authorize",
@@ -191,7 +216,7 @@ if __name__ == "__main__":
     print("\nOpen this link, log in as your SANDBOX BUYER (personal account), and approve:")
     print(approve_link)
     print("\nYou'll land on example.com afterwards. That's expected.")
-    input("Press Enter here once you've approved... ")
+    wait_for_approval(token, order_id, approve_link)
 
     # step 3: authorize (puts the hold on the buyer's funds)
     auth = authorize_order(token, order_id)
