@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from backend.app import orders
 from backend.app.config import get_settings
 
 app = FastAPI(title="Leash API")
@@ -18,6 +19,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+app.include_router(orders.router)
 
 
 @app.get("/health")
