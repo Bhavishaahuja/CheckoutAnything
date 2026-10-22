@@ -169,6 +169,10 @@ class PayPalClient:
     def get_authorization(self, authorization_id):
         return self._get("/v2/payments/authorizations/" + authorization_id)
 
+    def get_capture(self, capture_id):
+        # a captured authorization reads CAPTURED, the capture itself reads COMPLETED
+        return self._get("/v2/payments/captures/" + capture_id)
+
 
 def client_from_settings(settings):
     return PayPalClient(

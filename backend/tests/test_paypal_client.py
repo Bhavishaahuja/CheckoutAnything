@@ -172,6 +172,16 @@ def test_caller_can_pass_its_own_request_id(mocked, client):
     assert request_ids(mocked) == ["leash-capture-order-7"]
 
 
+def test_get_capture(mocked, client):
+    mocked.add(
+        responses.GET,
+        BASE + "/v2/payments/captures/2GG279541U471931P",
+        json={"id": "2GG279541U471931P", "status": "COMPLETED"},
+    )
+
+    assert client.get_capture("2GG279541U471931P")["status"] == "COMPLETED"
+
+
 def test_token_is_cached(mocked, client):
     mocked.add(
         responses.GET,
