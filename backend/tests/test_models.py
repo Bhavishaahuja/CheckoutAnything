@@ -155,6 +155,61 @@ def test_check_result_migration_sql_on_postgres():
     assert sql.index("DROP CONSTRAINT checked_by") < sql.index("UPDATE decisions")
 
 
+def test_review_state_migration_sends_existing_holds_to_review(tmp_path):
+    # approve and reject only work on needs_review, so a hold left null would be stuck forever
+    url = "sqlite:///" + str(tmp_path / "test.db")
+    alembic_config = alembic_config_for(url)
+    engine = create_engine(url)
+    command.upgrade(alembic_config, "f2b8c61a7d30")
+    with engine.begin() as connection:
+        for order_id, status in [(1, "authorized"), (2, "captured"), (3, "voided"), (4, "created")]:
+            connection.execute(text(
+                "INSERT INTO orders (id, mandate_id, items, total, currency, status) VALUES ("
+                + str(order_id) + ", 1, '[]', 1, 'USD', '" + status + "')"
+            ))
+
+    command.upgrade(alembic_config, "head")
+
+    states = {}
+    with engine.connect() as connection:
+        rows = connection.execute(text("SELECT status, review_state FROM orders")).all()
+    for status, review_state in rows:
+        states[status] = review_state
+    assert states == {
+        "authorized": "needs_review",
+        # we don't know who decided these, so no pretending
+        "captured": None,
+        "voided": None,
+        "created": None,
+    }
+    with pytest.raises(IntegrityError):
+        with engine.begin() as connection:
+            connection.execute(text("UPDATE orders SET review_state = 'maybe' WHERE id = 1"))
+
+    command.downgrade(alembic_config, "f2b8c61a7d30")
+    columns = []
+    for column in inspect(engine).get_columns("orders"):
+        columns.append(column["name"])
+    assert "review_state" not in columns
+    assert "void_result" not in columns
+    assert "payment_claimed_at" not in columns
+
+
+def test_review_state_migration_sql_on_postgres():
+    output = io.StringIO()
+    alembic_config = Config("alembic.ini", output_buffer=output)
+    alembic_config.set_main_option("sqlalchemy.url", "postgresql+psycopg://user:pw@localhost/leash")
+
+    command.upgrade(alembic_config, "f2b8c61a7d30:head", sql=True)
+
+    sql = output.getvalue()
+    assert "ADD COLUMN review_state VARCHAR(20)" in sql
+    assert "ADD COLUMN void_result VARCHAR(32)" in sql
+    assert "ADD COLUMN payment_claimed_at TIMESTAMP WITH TIME ZONE" in sql
+    assert "ADD CONSTRAINT review_state CHECK" in sql
+    assert "UPDATE orders SET review_state = 'needs_review' WHERE status = 'authorized'" in sql
+
+
 def test_order_flow_round_trip(tmp_path):
     engine = migrated_engine(tmp_path)
 

@@ -13,7 +13,9 @@ from backend.app.db import Base
 
 config = context.config
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    # the default turns off every logger that already exists, which silently loses the app's
+    # logs if migrations ever run inside the same process (they do in the tests)
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 target_metadata = Base.metadata
 

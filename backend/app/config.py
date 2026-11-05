@@ -38,6 +38,9 @@ class Settings(BaseSettings):
     # deployed frontend, on top of the Vite dev server which is always allowed
     frontend_origin: str = ""
 
+    # a match only captures on its own below this risk score. at or above it, a human decides
+    auto_capture_max_risk: int = 30
+
     @field_validator("database_url")
     @classmethod
     def use_psycopg_driver(cls, url):

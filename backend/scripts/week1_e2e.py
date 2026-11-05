@@ -1,10 +1,13 @@
 # week1_e2e.py
 # Week 1 end to end, against a running Leash API (local or Render):
 #   1. create a mandate (Claude parses it)
-#   2. order A with the saved vault id -> authorized with no buyer action -> capture
-#   3. order B with the saved vault id -> authorized -> void
-#   4. read both back from PayPal: A's authorization CAPTURED and its capture COMPLETED,
-#      B's authorization VOIDED
+#   2. order A with the saved vault id -> what the mandate asked for -> auto-captured, or
+#      approved if Claude wanted a human to look
+#   3. order B with the saved vault id -> not what it asked for -> needs review -> rejected
+#   4. a second tap on each -> 409, and PayPal isn't called
+#   5. read both back from PayPal: A's authorization CAPTURED and its capture COMPLETED,
+#      B's authorization VOIDED. then send A's capture again with the same PayPal-Request-Id,
+#      which has to return the same capture and not take the money twice
 #
 # Run from the repo root:
 #   python backend/scripts/week1_e2e.py                                   localhost:8000
@@ -18,6 +21,7 @@ import json
 import os
 import sys
 import time
+from types import SimpleNamespace
 
 # make "backend.app" importable when run as a script
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -26,6 +30,7 @@ sys.path.insert(0, REPO_ROOT)
 import requests  # noqa: E402
 
 from backend.app.config import get_settings  # noqa: E402
+from backend.app.orders import CAPTURE, payment_request_id  # noqa: E402
 from backend.app.paypal_client import client_from_settings  # noqa: E402
 
 DEFAULT_BASE_URL = "http://127.0.0.1:8000"
@@ -43,9 +48,13 @@ ORDER_A_ITEMS = [
      "unit_price": "89.00"},
     {"name": "Wool hiking socks", "quantity": 1, "unit_price": "14.00"},
 ]
+# clearly not what the mandate asked for, so a human gets asked
 ORDER_B_ITEMS = [
-    {"name": "Wool hiking socks", "quantity": 2, "unit_price": "14.00"},
+    {"name": "Leather hiking boot", "color": "brown", "size": "M11", "quantity": 1,
+     "unit_price": "95.00"},
 ]
+
+TAP = {"decision_ms": 4200}
 
 problems = []
 
@@ -94,10 +103,19 @@ def place_order(base_url, mandate_id, vault_id, items, label):
     print("  paypal order:", order["paypal_order_id"])
     print("  authorization:", order["authorization_id"])
     print("  expires:", order["authorization_expires_at"])
-    check(label + " status after create", order["status"], "authorized")
+    check_result = order["intent_check"]
+    print("  check:", check_result["checked_by"], check_result["verdict"],
+          "risk", check_result["risk_score"], "|", check_result["reason"])
+    print("  status:", order["status"], "| review_state:", order["review_state"])
     # with a vault id there's nobody to click anything
     check(label + " needs buyer action", order.get("payer_action_url"), None)
     return order
+
+
+def expect_conflict(base_url, path, label):
+    # no call(), a 409 is the right answer here
+    response = requests.post(base_url + path, json=TAP, timeout=120)
+    check(label, response.status_code, 409)
 
 
 def main():
@@ -124,18 +142,35 @@ def main():
     print("  item:", rules.get("item"), "| max_price:", mandate["max_price"],
           "| merchant:", mandate["merchant"], "| expires:", mandate["expires_at"])
 
-    # 2. order A: authorize (no buyer action) then capture
+    # 2. order A: right items, so either captured already or a tap away
     order_a = place_order(base_url, mandate["id"], vault_id, ORDER_A_ITEMS, "Order A")
-    order_a = call("POST", base_url, "/orders/" + str(order_a["id"]) + "/capture")
+    a_path = "/orders/" + str(order_a["id"])
+    if order_a["review_state"] == "needs_review":
+        print("  Claude wanted a human to look, approving")
+        order_a = call("POST", base_url, a_path + "/approve", TAP)
+        check("Order A review_state", order_a["review_state"], "approved")
+    else:
+        check("Order A review_state", order_a["review_state"], "auto_approved")
     print("  capture:", order_a["capture_id"])
-    check("Order A status after capture", order_a["status"], "captured")
+    check("Order A status", order_a["status"], "captured")
 
-    # 3. order B: authorize then void
+    # 3. order B: wrong items, has to stop for a human and no money moves until they say so
     order_b = place_order(base_url, mandate["id"], vault_id, ORDER_B_ITEMS, "Order B")
-    order_b = call("POST", base_url, "/orders/" + str(order_b["id"]) + "/void")
-    check("Order B status after void", order_b["status"], "voided")
+    b_path = "/orders/" + str(order_b["id"])
+    check("Order B status after create", order_b["status"], "authorized")
+    check("Order B review_state after create", order_b["review_state"], "needs_review")
+    order_b = call("POST", base_url, b_path + "/reject", TAP)
+    check("Order B status after reject", order_b["status"], "voided")
+    check("Order B review_state after reject", order_b["review_state"], "rejected")
+    check("Order B void_result", order_b["void_result"], "VOIDED")
+    check("Order B approval decision_ms", order_b["approval"]["decision_ms"], TAP["decision_ms"])
 
-    # 4. trust PayPal's record, not ours
+    # 4. second taps
+    print("\nSecond taps...")
+    expect_conflict(base_url, a_path + "/approve", "approve a captured order")
+    expect_conflict(base_url, b_path + "/approve", "approve a rejected order")
+
+    # 5. trust PayPal's record, not ours
     print("\nReading back from PayPal...")
     paypal = client_from_settings(get_settings())
     auth_a = paypal.get_authorization(order_a["authorization_id"])
@@ -145,15 +180,26 @@ def main():
     auth_b = paypal.get_authorization(order_b["authorization_id"])
     check("PayPal: order B authorization", auth_b["status"], "VOIDED")
 
+    # the idempotency everything else leans on, against PayPal for real
+    print("\nSending order A's capture again with the same PayPal-Request-Id...")
+    request_id = payment_request_id(
+        SimpleNamespace(id=order_a["id"], authorization_id=order_a["authorization_id"]), CAPTURE
+    )
+    replay = paypal.capture_authorization(order_a["authorization_id"], request_id=request_id)
+    check("PayPal: replay returns the same capture", replay["id"], order_a["capture_id"])
+
     # and the API's own read side agrees
-    detail = call("GET", base_url, "/orders/" + str(order_a["id"]))
+    detail = call("GET", base_url, a_path)
     check("GET order A mandate id", detail["mandate"]["id"], mandate["id"])
+    newest = call("GET", base_url, "/orders?limit=2")
+    check("GET /orders is newest first", newest[0]["id"], order_b["id"])
 
     print()
     if problems:
         print("Week 1 e2e FAILED: " + ", ".join(problems))
         sys.exit(1)
-    print("Week 1 e2e passed: mandate, vault authorize, capture, void, all confirmed by PayPal.")
+    print("Week 1 e2e passed: mandate, auto-decide, approve/reject, 409s, replay, "
+          "confirmed by PayPal.")
 
 
 if __name__ == "__main__":

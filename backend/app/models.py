@@ -46,6 +46,14 @@ class ApprovalAction(str, enum.Enum):
     reject = "reject"
 
 
+class ReviewState(str, enum.Enum):
+    # who decided what happens to the money. Order.status is where the money actually is
+    auto_approved = "auto_approved"
+    needs_review = "needs_review"
+    approved = "approved"
+    rejected = "rejected"
+
+
 def string_enum(enum_class, name):
     # store enums as plain strings with a CHECK constraint instead of a Postgres enum
     # type, so adding a value later is a simple migration
@@ -105,6 +113,15 @@ class Order(Base):
     status: Mapped[OrderStatus] = mapped_column(
         string_enum(OrderStatus, "order_status"), default=OrderStatus.created
     )
+    # null until there's a hold to decide about, needs_review from the moment there is one
+    review_state: Mapped[ReviewState | None] = mapped_column(
+        string_enum(ReviewState, "review_state")
+    )
+    # PayPal's status from voiding the hold, like VOIDED. null if it was never voided
+    void_result: Mapped[str | None] = mapped_column(String(32))
+    # set while a capture or void is on its way to PayPal, so a second tap can't send another one
+    # without holding a row lock for that whole call. see claim_order in orders.py
+    payment_claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     # PayPal authorizations last 29 days (spike 2), the human has to decide before this
     authorization_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = created_at_column()
@@ -114,7 +131,9 @@ class Order(Base):
     decisions: Mapped[list["Decision"]] = relationship(
         back_populates="order", order_by="Decision.id"
     )
-    approvals: Mapped[list["Approval"]] = relationship(back_populates="order")
+    approvals: Mapped[list["Approval"]] = relationship(
+        back_populates="order", order_by="Approval.id"
+    )
 
     @property
     def intent_check(self):
@@ -123,6 +142,13 @@ class Order(Base):
         if not self.decisions:
             return None
         return self.decisions[-1]
+
+    @property
+    def approval(self):
+        # the human's decision, or None if nobody has made one
+        if not self.approvals:
+            return None
+        return self.approvals[-1]
 
 
 class Decision(Base):
@@ -160,9 +186,12 @@ class Approval(Base):
         string_enum(ApprovalAction, "approval_action")
     )
     decided_by: Mapped[str | None] = mapped_column(String(200))
+    # worked out as decided_at minus decision_ms, the server never sees the page open
     opened_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # when the tap reached the server
     decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    # decided_at minus opened_at, stored so the dashboard doesn't recompute it
+    # measured on the client, page open to tap. it's the number the rubber-stamp watch trusts,
+    # since it leaves out network time
     decision_ms: Mapped[int | None] = mapped_column(Integer)
 
     order: Mapped[Order] = relationship(back_populates="approvals")
