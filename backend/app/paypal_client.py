@@ -19,6 +19,15 @@ SANDBOX_BASE_URL = "https://api-m.sandbox.paypal.com"
 # refresh the token this many seconds before PayPal says it expires
 TOKEN_EXPIRY_MARGIN_SECONDS = 60
 
+# requests applies a plain timeout to connecting and to reading separately, so 15 would really
+# mean up to 30. a budget gets split between the two instead, so it adds up to what was asked for
+BUDGET_CONNECT_SECONDS = 3
+
+
+def split_budget(seconds):
+    connect = min(BUDGET_CONNECT_SECONDS, seconds / 2)
+    return (connect, seconds - connect)
+
 
 class PayPalError(Exception):
     # PayPal error bodies look like:
@@ -81,10 +90,13 @@ class PayPalClient:
 
     # ---- auth ----
 
-    def get_token(self):
+    def get_token(self, timeout=None):
         # reuse the cached token until it's about to expire
         if self._token and time.time() < self._token_expires_at:
             return self._token
+
+        if timeout is None:
+            timeout = self.timeout
 
         response = self.session.post(
             self.base_url + "/v1/oauth2/token",
@@ -94,7 +106,7 @@ class PayPalClient:
                 "PayPal-Request-Id": str(uuid.uuid4()),
             },
             data={"grant_type": "client_credentials"},
-            timeout=self.timeout,
+            timeout=timeout,
         )
         if response.status_code != 200:
             raise PayPalError.from_response(response)
@@ -107,9 +119,9 @@ class PayPalClient:
 
     # ---- plumbing ----
 
-    def _headers(self):
+    def _headers(self, token_timeout=None):
         return {
-            "Authorization": "Bearer " + self.get_token(),
+            "Authorization": "Bearer " + self.get_token(timeout=token_timeout),
             "Content-Type": "application/json",
             # full object back, we need payment_source.paypal.attributes.vault etc
             "Prefer": "return=representation",
@@ -121,11 +133,22 @@ class PayPalClient:
         )
         return self._handle(response)
 
-    def _post(self, path, json_body=None, request_id=None):
-        headers = self._headers()
+    def _post(self, path, json_body=None, request_id=None, budget_seconds=None):
+        # budget_seconds caps the whole thing, including fetching a token if one is needed
+        if budget_seconds is None:
+            headers = self._headers()
+            timeout = self.timeout
+        else:
+            started = time.monotonic()
+            headers = self._headers(token_timeout=split_budget(budget_seconds))
+            remaining = budget_seconds - (time.monotonic() - started)
+            if remaining <= 0:
+                raise requests.Timeout("Used the whole budget getting a PayPal token")
+            timeout = split_budget(remaining)
+
         headers["PayPal-Request-Id"] = request_id or str(uuid.uuid4())
         response = self.session.post(
-            self.base_url + path, headers=headers, json=json_body, timeout=self.timeout
+            self.base_url + path, headers=headers, json=json_body, timeout=timeout
         )
         return self._handle(response)
 
@@ -154,10 +177,13 @@ class PayPalClient:
 
     # ---- Payments v2 ----
 
-    def capture_authorization(self, authorization_id, request_id=None):
+    def capture_authorization(self, authorization_id, request_id=None, budget_seconds=None):
         # empty body captures the full authorized amount
         return self._post(
-            "/v2/payments/authorizations/" + authorization_id + "/capture", {}, request_id
+            "/v2/payments/authorizations/" + authorization_id + "/capture",
+            {},
+            request_id,
+            budget_seconds,
         )
 
     def void_authorization(self, authorization_id, request_id=None):

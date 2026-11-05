@@ -2,9 +2,10 @@
 # Week 1 end to end, against a running Leash API (local or Render):
 #   1. create a mandate (Claude parses it)
 #   2. order A with the saved vault id -> what the mandate asked for -> auto-captured, or
-#      approved if Claude wanted a human to look
-#   3. order B with the saved vault id -> not what it asked for -> needs review -> rejected
-#   4. a second tap on each -> 409, and PayPal isn't called
+#      approved through a review link if Claude wanted a human to look
+#   3. order B with the saved vault id -> not what it asked for -> needs review -> the merchant
+#      creates a link -> the human opens it and rejects
+#   4. the agent key gets a 401 on everything it shouldn't reach, and reusing a link fails
 #   5. read both back from PayPal: A's authorization CAPTURED and its capture COMPLETED,
 #      B's authorization VOIDED. then send A's capture again with the same PayPal-Request-Id,
 #      which has to return the same capture and not take the money twice
@@ -14,7 +15,8 @@
 #   python backend/scripts/week1_e2e.py https://leash-api.onrender.com    Render
 #
 # Needs spikes/.vault_token.json (run spikes/spike2_vault.py once) and the PayPal keys in
-# your local .env, for the read-back. The API side needs its own keys (Render env vars).
+# your local .env, for the read-back, plus AGENT_API_KEY and MERCHANT_API_KEY matching the API's.
+# The API side needs its own keys (Render env vars).
 # Money never really moves: it's sandbox, and order B is voided.
 
 import json
@@ -56,6 +58,9 @@ ORDER_B_ITEMS = [
 
 TAP = {"decision_ms": 4200}
 
+AGENT = {"X-API-Key": get_settings().agent_api_key}
+MERCHANT = {"X-API-Key": get_settings().merchant_api_key}
+
 problems = []
 
 
@@ -67,8 +72,8 @@ def check(label, actual, expected):
         problems.append(label)
 
 
-def call(method, base_url, path, body=None):
-    response = requests.request(method, base_url + path, json=body, timeout=120)
+def call(method, base_url, path, body=None, headers=None):
+    response = requests.request(method, base_url + path, json=body, headers=headers, timeout=120)
     if response.status_code >= 400:
         print("  " + method + " " + path + " failed:", response.status_code, response.text)
         sys.exit(1)
@@ -98,7 +103,7 @@ def place_order(base_url, mandate_id, vault_id, items, label):
         "vault_id": vault_id,
         "items": items,
         "shipping": "5.00",
-    })
+    }, AGENT)
     print("\n" + label + ": order " + str(order["id"]) + ", total $" + order["total"])
     print("  paypal order:", order["paypal_order_id"])
     print("  authorization:", order["authorization_id"])
@@ -112,10 +117,17 @@ def place_order(base_url, mandate_id, vault_id, items, label):
     return order
 
 
-def expect_conflict(base_url, path, label):
-    # no call(), a 409 is the right answer here
-    response = requests.post(base_url + path, json=TAP, timeout=120)
-    check(label, response.status_code, 409)
+def expect_status(method, base_url, path, headers, expected, label):
+    # no call(), since an error is the right answer here
+    response = requests.request(
+        method, base_url + path, json=TAP, headers=headers, timeout=120
+    )
+    check(label, response.status_code, expected)
+
+
+def review_link(base_url, order):
+    path = "/orders/" + str(order["id"]) + "/review-link"
+    return "/review/" + call("POST", base_url, path, headers=MERCHANT)["review_token"]
 
 
 def main():
@@ -133,10 +145,14 @@ def main():
     with open(VAULT_FILE) as f:
         vault_id = json.load(f)["vault_id"]
 
+    if not AGENT["X-API-Key"] or not MERCHANT["X-API-Key"]:
+        print("AGENT_API_KEY and MERCHANT_API_KEY have to be in .env, matching the API's.")
+        sys.exit(1)
+
     wait_for_health(base_url)
 
     # 1. mandate
-    mandate = call("POST", base_url, "/mandates", MANDATE)
+    mandate = call("POST", base_url, "/mandates", MANDATE, AGENT)
     print("\nMandate " + str(mandate["id"]) + " created")
     rules = mandate["rules"]
     print("  item:", rules.get("item"), "| max_price:", mandate["max_price"],
@@ -147,7 +163,10 @@ def main():
     a_path = "/orders/" + str(order_a["id"])
     if order_a["review_state"] == "needs_review":
         print("  Claude wanted a human to look, approving")
-        order_a = call("POST", base_url, a_path + "/approve", TAP)
+        a_link = review_link(base_url, order_a)
+        call("GET", base_url, a_link)
+        call("POST", base_url, a_link + "/approve", TAP)
+        order_a = call("GET", base_url, a_path, headers=MERCHANT)
         check("Order A review_state", order_a["review_state"], "approved")
     else:
         check("Order A review_state", order_a["review_state"], "auto_approved")
@@ -159,16 +178,37 @@ def main():
     b_path = "/orders/" + str(order_b["id"])
     check("Order B status after create", order_b["status"], "authorized")
     check("Order B review_state after create", order_b["review_state"], "needs_review")
-    order_b = call("POST", base_url, b_path + "/reject", TAP)
+
+    # the agent is holding a flagged order. it can't do anything about it
+    print("\nThe agent trying to approve its own order...")
+    expect_status("POST", base_url, b_path + "/review-link", AGENT, 401, "agent creating a link")
+    expect_status("POST", base_url, b_path + "/approve", AGENT, 404, "agent on the old route")
+    expect_status("POST", base_url, "/review/guess/approve", AGENT, 404, "agent guessing a token")
+    expect_status("GET", base_url, "/orders", AGENT, 401, "agent reading orders")
+    expect_status("GET", base_url, b_path, AGENT, 401, "agent reading an order")
+
+    print("\nThe human opening their link and rejecting...")
+    b_link = review_link(base_url, order_b)
+    page = call("GET", base_url, b_link)
+    print("  they see:", page["intent_check"]["reason"])
+    time.sleep(2)
+    call("POST", base_url, b_link + "/reject", TAP)
+    order_b = call("GET", base_url, b_path, headers=MERCHANT)
     check("Order B status after reject", order_b["status"], "voided")
     check("Order B review_state after reject", order_b["review_state"], "rejected")
     check("Order B void_result", order_b["void_result"], "VOIDED")
-    check("Order B approval decision_ms", order_b["approval"]["decision_ms"], TAP["decision_ms"])
+    check("Order B client_decision_ms", order_b["approval"]["client_decision_ms"], 4200)
+    # the server's clock, not the 4200 the client said
+    server_ms = order_b["approval"]["decision_ms"]
+    # at least the 2 seconds waited above, and a slow free-tier Render can add a lot on top
+    check("Order B decision_ms is the server's own", 2000 <= server_ms < 30000, True)
+    print("  decision_ms:", server_ms)
 
-    # 4. second taps
+    # 4. the link is used up
     print("\nSecond taps...")
-    expect_conflict(base_url, a_path + "/approve", "approve a captured order")
-    expect_conflict(base_url, b_path + "/approve", "approve a rejected order")
+    expect_status("POST", base_url, b_link + "/approve", None, 409, "reusing a link")
+    expect_status("GET", base_url, b_link, None, 410, "opening a used link")
+    expect_status("POST", base_url, a_path + "/review-link", MERCHANT, 409, "link on a done order")
 
     # 5. trust PayPal's record, not ours
     print("\nReading back from PayPal...")
@@ -189,16 +229,16 @@ def main():
     check("PayPal: replay returns the same capture", replay["id"], order_a["capture_id"])
 
     # and the API's own read side agrees
-    detail = call("GET", base_url, a_path)
+    detail = call("GET", base_url, a_path, headers=MERCHANT)
     check("GET order A mandate id", detail["mandate"]["id"], mandate["id"])
-    newest = call("GET", base_url, "/orders?limit=2")
+    newest = call("GET", base_url, "/orders?limit=2", headers=MERCHANT)
     check("GET /orders is newest first", newest[0]["id"], order_b["id"])
 
     print()
     if problems:
         print("Week 1 e2e FAILED: " + ", ".join(problems))
         sys.exit(1)
-    print("Week 1 e2e passed: mandate, auto-decide, approve/reject, 409s, replay, "
+    print("Week 1 e2e passed: mandate, auto-decide, review link, API keys, replay, "
           "confirmed by PayPal.")
 
 

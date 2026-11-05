@@ -53,6 +53,7 @@ def parse_through_api(base_url, request_text):
     response = requests.post(
         base_url.rstrip("/") + "/mandates",
         json={"buyer_label": "try_mandates", "request_text": request_text},
+        headers={"X-API-Key": get_settings().agent_api_key},
         timeout=120,
     )
     response.raise_for_status()

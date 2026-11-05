@@ -29,5 +29,9 @@ services:
         sync: false
       - key: ANTHROPIC_API_KEY
         sync: false
+      - key: AGENT_API_KEY
+        sync: false
+      - key: MERCHANT_API_KEY
+        sync: false
       - key: PAYPAL_BASE_URL
         value: https://api-m.sandbox.paypal.com

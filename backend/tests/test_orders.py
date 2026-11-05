@@ -1,6 +1,7 @@
 # Order endpoints with PayPal mocked (responses) and SQLite. The PayPal bodies are trimmed
 # from the Orders v2 / Payments v2 schema examples and what spikes 1 + 2 got back in sandbox
 
+import hashlib
 import json
 import logging
 import uuid
@@ -13,12 +14,13 @@ import requests
 import responses
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, event, select
+from keyed_client import AGENT_HEADERS, MERCHANT_HEADERS, KeyedClient
+from sqlalchemy import create_engine, event, select, text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from backend.app import orders
+from backend.app import orders, review
 from backend.app.config import get_settings
 from backend.app.db import Base, get_session
 from backend.app.models import (
@@ -36,6 +38,8 @@ from backend.app.paypal_client import PayPalClient
 
 BASE = "https://api-m.sandbox.paypal.com"
 VAULT_ID = "test-vault-id"
+# far off, because review links die with the hold and a real date would break these tests one day
+HOLD_EXPIRES = "2099-11-20T01:56:55Z"
 
 ORDER_BODY = {
     "mandate_id": 1,
@@ -96,7 +100,7 @@ def authorized_paypal_order(order_id, authorization_id, amount="66.00", status="
                     "id": authorization_id,
                     "status": status,
                     "amount": {"currency_code": "USD", "value": amount},
-                    "expiration_time": "2026-11-20T01:56:55Z",
+                    "expiration_time": HOLD_EXPIRES,
                 }]
             }
         }],
@@ -162,9 +166,10 @@ def claude():
 
 
 @pytest.fixture
-def client(db_sessions, paypal, claude):
+def app(db_sessions, paypal, claude):
     app = FastAPI()
     app.include_router(orders.router)
+    app.include_router(review.router)
 
     def test_session():
         session = db_sessions()
@@ -177,6 +182,17 @@ def client(db_sessions, paypal, claude):
     app.dependency_overrides[get_session] = test_session
     app.dependency_overrides[orders.get_paypal_client] = lambda: paypal_client
     app.dependency_overrides[orders.get_anthropic_client] = lambda: claude
+    return app
+
+
+@pytest.fixture
+def client(app):
+    return KeyedClient(app)
+
+
+@pytest.fixture
+def no_key_client(app):
+    # sends only the headers a test gives it
     return TestClient(app)
 
 
@@ -232,16 +248,42 @@ def mock_void(paypal, authorization_id="0AW2184448108334S"):
     )
 
 
-def approve(client, order, decision_ms=4200):
+def mint_link(client, order):
+    return client.post("/orders/" + str(order["id"]) + "/review-link")
+
+
+# one link per order per test, kept here so a second tap really does reuse the first one's token.
+# keyed by the client too, since each test gets a new one with order ids starting over
+review_tokens = {}
+
+
+def tap(client, order, action, decision_ms):
+    key = (id(client), order["id"])
+    if key not in review_tokens:
+        link = mint_link(client, order)
+        if link.status_code != 201:
+            # the order can't be reviewed, and the conflict has the same shape a tap's would
+            return link
+        review_tokens[key] = link.json()["review_token"]
     return client.post(
-        "/orders/" + str(order["id"]) + "/approve", json={"decision_ms": decision_ms}
+        "/review/" + review_tokens[key] + "/" + action, json={"decision_ms": decision_ms}
     )
+
+
+def approve(client, order, decision_ms=4200):
+    return tap(client, order, "approve", decision_ms)
 
 
 def reject(client, order, decision_ms=4200):
-    return client.post(
-        "/orders/" + str(order["id"]) + "/reject", json={"decision_ms": decision_ms}
-    )
+    return tap(client, order, "reject", decision_ms)
+
+
+def set_on_order(db_sessions, order, **values):
+    with db_sessions() as session:
+        saved = session.get(Order, order["id"])
+        for name, value in values.items():
+            setattr(saved, name, value)
+        session.commit()
 
 
 def paypal_calls_to(paypal, url_part):
@@ -267,7 +309,7 @@ def test_vault_order_is_authorized_then_approved(client, paypal):
     assert order["review_state"] == "needs_review"
     assert order["paypal_order_id"] == "5O190127TN364715T"
     assert order["authorization_id"] == "0AW2184448108334S"
-    assert order["authorization_expires_at"].startswith("2026-11-20T01:56:55")
+    assert order["authorization_expires_at"].startswith("2099-11-20T01:56:55")
     assert order["vault_id"] == VAULT_ID
     assert order["payer_action_url"] is None
     # 42.00 + 2 x 9.50 + 5.00 shipping
@@ -293,7 +335,8 @@ def test_vault_order_is_authorized_then_approved(client, paypal):
     assert captured.status_code == 200
     assert captured.json()["status"] == "captured"
     assert captured.json()["review_state"] == "approved"
-    assert captured.json()["capture_id"] == "2GG279541U471931P"
+    detail = client.get("/orders/" + str(order["id"])).json()
+    assert detail["capture_id"] == "2GG279541U471931P"
 
 
 def test_shipping_amount_is_saved_on_the_row(client, paypal, db_sessions):
@@ -598,7 +641,8 @@ def test_all_order_responses_show_the_check_result(client, paypal):
     assert client.get("/orders").json()[0]["intent_check"]["id"] == decision_id
 
     mock_capture(paypal)
-    assert approve(client, order).json()["intent_check"]["id"] == decision_id
+    approve(client, order)
+    assert client.get(order_url).json()["intent_check"]["id"] == decision_id
 
 
 def test_intent_check_is_the_newest_decision(client, paypal, db_sessions):
@@ -883,9 +927,6 @@ def test_approve_captures_and_records_the_tap(client, paypal, db_sessions):
     body = response.json()
     assert body["status"] == "captured"
     assert body["review_state"] == "approved"
-    assert body["capture_id"] == "2GG279541U471931P"
-    assert body["approval"]["action"] == "approve"
-    assert body["approval"]["decision_ms"] == 4200
 
     with db_sessions() as session:
         saved = session.get(Order, order["id"])
@@ -896,9 +937,11 @@ def test_approve_captures_and_records_the_tap(client, paypal, db_sessions):
         assert len(saved.approvals) == 1
         approval = saved.approvals[0]
         assert approval.action == ApprovalAction.approve
-        assert approval.decision_ms == 4200
-        # opened_at is worked out from what the client measured
-        assert approval.decided_at - approval.opened_at == timedelta(milliseconds=4200)
+        assert approval.client_decision_ms == 4200
+
+    merchant_view = client.get("/orders/" + str(order["id"])).json()
+    assert merchant_view["capture_id"] == "2GG279541U471931P"
+    assert merchant_view["approval"]["action"] == "approve"
 
 
 def test_reject_voids_and_records_the_tap(client, paypal, db_sessions):
@@ -916,16 +959,15 @@ def test_reject_voids_and_records_the_tap(client, paypal, db_sessions):
     body = response.json()
     assert body["status"] == "voided"
     assert body["review_state"] == "rejected"
-    assert body["void_result"] == "VOIDED"
-    assert body["capture_id"] is None
-    assert body["approval"]["action"] == "reject"
-    assert body["approval"]["decision_ms"] == 900
 
     with db_sessions() as session:
         saved = session.get(Order, order["id"])
         assert saved.void_result == "VOIDED"
+        assert saved.capture_id is None
         assert saved.payment_claimed_at is None
         assert len(saved.approvals) == 1
+        assert saved.approvals[0].action == ApprovalAction.reject
+        assert saved.approvals[0].client_decision_ms == 900
 
 
 def test_reject_handles_paypals_empty_204(client, paypal):
@@ -933,7 +975,8 @@ def test_reject_handles_paypals_empty_204(client, paypal):
     order = create_vault_order(client, paypal)
     mock_void(paypal)
 
-    assert reject(client, order).json()["void_result"] == "VOIDED"
+    assert reject(client, order).status_code == 200
+    assert client.get("/orders/" + str(order["id"])).json()["void_result"] == "VOIDED"
 
 
 def test_double_approve_is_a_409(client, paypal):
@@ -1034,24 +1077,30 @@ def test_abandoned_claim_expires(client, paypal, db_sessions):
     assert approve(client, order).status_code == 200
 
 
-@pytest.mark.parametrize("body", [{}, {"decision_ms": -1}, {"decision_ms": "soon"},
+@pytest.mark.parametrize("body", [{"decision_ms": -1}, {"decision_ms": "soon"},
                                   {"decision_ms": 2147483648}])
-def test_review_needs_a_valid_decision_ms(client, paypal, body):
+def test_client_decision_ms_has_to_be_sensible_if_sent(client, paypal, db_sessions, body):
+    order = create_vault_order(client, paypal)
+    token = mint_link(client, order).json()["review_token"]
+
+    assert client.post("/review/" + token + "/approve", json=body).status_code == 422
+    assert client.post("/review/" + token + "/reject", json=body).status_code == 422
+    assert paypal_calls_to(paypal, "/capture") == []
+    assert paypal_calls_to(paypal, "/void") == []
+    # a bad request doesn't use up the link
+    with db_sessions() as session:
+        assert session.get(Order, order["id"]).review_token_used_at is None
+
+
+def test_old_routes_are_gone(client, paypal):
+    # any of these would let an agent settle its own flagged order
     order = create_vault_order(client, paypal)
     url = "/orders/" + str(order["id"])
 
-    assert client.post(url + "/approve", json=body).status_code == 422
-    assert client.post(url + "/reject", json=body).status_code == 422
+    for name in ["/capture", "/void", "/approve", "/reject"]:
+        assert client.post(url + name, json={"decision_ms": 1}).status_code == 404
     assert paypal_calls_to(paypal, "/capture") == []
     assert paypal_calls_to(paypal, "/void") == []
-
-
-def test_old_capture_and_void_routes_are_gone(client, paypal):
-    # they'd let an agent settle its own flagged order, with no review and no record of it
-    order = create_vault_order(client, paypal)
-
-    assert client.post("/orders/" + str(order["id"]) + "/capture").status_code == 404
-    assert client.post("/orders/" + str(order["id"]) + "/void").status_code == 404
 
 
 # ---- PayPal failing on approve and reject ----
@@ -1245,7 +1294,7 @@ def test_every_order_response_has_the_same_shape(client, paypal):
     # docs/api.md promises these names to the frontend
     order = create_vault_order(client, paypal)
     mock_capture(paypal)
-    approved = approve(client, order).json()
+    approve(client, order)
     listed = client.get("/orders").json()[0]
     detail = client.get("/orders/" + str(order["id"])).json()
 
@@ -1254,7 +1303,6 @@ def test_every_order_response_has_the_same_shape(client, paypal):
         "vault_id", "items", "total", "shipping_amount", "currency", "status", "review_state",
         "authorization_expires_at", "created_at", "mandate", "intent_check", "approval",
     }
-    assert set(approved) == shared
     assert set(listed) == shared
     assert set(order) == shared | {"payer_action_url"}
     assert set(detail) == shared | {"decisions", "approvals"}
@@ -1269,9 +1317,12 @@ def test_every_order_response_has_the_same_shape(client, paypal):
     }
     assert set(listed["approval"]) == {
         "id", "action", "decided_by", "opened_at", "decided_at", "decision_ms",
+        "client_decision_ms",
     }
-    # the claim is plumbing, not part of the contract
+    # the claim and the token are plumbing, not part of the contract
     assert "payment_claimed_at" not in listed
+    assert "review_token_hash" not in listed
+    assert "review_token_used_at" not in listed
 
 
 def test_list_includes_mandate_check_and_approval(client, paypal):
@@ -1313,6 +1364,641 @@ def test_list_doesnt_run_one_query_per_order(client, paypal, db_sessions):
     assert len(response.json()) == 3
     # the orders, then one each for mandates, decisions and approvals
     assert len(statements) == 4
+
+
+# ---- API keys ----
+
+
+@pytest.mark.parametrize(("method", "path"), [
+    ("GET", "/orders"),
+    ("GET", "/orders/1"),
+    ("POST", "/orders/1/review-link"),
+])
+def test_agent_key_gets_401_on_merchant_routes(no_key_client, method, path):
+    response = no_key_client.request(method, path, headers=AGENT_HEADERS)
+
+    assert response.status_code == 401
+
+
+def test_agent_key_cant_approve_its_own_order(client, no_key_client, paypal, db_sessions):
+    # the whole point. there are three ways it could try, and none of them moves any money
+    order = create_vault_order(client, paypal)
+    assert order["review_state"] == "needs_review"
+    order_url = "/orders/" + str(order["id"])
+
+    # 1. get itself a review link: 401
+    assert no_key_client.post(order_url + "/review-link", headers=AGENT_HEADERS).status_code == 401
+
+    # 2. the old approve route, which no longer exists
+    response = no_key_client.post(
+        order_url + "/approve", json={"decision_ms": 1}, headers=AGENT_HEADERS
+    )
+    assert response.status_code == 404
+
+    # 3. the new one, without a real token. its key doesn't stand in for one
+    response = no_key_client.post(
+        "/review/made-up-token/approve", json={"decision_ms": 1}, headers=AGENT_HEADERS
+    )
+    assert response.status_code == 404
+
+    assert paypal_calls_to(paypal, "/capture") == []
+    assert saved_order(db_sessions, order["id"]).review_state == ReviewState.needs_review
+
+
+@pytest.mark.parametrize("path", ["/orders", "/orders/1/authorize"])
+def test_merchant_key_cant_place_orders(no_key_client, paypal, path):
+    response = no_key_client.post(path, json=ORDER_BODY, headers=MERCHANT_HEADERS)
+
+    assert response.status_code == 401
+    assert len(paypal.calls) == 0
+
+
+@pytest.mark.parametrize("headers", [{}, {"X-API-Key": ""}, {"X-API-Key": "wrong"}])
+@pytest.mark.parametrize(("method", "path"), [
+    ("GET", "/orders"),
+    ("POST", "/orders"),
+    ("POST", "/orders/1/authorize"),
+    ("POST", "/orders/1/review-link"),
+])
+def test_missing_or_wrong_key_is_401(no_key_client, paypal, method, path, headers):
+    # an invalid body too: a stranger gets a 401, not a description of what the API expects
+    response = no_key_client.request(method, path, headers=headers, json={"nope": True})
+
+    assert response.status_code == 401
+    assert len(paypal.calls) == 0
+
+
+def test_unset_keys_lock_everything(no_key_client, paypal, monkeypatch):
+    # a forgotten env var has to fail closed, an empty header can't match an empty setting
+    monkeypatch.setenv("AGENT_API_KEY", "")
+    monkeypatch.setenv("MERCHANT_API_KEY", "")
+    get_settings.cache_clear()
+
+    for headers in [{}, {"X-API-Key": ""}, AGENT_HEADERS, MERCHANT_HEADERS]:
+        assert no_key_client.get("/orders", headers=headers).status_code == 401
+        assert no_key_client.post("/orders", json=ORDER_BODY, headers=headers).status_code == 401
+
+
+def test_every_route_in_the_app_needs_a_key():
+    # so a route added later can't quietly be left open. anything here on purpose: /health is for
+    # Render, and /review/ is authorized by the token in its path
+    from backend.app.main import app
+
+    no_key = TestClient(app)
+    checked = 0
+    # the OpenAPI doc lists every served path, however the routers are nested
+    for route_path, operations in app.openapi()["paths"].items():
+        if route_path == "/health" or route_path.startswith("/review/"):
+            continue
+        path = route_path.replace("{order_id}", "1").replace("{mandate_id}", "1")
+        for method in operations:
+            assert no_key.request(method, path).status_code == 401, method + " " + route_path
+            checked += 1
+    # two for mandates, four for orders, one for review links. if this drops to 0 the loop above
+    # isn't checking anything, so it can't just pass
+    assert checked == 7
+
+
+# ---- review links: where the token goes ----
+
+
+def walk_keys(value):
+    # every key anywhere in a JSON body
+    found = []
+    if isinstance(value, dict):
+        for key, inner in value.items():
+            found.append(key)
+            found.extend(walk_keys(inner))
+    elif isinstance(value, list):
+        for inner in value:
+            found.extend(walk_keys(inner))
+    return found
+
+
+def assert_no_token_in(response, *secrets_to_find):
+    for secret in secrets_to_find:
+        assert secret not in response.text
+    for key in walk_keys(response.json()):
+        assert "token" not in key.lower()
+
+
+def test_agent_responses_never_contain_a_token(client, paypal, claude, db_sessions):
+    # a token really exists when the agent asks, so this would catch it leaking
+    first = create_vault_order(client, paypal, "ORDER1", "AUTH1")
+    token = mint_link(client, first).json()["review_token"]
+    hashed = hashlib.sha256(token.encode()).hexdigest()
+    assert saved_order(db_sessions, first["id"]).review_token_hash == hashed
+
+    # every response the agent key can get: another vault order
+    paypal.add(
+        responses.POST, BASE + "/v2/checkout/orders", status=201,
+        json=authorized_paypal_order("ORDER2", "AUTH2"),
+    )
+    body = dict(ORDER_BODY)
+    body["vault_id"] = VAULT_ID
+    agent_responses = [client.post("/orders", json=body)]
+
+    # a no-vault order, then authorizing it
+    paypal.add(
+        responses.POST, BASE + "/v2/checkout/orders", status=201,
+        json=payer_action_paypal_order("ORDER3"),
+    )
+    unapproved = client.post("/orders", json=ORDER_BODY)
+    agent_responses.append(unapproved)
+    paypal.add(
+        responses.POST, BASE + "/v2/checkout/orders/ORDER3/authorize", status=201,
+        json=authorized_paypal_order("ORDER3", "AUTH3"),
+    )
+    agent_responses.append(client.post("/orders/" + str(unapproved.json()["id"]) + "/authorize"))
+
+    # and the order that does have a live link, which only gets it a conflict
+    agent_responses.append(client.post("/orders/" + str(first["id"]) + "/authorize"))
+
+    assert [response.status_code for response in agent_responses] == [201, 201, 200, 409]
+    for response in agent_responses:
+        assert_no_token_in(response, token, hashed)
+
+
+def test_agent_response_shapes_cant_hold_a_token():
+    # the same check, on what the API is even able to send back
+    for model in [orders.OrderOut, orders.OrderCreated]:
+        for name in model.model_fields:
+            assert "token" not in name.lower()
+
+
+def test_token_only_ever_comes_back_when_its_created(client, paypal):
+    # the merchant reads don't have it either: only the hash is stored, so they couldn't
+    order = create_vault_order(client, paypal)
+    link = mint_link(client, order)
+    token = link.json()["review_token"]
+    hashed = hashlib.sha256(token.encode()).hexdigest()
+
+    assert link.status_code == 201
+    assert set(link.json()) == {"review_token", "expires_at"}
+    assert link.json()["expires_at"].startswith("2099-11-20T01:56:55")
+    assert_no_token_in(client.get("/orders"), token, hashed)
+    assert_no_token_in(client.get("/orders/" + str(order["id"])), token, hashed)
+    assert_no_token_in(client.get("/review/" + token), token, hashed)
+
+
+def test_only_the_hash_is_stored(client, paypal, db_sessions):
+    order = create_vault_order(client, paypal)
+    token = mint_link(client, order).json()["review_token"]
+
+    with db_sessions() as session:
+        row = session.execute(
+            text("SELECT * FROM orders WHERE id = " + str(order["id"]))
+        ).one()
+    assert token not in str(tuple(row))
+    assert hashlib.sha256(token.encode()).hexdigest() in str(tuple(row))
+    # long enough that guessing one isn't a plan
+    assert len(token) >= 43
+
+
+def test_new_link_replaces_the_old_one(client, paypal):
+    order = create_vault_order(client, paypal)
+    old = mint_link(client, order).json()["review_token"]
+    new = mint_link(client, order).json()["review_token"]
+
+    assert new != old
+    assert client.get("/review/" + old).status_code == 404
+    assert client.get("/review/" + new).status_code == 200
+
+
+def test_cant_create_a_link_for_an_order_with_nothing_to_review(client, paypal, claude):
+    claude.answer = match_answer(risk_score=5)
+    mock_capture(paypal)
+    order = create_vault_order(client, paypal)
+
+    response = mint_link(client, order)
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["review_state"] == "auto_approved"
+
+
+# ---- review links: using them ----
+
+
+def test_review_page_has_what_confirmpage_needs_and_no_more(client, paypal, claude):
+    claude.answer = {
+        "verdict": "mismatch",
+        "risk_score": 85,
+        "reason": "Ordered red, mandate says black",
+        "mismatched_fields": ["color"],
+    }
+    order = create_vault_order(client, paypal)
+    token = mint_link(client, order).json()["review_token"]
+
+    response = client.get("/review/" + token)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert set(body) == {
+        "id", "items", "total", "shipping_amount", "currency", "status", "review_state",
+        "authorization_expires_at", "mandate", "intent_check",
+    }
+    assert body["items"][0]["name"] == "Trail runner"
+    assert body["total"] == "66.00"
+    assert body["mandate"]["raw_request"].startswith("Trail runners and socks")
+    assert set(body["mandate"]) == {"buyer_label", "raw_request"}
+    assert body["intent_check"]["reason"] == "Ordered red, mandate says black"
+    assert body["status"] == "authorized"
+    assert body["review_state"] == "needs_review"
+    # a link holder doesn't get PayPal ids or the vault id
+    assert order["authorization_id"] not in response.text
+    assert VAULT_ID not in response.text
+
+
+def test_unknown_token_is_a_404(client, paypal):
+    assert client.get("/review/nope").status_code == 404
+    assert client.post("/review/nope/approve", json={}).status_code == 404
+    assert client.post("/review/nope/reject", json={}).status_code == 404
+    assert len(paypal.calls) == 0
+
+
+@pytest.mark.parametrize("seconds_past", [0, 3600])
+def test_expired_token_fails(client, paypal, db_sessions, seconds_past):
+    order = create_vault_order(client, paypal)
+    token = mint_link(client, order).json()["review_token"]
+    set_on_order(
+        db_sessions, order,
+        authorization_expires_at=datetime.now(timezone.utc) - timedelta(seconds=seconds_past),
+    )
+
+    assert client.get("/review/" + token).status_code == 410
+    approved = client.post("/review/" + token + "/approve", json={})
+    rejected = client.post("/review/" + token + "/reject", json={})
+
+    assert approved.status_code == 410
+    assert "expired" in approved.json()["detail"]["message"]
+    assert rejected.status_code == 410
+    assert paypal_calls_to(paypal, "/capture") == []
+    assert paypal_calls_to(paypal, "/void") == []
+    saved = saved_order(db_sessions, order["id"])
+    assert saved.review_state == ReviewState.needs_review
+    assert saved.review_token_used_at is None
+    # opening an expired link doesn't count as looking at the order
+    with db_sessions() as session:
+        assert session.query(Approval).count() == 0
+
+
+def test_token_works_right_up_to_the_hold_expiring(client, paypal, db_sessions):
+    order = create_vault_order(client, paypal)
+    token = mint_link(client, order).json()["review_token"]
+    set_on_order(
+        db_sessions, order,
+        authorization_expires_at=datetime.now(timezone.utc) + timedelta(seconds=60),
+    )
+
+    assert client.get("/review/" + token).status_code == 200
+
+
+def test_no_link_for_a_hold_thats_already_expired(client, paypal, db_sessions):
+    order = create_vault_order(client, paypal)
+    set_on_order(
+        db_sessions, order,
+        authorization_expires_at=datetime.now(timezone.utc) - timedelta(seconds=1),
+    )
+
+    response = mint_link(client, order)
+
+    assert response.status_code == 409
+    assert "expired" in response.json()["detail"]["message"]
+
+
+def test_hold_with_no_expiry_on_record_counts_as_expired(client, paypal, db_sessions):
+    order = create_vault_order(client, paypal)
+    token = mint_link(client, order).json()["review_token"]
+    set_on_order(db_sessions, order, authorization_expires_at=None)
+
+    assert client.post("/review/" + token + "/approve", json={}).status_code == 410
+
+
+def test_reused_token_fails(client, paypal):
+    order = create_vault_order(client, paypal)
+    token = mint_link(client, order).json()["review_token"]
+    mock_capture(paypal)
+    assert client.post("/review/" + token + "/approve", json={}).status_code == 200
+
+    again = client.post("/review/" + token + "/approve", json={})
+    other_way = client.post("/review/" + token + "/reject", json={})
+
+    assert again.status_code == 409
+    assert again.json()["detail"]["status"] == "captured"
+    assert again.json()["detail"]["review_state"] == "approved"
+    assert other_way.status_code == 409
+    assert len(paypal_calls_to(paypal, "/capture")) == 1
+    assert paypal_calls_to(paypal, "/void") == []
+    # the page itself is gone too
+    assert client.get("/review/" + token).status_code == 410
+
+
+def test_token_is_used_up_in_the_same_commit_as_the_claim(client, paypal, db_sessions):
+    # looked at from outside, at the moment PayPal gets called
+    order = create_vault_order(client, paypal)
+    token = mint_link(client, order).json()["review_token"]
+    seen = {}
+
+    def capture_callback(request):
+        saved = saved_order(db_sessions, order["id"])
+        seen["used"] = saved.review_token_used_at
+        seen["claimed"] = saved.payment_claimed_at
+        return (201, {}, json.dumps({"id": "2GG279541U471931P", "status": "COMPLETED"}))
+
+    paypal.add_callback(
+        responses.POST,
+        BASE + "/v2/payments/authorizations/0AW2184448108334S/capture",
+        callback=capture_callback,
+    )
+
+    assert client.post("/review/" + token + "/approve", json={}).status_code == 200
+
+    assert seen["used"] is not None
+    assert seen["used"] == seen["claimed"]
+
+
+def test_paypal_failure_gives_the_link_back_for_a_retry(client, paypal, db_sessions):
+    # used up with the claim, but PayPal definitely said no, so the tap didn't do anything
+    order = create_vault_order(client, paypal)
+    token = mint_link(client, order).json()["review_token"]
+    paypal.add(
+        responses.POST,
+        BASE + "/v2/payments/authorizations/0AW2184448108334S/capture",
+        status=500,
+        json={"name": "INTERNAL_SERVER_ERROR"},
+    )
+
+    assert client.post("/review/" + token + "/approve", json={}).status_code == 502
+    assert saved_order(db_sessions, order["id"]).review_token_used_at is None
+
+    paypal.replace(
+        responses.POST,
+        BASE + "/v2/payments/authorizations/0AW2184448108334S/capture",
+        status=201,
+        json={"id": "2GG279541U471931P", "status": "COMPLETED"},
+    )
+    assert client.post("/review/" + token + "/approve", json={}).status_code == 200
+
+
+def test_new_link_recovers_from_a_crash_mid_payment(client, paypal, db_sessions):
+    # the request died after using up the link, so nothing ever gave it back
+    order = create_vault_order(client, paypal)
+    old = mint_link(client, order).json()["review_token"]
+    long_ago = datetime.now(timezone.utc) - timedelta(seconds=121)
+    set_on_order(db_sessions, order, review_token_used_at=long_ago, payment_claimed_at=long_ago)
+
+    response = client.post("/review/" + old + "/approve", json={})
+    assert response.status_code == 409
+    assert "already been used" in response.json()["detail"]["message"]
+
+    new = mint_link(client, order).json()["review_token"]
+    mock_capture(paypal)
+    assert client.post("/review/" + new + "/approve", json={}).status_code == 200
+
+
+def test_cant_get_a_new_link_while_a_payment_is_in_flight(client, paypal, db_sessions):
+    order = create_vault_order(client, paypal)
+    mint_link(client, order)
+    set_on_order(db_sessions, order, payment_claimed_at=datetime.now(timezone.utc))
+
+    assert mint_link(client, order).status_code == 409
+
+
+# ---- review links: timing ----
+
+
+def saved_approval(db_sessions, order):
+    with db_sessions() as session:
+        return session.query(Approval).filter_by(order_id=order["id"]).one()
+
+
+def test_opened_at_only_stamps_once(client, paypal, db_sessions):
+    order = create_vault_order(client, paypal)
+    token = mint_link(client, order).json()["review_token"]
+
+    assert client.get("/review/" + token).status_code == 200
+    first = saved_approval(db_sessions, order)
+    assert first.opened_at is not None
+    # opened, not decided
+    assert first.action is None
+    assert first.decision_ms is None
+
+    # move it so a second stamp couldn't land on the same value by luck
+    earlier = first.opened_at - timedelta(hours=1)
+    with db_sessions() as session:
+        session.get(Approval, first.id).opened_at = earlier
+        session.commit()
+
+    assert client.get("/review/" + token).status_code == 200
+
+    # still one row, and refreshing the page can't reset the clock
+    assert saved_approval(db_sessions, order).opened_at == earlier
+
+
+def test_new_link_doesnt_reset_opened_at(client, paypal, db_sessions):
+    order = create_vault_order(client, paypal)
+    client.get("/review/" + mint_link(client, order).json()["review_token"])
+    first = saved_approval(db_sessions, order).opened_at
+
+    client.get("/review/" + mint_link(client, order).json()["review_token"])
+
+    assert saved_approval(db_sessions, order).opened_at == first
+
+
+def test_merchant_sees_an_opened_review(client, paypal):
+    order = create_vault_order(client, paypal)
+    client.get("/review/" + mint_link(client, order).json()["review_token"])
+
+    approval = client.get("/orders/" + str(order["id"])).json()["approval"]
+
+    assert approval["opened_at"] is not None
+    assert approval["action"] is None
+    assert approval["decision_ms"] is None
+
+
+@pytest.mark.parametrize(("action", "mock"), [("approve", mock_capture), ("reject", mock_void)])
+def test_decision_ms_is_server_computed(client, paypal, db_sessions, action, mock):
+    order = create_vault_order(client, paypal)
+    token = mint_link(client, order).json()["review_token"]
+    client.get("/review/" + token)
+
+    # the human really looked for 5 seconds. the client claims it was nearly 17 minutes
+    approval = saved_approval(db_sessions, order)
+    opened = approval.opened_at - timedelta(seconds=5)
+    with db_sessions() as session:
+        session.get(Approval, approval.id).opened_at = opened
+        session.commit()
+    mock(paypal)
+
+    response = client.post("/review/" + token + "/" + action, json={"decision_ms": 999999})
+
+    assert response.status_code == 200
+    saved = saved_approval(db_sessions, order)
+    assert 5000 <= saved.decision_ms < 6000
+    assert saved.client_decision_ms == 999999
+    assert saved.opened_at == opened
+    assert saved.action == ApprovalAction(action)
+    # the one number is exactly the gap between the two timestamps
+    assert saved.decision_ms == int((saved.decided_at - saved.opened_at).total_seconds() * 1000)
+
+
+def test_client_decision_ms_is_optional(client, paypal, db_sessions):
+    order = create_vault_order(client, paypal)
+    token = mint_link(client, order).json()["review_token"]
+    mock_capture(paypal)
+
+    assert client.post("/review/" + token + "/approve").status_code == 200
+    assert saved_approval(db_sessions, order).client_decision_ms is None
+
+
+def test_tapping_without_ever_opening_counts_as_zero_attention(client, paypal, db_sessions):
+    # a script going straight to approve can't get credit for time it never spent
+    order = create_vault_order(client, paypal)
+    token = mint_link(client, order).json()["review_token"]
+    mock_capture(paypal)
+
+    client.post("/review/" + token + "/approve", json={"decision_ms": 60000})
+
+    saved = saved_approval(db_sessions, order)
+    assert saved.decision_ms == 0
+    assert saved.opened_at == saved.decided_at
+    assert saved.client_decision_ms == 60000
+
+
+def test_very_long_review_fits_the_column(client, paypal, db_sessions):
+    # a hold lasts 29 days and an Integer tops out around 24.8. Postgres would refuse the row, after
+    # PayPal had already taken the money
+    order = create_vault_order(client, paypal)
+    token = mint_link(client, order).json()["review_token"]
+    client.get("/review/" + token)
+    approval = saved_approval(db_sessions, order)
+    with db_sessions() as session:
+        session.get(Approval, approval.id).opened_at = (
+            approval.opened_at - timedelta(days=28)
+        )
+        session.commit()
+    mock_capture(paypal)
+
+    assert client.post("/review/" + token + "/approve", json={}).status_code == 200
+    assert saved_approval(db_sessions, order).decision_ms == 2147483647
+
+
+def test_failed_paypal_call_leaves_the_clock_running(client, paypal, db_sessions):
+    order = create_vault_order(client, paypal)
+    token = mint_link(client, order).json()["review_token"]
+    client.get("/review/" + token)
+    opened = saved_approval(db_sessions, order).opened_at
+    paypal.add(
+        responses.POST,
+        BASE + "/v2/payments/authorizations/0AW2184448108334S/capture",
+        status=500,
+        json={"name": "INTERNAL_SERVER_ERROR"},
+    )
+
+    assert client.post("/review/" + token + "/approve", json={}).status_code == 502
+
+    saved = saved_approval(db_sessions, order)
+    assert saved.action is None
+    assert saved.decision_ms is None
+    assert saved.opened_at == opened
+
+
+# ---- network errors on create and authorize ----
+
+
+NETWORK_ERRORS = [
+    requests.exceptions.ConnectTimeout("too slow to connect"),
+    requests.exceptions.ReadTimeout("too slow to answer"),
+    requests.exceptions.ConnectionError("connection dropped"),
+]
+
+
+@pytest.mark.parametrize("error", NETWORK_ERRORS)
+def test_network_error_on_create_is_a_clean_502(client, paypal, claude, db_sessions, caplog, error):
+    paypal.add(responses.POST, BASE + "/v2/checkout/orders", body=error)
+    body = dict(ORDER_BODY)
+    body["vault_id"] = VAULT_ID
+
+    with caplog.at_level(logging.ERROR):
+        response = client.post("/orders", json=body)
+
+    assert response.status_code == 502
+    detail = response.json()["detail"]
+    assert detail["message"] == "PayPal create order failed"
+    assert detail["paypal_status"] is None
+    assert "PayPal create order failed for order" in caplog.text
+    assert claude.requests == []
+    assert client.get("/orders").json()[0]["status"] == "failed"
+    assert saved_decisions(db_sessions) == []
+
+
+def test_network_error_on_the_vault_fallback_authorize_is_a_clean_502(client, paypal):
+    paypal.add(
+        responses.POST, BASE + "/v2/checkout/orders", status=201,
+        json={"id": "5O190127TN364715T", "status": "APPROVED"},
+    )
+    paypal.add(
+        responses.POST,
+        BASE + "/v2/checkout/orders/5O190127TN364715T/authorize",
+        body=requests.exceptions.ReadTimeout("too slow to answer"),
+    )
+    body = dict(ORDER_BODY)
+    body["vault_id"] = VAULT_ID
+
+    response = client.post("/orders", json=body)
+
+    assert response.status_code == 502
+    assert response.json()["detail"]["message"] == "PayPal create order failed"
+
+
+@pytest.mark.parametrize("error", NETWORK_ERRORS)
+def test_network_error_on_authorize_is_a_clean_502_and_can_be_retried(client, paypal, claude,
+                                                                      caplog, error):
+    order = create_unapproved_order(client, paypal)
+    url = BASE + "/v2/checkout/orders/8XU44448NV0000000/authorize"
+    paypal.add(responses.POST, url, body=error)
+
+    with caplog.at_level(logging.ERROR):
+        response = client.post("/orders/" + str(order["id"]) + "/authorize")
+
+    assert response.status_code == 502
+    assert response.json()["detail"]["message"] == "PayPal authorize failed"
+    assert "PayPal authorize failed for order " + str(order["id"]) in caplog.text
+    assert claude.requests == []
+    assert client.get("/orders/" + str(order["id"])).json()["status"] == "created"
+
+    paypal.replace(
+        responses.POST, url, status=201,
+        json=authorized_paypal_order("8XU44448NV0000000", "7PS21555RT234531W"),
+    )
+    retried = client.post("/orders/" + str(order["id"]) + "/authorize")
+
+    assert retried.json()["status"] == "authorized"
+    # the same id both times: if that timeout really went through, a fresh one would get a 422
+    # from PayPal forever, with a hold in place that we don't know about
+    calls = paypal_calls_to(paypal, "/authorize")
+    assert (calls[0].request.headers["PayPal-Request-Id"]
+            == calls[1].request.headers["PayPal-Request-Id"])
+
+
+def test_auto_capture_is_capped_at_15_seconds(client, paypal, claude):
+    claude.answer = match_answer(risk_score=5)
+    mock_capture(paypal)
+
+    assert create_vault_order(client, paypal)["review_state"] == "auto_approved"
+
+    connect, read = paypal_calls_to(paypal, "/capture")[0].request.req_kwargs["timeout"]
+    assert connect + read <= 15
+
+
+def test_human_approve_gets_the_normal_paypal_timeout(client, paypal):
+    # nobody's request is stacked up behind this one, so no need to cut it short
+    order = create_vault_order(client, paypal)
+    mock_capture(paypal)
+
+    approve(client, order)
+
+    assert paypal_calls_to(paypal, "/capture")[0].request.req_kwargs["timeout"] == 30
 
 
 # ---- other order rules ----
@@ -1383,8 +2069,7 @@ def test_paypal_error_on_create_marks_order_failed(client, paypal):
 
 def test_missing_order_is_404(client):
     assert client.get("/orders/999").status_code == 404
-    assert client.post("/orders/999/approve", json={"decision_ms": 1}).status_code == 404
-    assert client.post("/orders/999/reject", json={"decision_ms": 1}).status_code == 404
+    assert client.post("/orders/999/review-link").status_code == 404
     assert client.post("/orders/999/authorize").status_code == 404
 
 
@@ -1439,7 +2124,9 @@ def test_main_app_serves_order_routes():
     paths = app.openapi()["paths"]
     assert "post" in paths["/orders"]
     assert "get" in paths["/orders"]
-    assert "post" in paths["/orders/{order_id}/approve"]
-    assert "post" in paths["/orders/{order_id}/reject"]
+    assert "post" in paths["/orders/{order_id}/review-link"]
+    assert "get" in paths["/review/{token}"]
+    assert "post" in paths["/review/{token}/approve"]
+    assert "post" in paths["/review/{token}/reject"]
     assert "post" in paths["/orders/{order_id}/authorize"]
     assert "get" in paths["/orders/{order_id}"]

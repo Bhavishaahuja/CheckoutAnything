@@ -1,10 +1,19 @@
 # PayPalClient against mocked PayPal. bodies are trimmed from the Orders v2 /
 # Payments v2 schema examples
 
+import socket
+import time
+
 import pytest
+import requests
 import responses
 
-from backend.app.paypal_client import PayPalClient, PayPalError, first_authorization
+from backend.app.paypal_client import (
+    PayPalClient,
+    PayPalError,
+    first_authorization,
+    split_budget,
+)
 
 BASE = "https://api-m.sandbox.paypal.com"
 
@@ -156,6 +165,65 @@ def test_every_post_gets_a_fresh_request_id(mocked, client):
     ids = request_ids(mocked)
     assert len(ids) == 2
     assert ids[0] != ids[1]
+
+
+def hung_server():
+    # accepts connections and never answers, the one thing a mock can't really do
+    server = socket.socket()
+    server.bind(("127.0.0.1", 0))
+    server.listen(5)
+    return server, "http://127.0.0.1:" + str(server.getsockname()[1])
+
+
+def test_capture_budget_is_a_real_limit_when_paypal_hangs():
+    server, url = hung_server()
+    try:
+        hanging_client = PayPalClient("id", "secret", base_url=url)
+        hanging_client._token = "cached"
+        hanging_client._token_expires_at = time.time() + 1000
+
+        started = time.monotonic()
+        with pytest.raises(requests.Timeout):
+            hanging_client.capture_authorization("A1", budget_seconds=0.5)
+        elapsed = time.monotonic() - started
+    finally:
+        server.close()
+
+    assert elapsed < 2
+
+
+def test_capture_budget_covers_fetching_a_token():
+    # it can't turn into 15 seconds for the token and another 15 for the capture
+    server, url = hung_server()
+    try:
+        hanging_client = PayPalClient("id", "secret", base_url=url)
+
+        started = time.monotonic()
+        with pytest.raises(requests.Timeout):
+            hanging_client.capture_authorization("A1", budget_seconds=0.5)
+        elapsed = time.monotonic() - started
+    finally:
+        server.close()
+
+    assert elapsed < 2
+
+
+def test_budget_is_split_so_it_adds_up_to_what_was_asked():
+    assert split_budget(15) == (3, 12)
+    assert split_budget(2) == (1, 1)
+
+
+def test_capture_without_a_budget_uses_the_normal_timeout(mocked, client):
+    mocked.add(
+        responses.POST,
+        BASE + "/v2/payments/authorizations/A1/capture",
+        status=201,
+        json={"id": "C1", "status": "COMPLETED"},
+    )
+
+    client.capture_authorization("A1")
+
+    assert mocked.calls[-1].request.req_kwargs["timeout"] == 30
 
 
 def test_caller_can_pass_its_own_request_id(mocked, client):

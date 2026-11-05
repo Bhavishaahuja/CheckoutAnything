@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
 from backend.app import mandate_parser
+from backend.app.auth import require_agent, require_merchant
 from backend.app.config import get_settings
 from backend.app.db import get_session
 from backend.app.models import Mandate
@@ -46,7 +47,9 @@ DbSession = Annotated[Session, Depends(get_session)]
 AnthropicClient = Annotated[object, Depends(get_anthropic_client)]
 
 
-@router.post("", response_model=MandateOut, status_code=201)
+@router.post(
+    "", response_model=MandateOut, status_code=201, dependencies=[Depends(require_agent)]
+)
 def create_mandate(body: MandateCreate, session: DbSession, client: AnthropicClient):
     try:
         fields = mandate_parser.parse_mandate(client, body.request_text)
@@ -69,7 +72,9 @@ def create_mandate(body: MandateCreate, session: DbSession, client: AnthropicCli
     return mandate
 
 
-@router.get("/{mandate_id}", response_model=MandateOut)
+@router.get(
+    "/{mandate_id}", response_model=MandateOut, dependencies=[Depends(require_merchant)]
+)
 def get_mandate(mandate_id: int, session: DbSession):
     mandate = session.get(Mandate, mandate_id)
     if mandate is None:

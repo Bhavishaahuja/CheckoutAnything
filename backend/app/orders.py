@@ -1,4 +1,5 @@
-# Agent orders: create (PayPal intent AUTHORIZE), authorize, approve, reject, list, read.
+# Agent orders: create (PayPal intent AUTHORIZE), authorize, list, read. The human's side of it,
+# review links plus approve and reject, is in review.py.
 # Response shapes are documented for the frontend in docs/api.md, keep the two in step.
 #
 # Money flow is what the spikes proved in sandbox:
@@ -23,6 +24,7 @@
 
 import logging
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from decimal import ROUND_HALF_UP, Decimal
 from functools import lru_cache
@@ -36,6 +38,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, selectinload
 
 from backend.app import mandate_parser
+from backend.app.auth import require_agent, require_merchant
 from backend.app.config import STORE_NAME, get_settings
 from backend.app.db import get_session
 from backend.app.intent.check import build_decision, run_intent_check
@@ -70,7 +73,11 @@ PAYPAL_FAILURES = (PayPalError, requests.RequestException)
 # PayPal-Request-Id gets the original result back
 CLAIM_EXPIRES_AFTER = timedelta(seconds=120)
 
-# the most an Integer column holds, about 24 days, so a silly value is a 422 and not a 500
+# the agent is waiting on POST /orders for this one, so it gets less time than a human's tap. if
+# it runs out, the order goes to review, and approving there can't charge twice: same request id
+AUTO_CAPTURE_BUDGET_SECONDS = 15
+
+# the most an Integer column holds, about 24.8 days. a hold lasts 29, so a real review can pass it
 MAX_DECISION_MS = 2147483647
 
 
@@ -136,7 +143,10 @@ class ApprovalOut(BaseModel):
     decided_by: str | None
     opened_at: datetime | None
     decided_at: datetime | None
+    # server-measured, decided_at minus opened_at
     decision_ms: int | None
+    # what the client claimed. only here to compare against
+    client_decision_ms: int | None
 
 
 class OrderOut(BaseModel):
@@ -162,7 +172,7 @@ class OrderOut(BaseModel):
     mandate: MandateSummary
     # the newest check result. null until the order is checked, or if saving the result failed
     intent_check: DecisionOut | None
-    # the human's decision. null if nobody has made one
+    # the human's review. null until the link is opened, action is null until they decide
     approval: ApprovalOut | None
 
 
@@ -175,11 +185,6 @@ class OrderDetail(OrderOut):
     # the full history, for GET /orders/{id}
     decisions: list[DecisionOut]
     approvals: list[ApprovalOut]
-
-
-class ReviewDecision(BaseModel):
-    # page open to tap, measured on the client
-    decision_ms: int = Field(ge=0, le=MAX_DECISION_MS)
 
 
 # ---- dependencies ----
@@ -301,19 +306,24 @@ def parse_paypal_time(value):
 
 
 def paypal_error_response(action, error):
-    # PayPal said no. Pass on what it said (debug_id is what PayPal support asks for),
-    # as a 502 since the failure is upstream of us
-    return HTTPException(
-        status_code=502,
-        detail={
-            "message": "PayPal " + action + " failed",
-            "paypal_status": error.status_code,
-            "paypal_name": error.name,
-            "paypal_issue": error.issue,
-            "paypal_message": error.message,
-            "debug_id": error.debug_id,
-        },
-    )
+    # PayPal said no, or we never heard back. Pass on what it said (debug_id is what PayPal support
+    # asks for), as a 502 since the failure is upstream of us. a timeout has none of those details
+    # and they stay null, the message is the part to show
+    detail = {
+        "message": "PayPal " + action + " failed",
+        "paypal_status": None,
+        "paypal_name": None,
+        "paypal_issue": None,
+        "paypal_message": None,
+        "debug_id": None,
+    }
+    if isinstance(error, PayPalError):
+        detail["paypal_status"] = error.status_code
+        detail["paypal_name"] = error.name
+        detail["paypal_issue"] = error.issue
+        detail["paypal_message"] = error.message
+        detail["debug_id"] = error.debug_id
+    return HTTPException(status_code=502, detail=detail)
 
 
 def apply_authorization(order, authorization):
@@ -371,6 +381,12 @@ def payment_request_id(order, action):
     return str(uuid.uuid5(uuid.NAMESPACE_URL, seed))
 
 
+def authorize_request_id(paypal_order_id):
+    # same idea. if an authorize times out but really went through, retrying with a fresh id gets
+    # a 422 from PayPal forever, and the order sits at created with a hold nobody knows about
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, "leash:" + paypal_order_id + ":authorize"))
+
+
 def review_blocker(order):
     # why nobody can settle this order right now, or None if they can
     if order.status != OrderStatus.authorized or order.review_state != ReviewState.needs_review:
@@ -396,19 +412,24 @@ def claim_order(session, order_id):
 
 
 def release_claim(session, order_id):
-    # PayPal failed, so let someone try again. if this fails too, the claim just expires
+    # PayPal failed, so let someone try again. that goes for the review link too: it was used up
+    # with the claim, and a human stuck on a 502 shouldn't need a new link to retry. if this fails
+    # as well, the claim just expires and the merchant can create a new link
     try:
         order = load_order(session, order_id, lock=True)
         order.payment_claimed_at = None
+        order.review_token_used_at = None
         session.commit()
     except SQLAlchemyError:
         session.rollback()
         logger.exception("Couldn't release the payment claim on order %s", order_id)
 
 
-def capture_payment(paypal, order):
+def capture_payment(paypal, order, budget_seconds=None):
     capture = paypal.capture_authorization(
-        order.authorization_id, request_id=payment_request_id(order, CAPTURE)
+        order.authorization_id,
+        request_id=payment_request_id(order, CAPTURE),
+        budget_seconds=budget_seconds,
     )
     # it's the id that disputes need later, so an answer without one isn't a usable capture
     if not capture or not capture.get("id"):
@@ -416,7 +437,38 @@ def capture_payment(paypal, order):
     return capture
 
 
-def finish_capture(session, order_id, capture, review_state, approval=None):
+@dataclass(frozen=True)
+class ReviewTap:
+    action: ApprovalAction
+    # when the tap reached the server
+    tapped_at: datetime
+    # what the client says it measured, can be None
+    client_decision_ms: int | None
+
+
+def record_tap(session, order_id, tap):
+    # fills in the row opening the link created. the only time decision_ms is ever set
+    query = (
+        select(Approval)
+        .where(Approval.order_id == order_id, Approval.action.is_(None))
+        .order_by(Approval.id.desc())
+    )
+    approval = session.scalars(query).first()
+    if approval is None:
+        # never opened, so no time spent looking: opened_at is the tap itself and decision_ms is 0
+        approval = Approval(order_id=order_id, opened_at=tap.tapped_at)
+        session.add(approval)
+
+    elapsed = tap.tapped_at - as_utc(approval.opened_at)
+    decision_ms = int(elapsed.total_seconds() * 1000)
+
+    approval.action = tap.action
+    approval.decided_at = tap.tapped_at
+    approval.decision_ms = max(0, min(decision_ms, MAX_DECISION_MS))
+    approval.client_decision_ms = tap.client_decision_ms
+
+
+def finish_capture(session, order_id, capture, review_state, tap=None):
     # returns True if the money was taken. a decline leaves review_state as it was
     order = load_order(session, order_id, lock=True)
     order.capture_id = capture.get("id")
@@ -427,8 +479,8 @@ def finish_capture(session, order_id, capture, review_state, approval=None):
         # COMPLETED, or PENDING while PayPal finishes. either way the money is taken
         order.status = OrderStatus.captured
         order.review_state = review_state
-        if approval is not None:
-            session.add(approval)
+        if tap is not None:
+            record_tap(session, order_id, tap)
     else:
         order.status = OrderStatus.failed
     session.commit()
@@ -453,7 +505,7 @@ def auto_decide(session, order_id, paypal):
         return
 
     try:
-        capture = capture_payment(paypal, order)
+        capture = capture_payment(paypal, order, budget_seconds=AUTO_CAPTURE_BUDGET_SECONDS)
     except PAYPAL_FAILURES:
         # no retry in here: the agent is waiting, and a human can approve it now
         logger.exception("Auto-capture failed for order %s, sending to review", order_id)
@@ -488,60 +540,6 @@ def check_and_decide(session, order, paypal, claude):
         logger.exception("Auto-decide failed for order %s, sending to review", order_id)
 
 
-def review_conflict(order, message):
-    return HTTPException(
-        status_code=409,
-        detail={
-            "message": message,
-            "status": order.status.value,
-            "review_state": order.review_state.value if order.review_state else None,
-        },
-    )
-
-
-def payment_failed(action):
-    # nothing changed: if we got this far the order was authorized and waiting for review. these
-    # are known values, not read from the order, because the database may be what just failed.
-    # the debug_id is in the log, the phone only needs to know to try again
-    return HTTPException(
-        status_code=502,
-        detail={
-            "message": "PayPal " + action + " failed, the order is still waiting for review",
-            "status": OrderStatus.authorized.value,
-            "review_state": ReviewState.needs_review.value,
-        },
-    )
-
-
-def save_failed(action, order_id):
-    # PayPal did it but we couldn't record it. retrying is safe, same PayPal-Request-Id
-    return HTTPException(
-        status_code=502,
-        detail={"message": "PayPal " + action + " went through but order "
-                + str(order_id) + " couldn't be updated, try again in a couple of minutes"},
-    )
-
-
-def claim_for_review(session, order_id):
-    order, blocker = claim_order(session, order_id)
-    if blocker is not None:
-        # build it before the rollback, which throws away the values it reads
-        conflict = review_conflict(order, blocker)
-        session.rollback()
-        raise conflict
-    return order
-
-
-def build_approval(order_id, action, tapped_at, decision_ms):
-    return Approval(
-        order_id=order_id,
-        action=action,
-        opened_at=tapped_at - timedelta(milliseconds=decision_ms),
-        decided_at=tapped_at,
-        decision_ms=decision_ms,
-    )
-
-
 def check_and_save(session, order, claude):
     # the order was committed as authorized before this runs, so whatever happens in here the
     # hold is on record and it's waiting for review
@@ -566,7 +564,9 @@ def check_and_save(session, order, claude):
 # ---- endpoints ----
 
 
-@router.post("", response_model=OrderCreated, status_code=201)
+@router.post(
+    "", response_model=OrderCreated, status_code=201, dependencies=[Depends(require_agent)]
+)
 def create_order(body: OrderCreate, session: DbSession, paypal: PayPal, claude: Claude):
     mandate = session.get(Mandate, body.mandate_id)
     if mandate is None:
@@ -613,7 +613,10 @@ def create_order(body: OrderCreate, session: DbSession, paypal: PayPal, claude: 
             # if this sandbox ever returns it un-authorized, authorize it ourselves
             authorization = first_authorization(paypal_order)
             if authorization is None:
-                paypal_order = paypal.authorize_order(order.paypal_order_id)
+                paypal_order = paypal.authorize_order(
+                    order.paypal_order_id,
+                    request_id=authorize_request_id(order.paypal_order_id),
+                )
                 authorization = first_authorization(paypal_order)
             if authorization is None:
                 order.status = OrderStatus.failed
@@ -621,7 +624,8 @@ def create_order(body: OrderCreate, session: DbSession, paypal: PayPal, claude: 
                 apply_authorization(order, authorization)
         else:
             payer_action_url = payer_action_link(paypal_order)
-    except PayPalError as error:
+    except PAYPAL_FAILURES as error:
+        logger.exception("PayPal create order failed for order %s", order.id)
         order.status = OrderStatus.failed
         session.commit()
         raise paypal_error_response("create order", error) from error
@@ -636,17 +640,22 @@ def create_order(body: OrderCreate, session: DbSession, paypal: PayPal, claude: 
     return result
 
 
-@router.post("/{order_id}/authorize", response_model=OrderOut)
+@router.post(
+    "/{order_id}/authorize", response_model=OrderOut, dependencies=[Depends(require_agent)]
+)
 def authorize_order(order_id: int, session: DbSession, paypal: PayPal, claude: Claude):
     # the no-vault path: buyer approved at the payer-action link, now place the hold
     order = load_order(session, order_id, lock=True)
     require_status(order, [OrderStatus.created], "authorize")
 
     try:
-        paypal_order = paypal.authorize_order(order.paypal_order_id)
-    except PayPalError as error:
-        # e.g. 422 ORDER_NOT_APPROVED when the buyer hasn't clicked through yet.
+        paypal_order = paypal.authorize_order(
+            order.paypal_order_id, request_id=authorize_request_id(order.paypal_order_id)
+        )
+    except PAYPAL_FAILURES as error:
+        # e.g. 422 ORDER_NOT_APPROVED when the buyer hasn't clicked through yet, or a timeout.
         # leave the order as created so it can be retried
+        logger.exception("PayPal authorize failed for order %s", order_id)
         session.rollback()
         raise paypal_error_response("authorize", error) from error
 
@@ -662,77 +671,7 @@ def authorize_order(order_id: int, session: DbSession, paypal: PayPal, claude: C
     return order
 
 
-@router.post("/{order_id}/approve", response_model=OrderOut)
-def approve_order(order_id: int, body: ReviewDecision, session: DbSession, paypal: PayPal):
-    tapped_at = utc_now()
-    order = claim_for_review(session, order_id)
-
-    try:
-        capture = capture_payment(paypal, order)
-    except PAYPAL_FAILURES as error:
-        # e.g. 422 AUTHORIZATION_EXPIRED. PayPal's record wins, nothing changes on our side
-        logger.exception("PayPal capture failed for order %s", order_id)
-        release_claim(session, order_id)
-        raise payment_failed(CAPTURE) from error
-
-    approval = build_approval(order_id, ApprovalAction.approve, tapped_at, body.decision_ms)
-    try:
-        captured = finish_capture(session, order_id, capture, ReviewState.approved, approval)
-    except SQLAlchemyError as error:
-        session.rollback()
-        logger.exception(
-            "Order %s was captured at PayPal as %s but saving that failed",
-            order_id, capture.get("id"),
-        )
-        raise save_failed(CAPTURE, order_id) from error
-
-    if not captured:
-        logger.error("PayPal declined the capture of order %s", order_id)
-        raise HTTPException(
-            status_code=502,
-            detail={
-                "message": "PayPal declined the capture",
-                "status": OrderStatus.failed.value,
-                "review_state": ReviewState.needs_review.value,
-            },
-        )
-    return order
-
-
-@router.post("/{order_id}/reject", response_model=OrderOut)
-def reject_order(order_id: int, body: ReviewDecision, session: DbSession, paypal: PayPal):
-    tapped_at = utc_now()
-    order = claim_for_review(session, order_id)
-
-    try:
-        voided = paypal.void_authorization(
-            order.authorization_id, request_id=payment_request_id(order, VOID)
-        )
-    except PAYPAL_FAILURES as error:
-        logger.exception("PayPal void failed for order %s", order_id)
-        release_claim(session, order_id)
-        raise payment_failed(VOID) from error
-
-    try:
-        order = load_order(session, order_id, lock=True)
-        order.status = OrderStatus.voided
-        order.review_state = ReviewState.rejected
-        # the client asks for the full body so this is normally PayPal's own status, but a 204
-        # with no body is also a documented success
-        order.void_result = voided.get("status") if voided else "VOIDED"
-        order.payment_claimed_at = None
-        session.add(
-            build_approval(order_id, ApprovalAction.reject, tapped_at, body.decision_ms)
-        )
-        session.commit()
-    except SQLAlchemyError as error:
-        session.rollback()
-        logger.exception("Order %s was voided at PayPal but saving that failed", order_id)
-        raise save_failed(VOID, order_id) from error
-    return order
-
-
-@router.get("", response_model=list[OrderOut])
+@router.get("", response_model=list[OrderOut], dependencies=[Depends(require_merchant)])
 def list_orders(session: DbSession, limit: int = 50):
     limit = max(1, min(limit, 200))
     # each order's response includes all of these, so load them in one go, not one per row
@@ -749,6 +688,6 @@ def list_orders(session: DbSession, limit: int = 50):
     return session.scalars(query).all()
 
 
-@router.get("/{order_id}", response_model=OrderDetail)
+@router.get("/{order_id}", response_model=OrderDetail, dependencies=[Depends(require_merchant)])
 def get_order(order_id: int, session: DbSession):
     return load_order(session, order_id)
