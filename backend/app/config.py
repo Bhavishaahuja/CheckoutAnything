@@ -1,9 +1,12 @@
 # settings come from env vars (or .env locally). names match .env.example
 
+import logging
 from functools import lru_cache
 
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+logger = logging.getLogger(__name__)
 
 # the one fictional store Leash runs for. not env vars, these never change between deploys
 STORE_NAME = "Fernwood Supply Co"
@@ -41,8 +44,8 @@ class Settings(BaseSettings):
 
     database_url: str = "postgresql+psycopg://postgres:postgres@localhost:5432/leash"
 
-    # deployed frontend, on top of the Vite dev server which is always allowed
-    frontend_origin: str = ""
+    # which sites' browsers may call the API, comma-separated. never a wildcard, see cors_origins
+    frontend_origins: str = "http://localhost:5173"
 
     # a match only captures on its own below this risk score. at or above it, a human decides
     auto_capture_max_risk: int = 30
@@ -57,6 +60,19 @@ class Settings(BaseSettings):
         if url.startswith("postgresql://"):
             url = "postgresql+psycopg://" + url[len("postgresql://"):]
         return url
+
+
+def cors_origins(setting):
+    # browsers send the origin with no trailing slash, so one left in here would never match.
+    # a wildcard gets dropped: a mistyped env var shouldn't open the API to every site
+    origins = []
+    for origin in setting.split(","):
+        origin = origin.strip().rstrip("/")
+        if origin == "*":
+            logger.warning("Ignoring * in FRONTEND_ORIGINS, list each site instead")
+        elif origin:
+            origins.append(origin)
+    return origins
 
 
 @lru_cache

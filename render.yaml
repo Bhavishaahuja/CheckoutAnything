@@ -35,5 +35,7 @@ services:
         sync: false
       - key: DEMO_MERCHANT_PASSWORD
         sync: false
+      - key: FRONTEND_ORIGINS
+        sync: false
       - key: PAYPAL_BASE_URL
         value: https://api-m.sandbox.paypal.com

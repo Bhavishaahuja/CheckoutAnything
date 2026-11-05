@@ -206,6 +206,14 @@ def sent_json(paypal, url_part):
     return None
 
 
+def merchant_view(client, placed):
+    # the agent only gets four fields back. most tests want to look at the whole order, so this
+    # reads it the way the dashboard would
+    order = client.get("/orders/" + str(placed["id"])).json()
+    order["payer_action_url"] = placed.get("payer_action_url")
+    return order
+
+
 def create_vault_order(client, paypal, paypal_order_id="5O190127TN364715T",
                        authorization_id="0AW2184448108334S"):
     paypal.add(
@@ -218,7 +226,7 @@ def create_vault_order(client, paypal, paypal_order_id="5O190127TN364715T",
     body["vault_id"] = VAULT_ID
     response = client.post("/orders", json=body)
     assert response.status_code == 201, response.text
-    return response.json()
+    return merchant_view(client, response.json())
 
 
 def create_unapproved_order(client, paypal, paypal_order_id="8XU44448NV0000000"):
@@ -230,7 +238,7 @@ def create_unapproved_order(client, paypal, paypal_order_id="8XU44448NV0000000")
     )
     response = client.post("/orders", json=ORDER_BODY)
     assert response.status_code == 201, response.text
-    return response.json()
+    return merchant_view(client, response.json())
 
 
 def mock_capture(paypal, authorization_id="0AW2184448108334S", capture_id="2GG279541U471931P"):
@@ -364,8 +372,9 @@ def test_shipping_defaults_to_zero(client, paypal):
     response = client.post("/orders", json=body)
 
     assert response.status_code == 201
-    assert response.json()["shipping_amount"] == "0.00"
-    assert response.json()["total"] == "61.00"
+    order = merchant_view(client, response.json())
+    assert order["shipping_amount"] == "0.00"
+    assert order["total"] == "61.00"
 
 
 def test_vault_order_then_rejected(client, paypal):
@@ -399,7 +408,7 @@ def test_vault_order_falls_back_to_authorize(client, paypal):
     response = client.post("/orders", json=body)
 
     assert response.json()["status"] == "authorized"
-    assert response.json()["authorization_id"] == "0AW2184448108334S"
+    assert merchant_view(client, response.json())["authorization_id"] == "0AW2184448108334S"
 
 
 def test_no_vault_returns_payer_action_link_then_authorizes(client, paypal):
@@ -427,7 +436,7 @@ def test_no_vault_returns_payer_action_link_then_authorizes(client, paypal):
 
     assert authorized.status_code == 200
     assert authorized.json()["status"] == "authorized"
-    assert authorized.json()["authorization_id"] == "7PS21555RT234531W"
+    assert merchant_view(client, authorized.json())["authorization_id"] == "7PS21555RT234531W"
 
 
 # ---- the intent check ----
@@ -492,7 +501,7 @@ def test_hard_rule_failure_saves_without_calling_claude(client, paypal, claude, 
     response = post_vault_order(client, paypal, mandate_id=2)
 
     assert response.status_code == 201
-    check = response.json()["intent_check"]
+    check = merchant_view(client, response.json())["intent_check"]
     assert check["verdict"] == "mismatch"
     assert check["checked_by"] == "rules"
     assert check["risk_score"] == 100
@@ -521,7 +530,7 @@ def test_no_vault_order_is_checked_at_authorize_not_create(client, paypal, claud
     authorized = client.post("/orders/" + str(order["id"]) + "/authorize")
 
     assert authorized.status_code == 200
-    assert authorized.json()["intent_check"]["verdict"] == "unsure"
+    assert merchant_view(client, authorized.json())["intent_check"]["verdict"] == "unsure"
     assert len(claude.requests) == 1
     assert len(saved_decisions(db_sessions)) == 1
 
@@ -565,7 +574,7 @@ def test_denied_authorization_skips_the_check(client, paypal, claude, db_session
 
     assert response.status_code == 201
     assert response.json()["status"] == "failed"
-    assert response.json()["intent_check"] is None
+    assert merchant_view(client, response.json())["intent_check"] is None
     assert claude.requests == []
     assert saved_decisions(db_sessions) == []
 
@@ -1306,7 +1315,6 @@ def test_every_order_response_has_the_same_shape(client, paypal):
         "authorization_expires_at", "created_at", "mandate", "intent_check", "approval",
     }
     assert set(listed) == shared
-    assert set(order) == shared | {"payer_action_url"}
     assert set(detail) == shared | {"decisions", "approvals"}
 
     assert set(listed["mandate"]) == {
@@ -1456,9 +1464,9 @@ def test_every_route_in_the_app_needs_a_key():
         for method in operations:
             assert no_key.request(method, path).status_code == 401, method + " " + route_path
             checked += 1
-    # two for mandates, four for orders, one for review links, one for agent status. if this drops
-    # to 0 the loop above isn't checking anything, so it can't just pass
-    assert checked == 8
+    # two for mandates, four for orders, one for review links, one for agent status, one for the
+    # demo reset. if this drops to 0 the loop above isn't checking anything, so it can't just pass
+    assert checked == 9
 
 
 # ---- session tokens on the real routes ----
@@ -1496,6 +1504,95 @@ def test_agent_key_as_a_bearer_token_gets_nothing(no_key_client):
 
 
 # ---- what the agent can see of an order ----
+
+
+AGENT_FIELDS = {"id", "status", "review_state", "total"}
+
+
+def test_agent_gets_only_four_fields_from_a_vault_order(client, paypal, claude):
+    claude.answer = {
+        "verdict": "mismatch",
+        "risk_score": 90,
+        "reason": "Ordered red, mandate says black",
+        "mismatched_fields": ["color"],
+    }
+    response = post_vault_order(client, paypal)
+
+    assert response.status_code == 201
+    assert set(response.json()) == AGENT_FIELDS
+    assert response.json()["status"] == "authorized"
+    assert response.json()["review_state"] == "needs_review"
+    assert response.json()["total"] == "66.00"
+    assert "Ordered red" not in response.text
+    assert "intent_check" not in response.text
+    assert "Trail runners and socks" not in response.text
+
+
+def test_agent_gets_only_four_fields_from_authorize(client, paypal, claude):
+    claude.answer = {
+        "verdict": "mismatch",
+        "risk_score": 90,
+        "reason": "Ordered red, mandate says black",
+        "mismatched_fields": ["color"],
+    }
+    order = create_unapproved_order(client, paypal)
+    paypal.add(
+        responses.POST,
+        BASE + "/v2/checkout/orders/8XU44448NV0000000/authorize",
+        status=201,
+        json=authorized_paypal_order("8XU44448NV0000000", "7PS21555RT234531W"),
+    )
+
+    response = client.post("/orders/" + str(order["id"]) + "/authorize")
+
+    assert response.status_code == 200
+    assert set(response.json()) == AGENT_FIELDS
+    assert response.json()["review_state"] == "needs_review"
+    assert "Ordered red" not in response.text
+    assert "7PS21555RT234531W" not in response.text
+
+
+def test_agent_gets_four_fields_from_an_auto_captured_order_too(client, paypal, claude):
+    claude.answer = match_answer(risk_score=5)
+    mock_capture(paypal)
+
+    response = post_vault_order(client, paypal)
+
+    assert set(response.json()) == AGENT_FIELDS
+    assert response.json()["status"] == "captured"
+    assert response.json()["review_state"] == "auto_approved"
+    assert "2GG279541U471931P" not in response.text
+
+
+def test_no_vault_order_also_gets_the_link_the_buyer_needs(client, paypal):
+    # the one exception: without it, nobody could ever approve the order at PayPal
+    paypal.add(
+        responses.POST, BASE + "/v2/checkout/orders", status=201,
+        json=payer_action_paypal_order("8XU44448NV0000000"),
+    )
+
+    response = client.post("/orders", json=ORDER_BODY)
+
+    assert response.status_code == 201
+    assert set(response.json()) == AGENT_FIELDS | {"payer_action_url"}
+    assert response.json()["payer_action_url"].endswith("token=8XU44448NV0000000")
+    assert response.json()["status"] == "created"
+    assert response.json()["review_state"] is None
+
+
+def test_merchant_still_sees_what_the_agent_doesnt(client, paypal, claude):
+    claude.answer = {
+        "verdict": "mismatch",
+        "risk_score": 90,
+        "reason": "Ordered red, mandate says black",
+        "mismatched_fields": ["color"],
+    }
+    placed = post_vault_order(client, paypal).json()
+
+    detail = client.get("/orders/" + str(placed["id"])).json()
+
+    assert detail["intent_check"]["reason"] == "Ordered red, mandate says black"
+    assert detail["mandate"]["merchant"] == "Fernwood Supply Co"
 
 
 def test_agent_status_is_exactly_four_fields(client, paypal):
@@ -1626,7 +1723,7 @@ def test_agent_responses_never_contain_a_token(client, paypal, claude, db_sessio
 
 def test_agent_response_shapes_cant_hold_a_token():
     # the same check, on what the API is even able to send back
-    for model in [orders.OrderOut, orders.OrderCreated, orders.AgentOrderStatus]:
+    for model in [orders.OrderOut, orders.OrderPlacedNeedsBuyer, orders.AgentOrderStatus]:
         for name in model.model_fields:
             assert "token" not in name.lower()
 

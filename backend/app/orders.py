@@ -151,7 +151,7 @@ class ApprovalOut(BaseModel):
 
 
 class OrderOut(BaseModel):
-    # every order endpoint returns at least this, see docs/api.md
+    # the merchant's view of an order, see docs/api.md
     model_config = ConfigDict(from_attributes=True)
 
     id: int
@@ -178,8 +178,8 @@ class OrderOut(BaseModel):
 
 
 class AgentOrderStatus(BaseModel):
-    # all the agent gets to see once an order is placed: where it stands. these four fields are
-    # the whole shape, so a token or a reason can't come back here even by accident
+    # all the agent ever gets to see of an order: where it stands. these four fields are the whole
+    # shape, so a token or a reason can't come back here even by accident
     model_config = ConfigDict(from_attributes=True)
 
     id: int
@@ -188,9 +188,10 @@ class AgentOrderStatus(BaseModel):
     total: Decimal
 
 
-class OrderCreated(OrderOut):
-    # only set when there's no vault id: the buyer has to open this and approve
-    payer_action_url: str | None = None
+class OrderPlacedNeedsBuyer(AgentOrderStatus):
+    # no vault id, so the buyer has to open this and approve at PayPal before there's a hold. the
+    # one thing on top of the four fields, since the order can't go anywhere without it
+    payer_action_url: str
 
 
 class OrderDetail(OrderOut):
@@ -577,7 +578,10 @@ def check_and_save(session, order, claude):
 
 
 @router.post(
-    "", response_model=OrderCreated, status_code=201, dependencies=[Depends(require_agent)]
+    "",
+    response_model=OrderPlacedNeedsBuyer | AgentOrderStatus,
+    status_code=201,
+    dependencies=[Depends(require_agent)],
 )
 def create_order(body: OrderCreate, session: DbSession, paypal: PayPal, claude: Claude):
     mandate = session.get(Mandate, body.mandate_id)
@@ -647,13 +651,18 @@ def create_order(body: OrderCreate, session: DbSession, paypal: PayPal, claude: 
     if order.status == OrderStatus.authorized:
         check_and_decide(session, order, paypal, claude)
 
-    result = OrderCreated.model_validate(order)
-    result.payer_action_url = payer_action_url
-    return result
+    # the agent doesn't get the reason or anything else from the check, or it could read why it was
+    # flagged, adjust, and try again
+    placed = AgentOrderStatus.model_validate(order)
+    if payer_action_url:
+        return OrderPlacedNeedsBuyer(**placed.model_dump(), payer_action_url=payer_action_url)
+    return placed
 
 
 @router.post(
-    "/{order_id}/authorize", response_model=OrderOut, dependencies=[Depends(require_agent)]
+    "/{order_id}/authorize",
+    response_model=AgentOrderStatus,
+    dependencies=[Depends(require_agent)],
 )
 def authorize_order(order_id: int, session: DbSession, paypal: PayPal, claude: Claude):
     # the no-vault path: buyer approved at the payer-action link, now place the hold

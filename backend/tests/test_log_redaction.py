@@ -1,5 +1,6 @@
 # Review tokens can't end up in the access log. The last test runs a real uvicorn, since what
-# matters is what the server writes, and the order uvicorn sets up logging in is the risky part
+# matters is what the server writes, and the order uvicorn sets up logging in is the risky part.
+# It's slow, so a plain pytest skips it. Run it with: pytest -m real_server
 
 import logging
 import os
@@ -84,6 +85,7 @@ def free_port():
         return probe.getsockname()[1]
 
 
+@pytest.mark.real_server
 def test_real_uvicorn_never_logs_a_token_and_keeps_access_logs_on(tmp_path):
     port = free_port()
     base = "http://127.0.0.1:" + str(port)

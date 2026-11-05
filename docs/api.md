@@ -19,6 +19,8 @@ A credential only works on its own row. A dashboard session can't place orders, 
 
 `GET /health` and `POST /auth/session` need nothing.
 
+Browsers can only call the API from a site listed in `FRONTEND_ORIGINS`, which defaults to `http://localhost:5173`. `http://127.0.0.1:5173` is a different origin and gets blocked, so open the dev server on `localhost`. The allowed request headers are `Authorization`, `X-API-Key` and `Content-Type`.
+
 **The frontend must never contain an API key or the password.** Anything in the Vite bundle is readable by whoever loads the page, and a test fails if `frontend/` mentions one. The dashboard logs in instead, and the confirm page only has its link.
 
 ### Logging in: `POST /auth/session`
@@ -83,7 +85,7 @@ Review links only work when `status` is `authorized` and `review_state` is `need
 
 ## The order object
 
-`GET /orders` returns a list of these, newest first, and `GET /orders/{id}` returns one. So do the agent's `POST /orders` and `POST /orders/{id}/authorize`. Order fields are at the top level, with `mandate`, `intent_check` and `approval` as named objects.
+`GET /orders` returns a list of these, newest first, and `GET /orders/{id}` returns one. Order fields are at the top level, with `mandate`, `intent_check` and `approval` as named objects.
 
 ```json
 {
@@ -313,9 +315,11 @@ These now return `404`. `captureOrder` and `voidOrder` in `frontend/src/api.ts` 
 
 ## Agent endpoints
 
-### `GET /agent/orders/{id}`
+The agent only ever sees where an order stands. It never gets a token, a reason, or mandate details, so it can't read why it was flagged and adjust.
 
-Where an order stands, and nothing else. This is how the agent finds out what a human decided. It never has a token, a reason, or mandate details.
+### `POST /orders` and `POST /orders/{id}/authorize`
+
+These return the status object after the check and any auto-capture, so they can take several seconds.
 
 ```json
 {
@@ -326,8 +330,18 @@ Where an order stands, and nothing else. This is how the agent finds out what a 
 }
 ```
 
-### `POST /orders` and `POST /orders/{id}/authorize`
-
-These return the order object after the check and any auto-capture, so they can take several seconds. `POST /orders` also has `payer_action_url`, set only when there's no `vault_id` and the buyer has to approve at PayPal.
+`POST /orders` adds `payer_action_url` when there's no `vault_id`, since the buyer has to approve at PayPal before there's a hold.
 
 A network failure talking to PayPal is a `502` with a `message`, and the `paypal_*` fields in `detail` are `null`. After a `502`, `POST /orders/{id}/authorize` can be retried, and `POST /orders` leaves that order as `failed`.
+
+### `GET /agent/orders/{id}`
+
+The same status object. This is how the agent finds out what a human decided.
+
+## Demo endpoint
+
+### `DELETE /demo/seeded`
+
+Merchant only, used by `backend/scripts/seed_demo.py --reset`. Deletes the seeded orders and mandates, which are the ones with a `buyer_label` starting with `seed-demo:`. Success is a `200` with `deleted_orders` and `deleted_mandates`.
+
+It's a `409` with `open_order_ids` in `detail` while any of those orders still has an open hold, so nothing gets forgotten at PayPal. Void those first.
