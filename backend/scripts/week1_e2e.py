@@ -100,12 +100,16 @@ def wait_for_health(base_url):
 
 
 def place_order(base_url, mandate_id, vault_id, items, label):
-    order = call("POST", base_url, "/orders", {
+    placed = call("POST", base_url, "/orders", {
         "mandate_id": mandate_id,
         "vault_id": vault_id,
         "items": items,
         "shipping": "5.00",
     }, AGENT)
+    check(label + " agent response fields", sorted(placed),
+          ["id", "review_state", "status", "total"])
+    # the rest takes the merchant key
+    order = call("GET", base_url, "/orders/" + str(placed["id"]), headers=MERCHANT)
     print("\n" + label + ": order " + str(order["id"]) + ", total $" + order["total"])
     print("  paypal order:", order["paypal_order_id"])
     print("  authorization:", order["authorization_id"])
@@ -114,8 +118,6 @@ def place_order(base_url, mandate_id, vault_id, items, label):
     print("  check:", check_result["checked_by"], check_result["verdict"],
           "risk", check_result["risk_score"], "|", check_result["reason"])
     print("  status:", order["status"], "| review_state:", order["review_state"])
-    # with a vault id there's nobody to click anything
-    check(label + " needs buyer action", order.get("payer_action_url"), None)
     return order
 
 

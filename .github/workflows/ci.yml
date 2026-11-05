@@ -27,6 +27,10 @@ jobs:
       - name: Pytest
         run: pytest
 
+      # a plain pytest skips these because they start a real server
+      - name: Pytest (real server)
+        run: pytest -m real_server
+
   frontend:
     runs-on: ubuntu-latest
     steps:
