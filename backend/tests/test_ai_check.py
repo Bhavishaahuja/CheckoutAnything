@@ -11,13 +11,10 @@ from types import SimpleNamespace
 import anthropic
 import httpx2
 import pytest
-from sqlalchemy import create_engine
-from sqlalchemy.orm import Session
 
 from backend.app.config import CLAUDE_MODEL
-from backend.app.db import Base
-from backend.app.intent.ai_check import build_decision, check_order_intent
-from backend.app.models import CheckedBy, Decision, Mandate, Order, Verdict
+from backend.app.intent.ai_check import check_order_intent
+from backend.app.models import Mandate, Order, Verdict
 from backend.app.prompts import intent as intent_prompt
 from backend.scripts import try_ai_check
 
@@ -470,38 +467,6 @@ def test_first_attempt_timeout_inside_the_budget_keeps_the_general_reason():
 
     assert_failed_closed(result)
     assert len(fake.requests) == 1
-
-
-# ---- saving the result ----
-
-
-@pytest.mark.parametrize(("responses", "verdict", "risk_score"), [
-    ([answer("mismatch", 85, "Ordered red, mandate says black", ["color"])], "mismatch", 85),
-    ([answer("match", 5)], "match", 5),
-    ([answer("unsure", 150, "Can't tell.")], "unsure", 100),
-    # failing closed is a real decision too, the human needs to see why it's in their queue
-    ([anthropic.APITimeoutError(request=FAKE_REQUEST)], "unsure", 50),
-])
-def test_risk_score_is_saved_on_the_decision_row(responses, verdict, risk_score):
-    engine = create_engine("sqlite://")
-    Base.metadata.create_all(engine)
-    mandate = make_mandate()
-    mandate.id = 1
-    order = make_order()
-
-    result = check_order_intent(FakeAnthropic(responses), mandate, order)
-
-    with Session(engine) as session:
-        session.add_all([mandate, order, build_decision(order, result)])
-        session.commit()
-
-    with Session(engine) as session:
-        saved = session.query(Decision).one()
-        assert saved.order_id == 7
-        assert saved.risk_score == risk_score
-        assert saved.verdict == Verdict(verdict)
-        assert saved.reason == result.reason
-        assert saved.checked_by == CheckedBy.claude
 
 
 # ---- the live script stays out of CI ----

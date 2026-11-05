@@ -3,12 +3,14 @@
 import io
 from decimal import Decimal
 
+import pytest
 from alembic import command
 from alembic.autogenerate import compare_metadata
 from alembic.config import Config
 from alembic.migration import MigrationContext
-from sqlalchemy import create_engine, inspect
+from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.dialects import postgresql
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from sqlalchemy.schema import CreateTable
 
@@ -72,6 +74,85 @@ def test_shipping_amount_migration_goes_down_and_back_up(tmp_path):
     for column in inspect(create_engine(url)).get_columns("orders"):
         columns.append(column["name"])
     assert "shipping_amount" in columns
+
+
+def insert_decision(engine, checked_by):
+    with engine.begin() as connection:
+        connection.execute(text(
+            "INSERT INTO decisions (order_id, verdict, reason, checked_by) "
+            "VALUES (1, 'match', 'Looks right.', '" + checked_by + "')"
+        ))
+
+
+def alembic_config_for(url):
+    alembic_config = Config("alembic.ini")
+    alembic_config.set_main_option("sqlalchemy.url", url)
+    return alembic_config
+
+
+def test_checked_by_rename_carries_existing_rows_over(tmp_path):
+    url = "sqlite:///" + str(tmp_path / "test.db")
+    alembic_config = alembic_config_for(url)
+    engine = create_engine(url)
+
+    # a real row from before the rename
+    command.upgrade(alembic_config, "e7a1d4c09b52")
+    insert_decision(engine, "claude")
+
+    command.upgrade(alembic_config, "head")
+    with engine.connect() as connection:
+        assert connection.execute(text("SELECT checked_by FROM decisions")).scalar() == "ai"
+    # the old value is gone and the new one is allowed
+    with pytest.raises(IntegrityError):
+        insert_decision(engine, "claude")
+    insert_decision(engine, "ai")
+
+    command.downgrade(alembic_config, "e7a1d4c09b52")
+    with engine.connect() as connection:
+        values = connection.execute(text("SELECT checked_by FROM decisions")).scalars().all()
+    assert values == ["claude", "claude"]
+    with pytest.raises(IntegrityError):
+        insert_decision(engine, "ai")
+
+
+def test_check_result_columns_survive_the_rename(tmp_path):
+    # SQLite rebuilds the whole table for this migration, nothing else should change
+    url = "sqlite:///" + str(tmp_path / "test.db")
+    command.upgrade(alembic_config_for(url), "head")
+    inspector = inspect(create_engine(url))
+
+    columns = []
+    for column in inspector.get_columns("decisions"):
+        columns.append(column["name"])
+    assert "mismatched_fields" in columns
+    assert "rule_results" in columns
+    assert "latency_ms" in columns
+
+    index_names = []
+    for index in inspector.get_indexes("decisions"):
+        index_names.append(index["name"])
+    assert "ix_decisions_order_id" in index_names
+    assert len(inspector.get_foreign_keys("decisions")) == 1
+
+
+def test_check_result_migration_sql_on_postgres():
+    # batch mode is a table rebuild on SQLite and plain ALTERs on Postgres, so the SQLite tests
+    # above don't exercise what prod runs. offline mode writes out the real statements
+    output = io.StringIO()
+    alembic_config = Config("alembic.ini", output_buffer=output)
+    alembic_config.set_main_option("sqlalchemy.url", "postgresql+psycopg://user:pw@localhost/leash")
+
+    command.upgrade(alembic_config, "e7a1d4c09b52:head", sql=True)
+
+    sql = output.getvalue()
+    assert "ALTER TABLE decisions ADD COLUMN mismatched_fields JSON" in sql
+    assert "ALTER TABLE decisions ADD COLUMN rule_results JSON" in sql
+    assert "ALTER TABLE decisions ADD COLUMN latency_ms INTEGER" in sql
+    assert "ALTER TABLE decisions DROP CONSTRAINT checked_by" in sql
+    assert "UPDATE decisions SET checked_by = 'ai' WHERE checked_by = 'claude'" in sql
+    assert "ADD CONSTRAINT checked_by CHECK (checked_by IN ('rules', 'ai'))" in sql
+    # the constraint has to be gone before the update, or the update fails in prod
+    assert sql.index("DROP CONSTRAINT checked_by") < sql.index("UPDATE decisions")
 
 
 def test_order_flow_round_trip(tmp_path):

@@ -38,7 +38,7 @@ class Verdict(str, enum.Enum):
 
 class CheckedBy(str, enum.Enum):
     rules = "rules"
-    claude = "claude"
+    ai = "ai"
 
 
 class ApprovalAction(str, enum.Enum):
@@ -110,8 +110,19 @@ class Order(Base):
     created_at: Mapped[datetime] = created_at_column()
 
     mandate: Mapped[Mandate] = relationship(back_populates="orders")
-    decisions: Mapped[list["Decision"]] = relationship(back_populates="order")
+    # oldest first. the database doesn't promise any order unless it's asked for one
+    decisions: Mapped[list["Decision"]] = relationship(
+        back_populates="order", order_by="Decision.id"
+    )
     approvals: Mapped[list["Approval"]] = relationship(back_populates="order")
+
+    @property
+    def intent_check(self):
+        # the newest check result, or None if the order hasn't been checked. reads the saved row
+        # so API responses always show what's actually in the database
+        if not self.decisions:
+            return None
+        return self.decisions[-1]
 
 
 class Decision(Base):
@@ -125,6 +136,13 @@ class Decision(Base):
     risk_score: Mapped[int | None] = mapped_column(Integer)
     # the one-line reason the human sees
     reason: Mapped[str] = mapped_column(Text)
+    # what differs: rule names when the rules caught it, otherwise what Claude listed.
+    # these three are null on rows saved before the check was wired in
+    mismatched_fields: Mapped[list | None] = mapped_column(JSON)
+    # every hard rule's result as {rule, passed, reason}, including the ones that passed
+    rule_results: Mapped[list | None] = mapped_column(JSON)
+    # how long the whole check took
+    latency_ms: Mapped[int | None] = mapped_column(Integer)
     checked_by: Mapped[CheckedBy] = mapped_column(string_enum(CheckedBy, "checked_by"))
     created_at: Mapped[datetime] = created_at_column()
 

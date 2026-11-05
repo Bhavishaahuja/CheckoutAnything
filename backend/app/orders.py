@@ -9,7 +9,11 @@
 #   created -> authorized -> captured
 #                         -> voided
 #   any PayPal failure while creating/authorizing -> failed
+#
+# Once an order is authorized the intent check runs and its result is saved to decisions. The
+# order stays authorized either way: acting on the result is the auto-decide step.
 
+import logging
 from datetime import datetime
 from decimal import ROUND_HALF_UP, Decimal
 from functools import lru_cache
@@ -18,12 +22,17 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.orm import Session, selectinload
 
+from backend.app import mandate_parser
 from backend.app.config import STORE_NAME, get_settings
 from backend.app.db import get_session
+from backend.app.intent.check import build_decision, run_intent_check
 from backend.app.models import ApprovalAction, CheckedBy, Mandate, Order, OrderStatus, Verdict
 from backend.app.paypal_client import PayPalError, client_from_settings, first_authorization
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/orders", tags=["orders"])
 
@@ -50,6 +59,27 @@ class OrderCreate(BaseModel):
     vault_id: str | None = Field(default=None, max_length=64)
 
 
+class RuleResultOut(BaseModel):
+    rule: str
+    passed: bool
+    reason: str
+
+
+class DecisionOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    verdict: Verdict
+    risk_score: int | None
+    reason: str
+    # these three are null on decisions saved before the check was wired in
+    mismatched_fields: list[str] | None
+    rule_results: list[RuleResultOut] | None
+    latency_ms: int | None
+    checked_by: CheckedBy
+    created_at: datetime
+
+
 class OrderOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -66,6 +96,8 @@ class OrderOut(BaseModel):
     status: OrderStatus
     authorization_expires_at: datetime | None
     created_at: datetime
+    # the newest check result. null until the order is authorized and checked
+    intent_check: DecisionOut | None
 
 
 class OrderCreated(OrderOut):
@@ -83,17 +115,6 @@ class MandateSummary(BaseModel):
     max_price: Decimal | None
     merchant: str | None
     expires_at: datetime | None
-    created_at: datetime
-
-
-class DecisionOut(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
-    id: int
-    verdict: Verdict
-    risk_score: int | None
-    reason: str
-    checked_by: CheckedBy
     created_at: datetime
 
 
@@ -123,8 +144,16 @@ def get_paypal_client():
     return client_from_settings(get_settings())
 
 
+@lru_cache
+def get_anthropic_client():
+    # shared for the same reason, and so tests can swap in a fake. with no API key this still
+    # builds fine, the failure comes at call time and the check fails closed
+    return mandate_parser.make_client(get_settings().anthropic_api_key)
+
+
 DbSession = Annotated[Session, Depends(get_session)]
 PayPal = Annotated[object, Depends(get_paypal_client)]
+Claude = Annotated[object, Depends(get_anthropic_client)]
 
 
 # ---- helpers ----
@@ -278,24 +307,32 @@ def require_status(order, allowed, action):
     )
 
 
-def run_intent_check(session, order):
-    # ================================================================================
-    # TODO(intent check): this is where Leash checks the order against the mandate.
-    # The money is authorized but not captured at this point. The check will:
-    #   1. compare order.items / order.total with order.mandate.rules (rules first,
-    #      Claude for anything fuzzy) and save a Decision row
-    #   2. clean match -> capture right away
-    #   3. anything off -> leave it authorized and open an Approval for the human
-    # For now every order just stays authorized and waits for a manual capture/void.
-    # ================================================================================
-    return None
+def check_and_save(session, order, claude):
+    # the order was committed as authorized before this runs, so whatever happens in here the
+    # hold is on record. every order still waits for a manual capture/void for now
+    mandate = order.mandate
+
+    # Claude can take up to 20 seconds. ending the transaction hands the connection back to the
+    # pool instead of sitting on one that long. objects stay usable, expire_on_commit is off
+    session.commit()
+
+    result = run_intent_check(mandate, order, client=claude)
+
+    # a failed save can't fail the request: the agent would see an error and may buy again,
+    # placing a second hold. the order just comes back with intent_check null
+    try:
+        session.add(build_decision(order, result))
+        session.commit()
+    except SQLAlchemyError:
+        session.rollback()
+        logger.exception("Couldn't save the intent check for order %s", order.id)
 
 
 # ---- endpoints ----
 
 
 @router.post("", response_model=OrderCreated, status_code=201)
-def create_order(body: OrderCreate, session: DbSession, paypal: PayPal):
+def create_order(body: OrderCreate, session: DbSession, paypal: PayPal, claude: Claude):
     mandate = session.get(Mandate, body.mandate_id)
     if mandate is None:
         raise HTTPException(
@@ -357,7 +394,7 @@ def create_order(body: OrderCreate, session: DbSession, paypal: PayPal):
     session.commit()
 
     if order.status == OrderStatus.authorized:
-        run_intent_check(session, order)
+        check_and_save(session, order, claude)
 
     result = OrderCreated.model_validate(order)
     result.payer_action_url = payer_action_url
@@ -365,7 +402,7 @@ def create_order(body: OrderCreate, session: DbSession, paypal: PayPal):
 
 
 @router.post("/{order_id}/authorize", response_model=OrderOut)
-def authorize_order(order_id: int, session: DbSession, paypal: PayPal):
+def authorize_order(order_id: int, session: DbSession, paypal: PayPal, claude: Claude):
     # the no-vault path: buyer approved at the payer-action link, now place the hold
     order = load_order(session, order_id, lock=True)
     require_status(order, [OrderStatus.created], "authorize")
@@ -386,7 +423,7 @@ def authorize_order(order_id: int, session: DbSession, paypal: PayPal):
     session.commit()
 
     if order.status == OrderStatus.authorized:
-        run_intent_check(session, order)
+        check_and_save(session, order, claude)
     return order
 
 
@@ -431,7 +468,13 @@ def void_order(order_id: int, session: DbSession, paypal: PayPal):
 @router.get("", response_model=list[OrderOut])
 def list_orders(session: DbSession, limit: int = 50):
     limit = max(1, min(limit, 200))
-    query = select(Order).order_by(Order.created_at.desc(), Order.id.desc()).limit(limit)
+    # each order's response includes its check result, so load them in one go, not one per row
+    query = (
+        select(Order)
+        .options(selectinload(Order.decisions))
+        .order_by(Order.created_at.desc(), Order.id.desc())
+        .limit(limit)
+    )
     return session.scalars(query).all()
 
 

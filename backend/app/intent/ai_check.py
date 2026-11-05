@@ -14,7 +14,7 @@ import logging
 import time
 from dataclasses import dataclass, field
 
-from backend.app.models import CheckedBy, Decision, Verdict
+from backend.app.models import Verdict
 from backend.app.prompts import intent as intent_prompt
 
 logger = logging.getLogger(__name__)
@@ -101,18 +101,6 @@ def check_order_intent(client, mandate, order, clock=time.monotonic):
 
 def timed_out_result():
     return AICheckResult(Verdict.unsure, FAILED_RISK_SCORE, TIMED_OUT_REASON, [])
-
-
-def build_decision(order, result):
-    # the row for the decisions table. risk_score goes in as is, since the auto-decide step
-    # reads it later. mismatched_fields has no column yet, so it isn't saved
-    return Decision(
-        order_id=order.id,
-        verdict=result.verdict,
-        risk_score=result.risk_score,
-        reason=result.reason,
-        checked_by=CheckedBy.claude,
-    )
 
 
 def run_check(client, mandate, order, clock, started):
