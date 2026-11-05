@@ -10,6 +10,9 @@ STORE_NAME = "Fernwood Supply Co"
 # what shoppers actually call it. "from Fernwood" shouldn't send a clean order to review
 STORE_ALIASES = ["fernwood", "fernwood supply", "fernwood supply co"]
 
+# every Claude call in the app uses this, so a model bump only happens here
+CLAUDE_MODEL = "claude-sonnet-5-5"
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")

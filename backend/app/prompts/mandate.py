@@ -2,7 +2,9 @@
 # Tune the wording here, then eyeball the results with:
 #   python backend/scripts/try_mandates.py
 
-MODEL = "claude-sonnet-5-5"
+from backend.app.config import CLAUDE_MODEL
+
+MODEL = CLAUDE_MODEL
 
 # extraction is simple work, low effort keeps it fast and cheap.
 # raise to "medium" if the date resolution starts slipping
