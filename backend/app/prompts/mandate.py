@@ -2,7 +2,9 @@
 # Tune the wording here, then eyeball the results with:
 #   python backend/scripts/try_mandates.py
 
-MODEL = "claude-sonnet-5-5"
+from backend.app.config import CLAUDE_MODEL
+
+MODEL = CLAUDE_MODEL
 
 # extraction is simple work, low effort keeps it fast and cheap.
 # raise to "medium" if the date resolution starts slipping
@@ -23,9 +25,12 @@ to null. Never guess a color, size, price, store or date.
 "kitchen", only when the item makes it obvious.
 - quantity: how many units of the item, only if the shopper said ("two packs of batteries" \
 is 2, with item "packs of AA batteries"). null otherwise.
-- max_price: the most they'll pay, in USD, as a number. If they said the limit includes \
-shipping ("all in", "including shipping", "total"), use that number and mention it in notes. \
-If the limit is in another currency, set max_price to null and put the original amount in notes.
+- max_price: the most they'll pay, as a number, in whatever currency they said. Don't convert \
+it ("under 100 euros" is 100). If they said the limit includes shipping ("all in", "including \
+shipping", "total"), use that number and mention it in notes.
+- currency: the ISO 4217 code for the currency they named, in uppercase. "$" and "bucks" are \
+USD, "euros" and "€" are EUR, "£" is GBP, "C$" is CAD. null if they didn't name a currency, \
+like a bare "budget of 100".
 - max_price_inclusive: whether a total exactly equal to max_price is allowed. false when the \
 shopper wants to stay strictly below it ("under $120", "less than $120", "below $120"). true \
 when the number itself is fine ("up to $120", "max $120", "$120 max", "no more than $120", \
@@ -57,7 +62,12 @@ RECORD_MANDATE_TOOL = {
             "quantity": {"type": ["integer", "null"]},
             "max_price": {
                 "type": ["number", "null"],
-                "description": "Most they'll pay in USD, total including shipping if implied.",
+                "description": "Most they'll pay, not converted, total including shipping "
+                "if implied.",
+            },
+            "currency": {
+                "type": ["string", "null"],
+                "description": "ISO 4217 code of the currency they named, like USD or EUR.",
             },
             "max_price_inclusive": {
                 "type": "boolean",
@@ -79,6 +89,7 @@ RECORD_MANDATE_TOOL = {
             "size",
             "quantity",
             "max_price",
+            "currency",
             "max_price_inclusive",
             "merchant",
             "expires_at",

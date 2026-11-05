@@ -7,7 +7,7 @@
 #   python backend/scripts/try_mandates.py --api http://127.0.0.1:8000  goes through POST /mandates
 #
 # Direct mode needs only ANTHROPIC_API_KEY in .env. --api mode needs the server running
-# (uvicorn backend.app.main:app --reload) and a database. Each run is 5 real Claude calls.
+# (uvicorn backend.app.main:app --reload) and a database. Each run is 7 real Claude calls.
 
 import os
 import sys
@@ -30,13 +30,17 @@ SAMPLES = [
     "Order a rain jacket, size M, navy or forest green, from Fernwood Supply Co. Max £60. "
     "Nothing with down in it.",
     "Three pairs of wool hiking socks, up to $30 total.",
+    "A rain jacket under 100 euros from Fernwood.",
 ]
 
 # what max_price_inclusive should come out as for each sample, so a wrong one stands out.
-# "under" -> False, "max" / "nothing over" / "up to" -> True, no USD price -> True
-EXPECTED_INCLUSIVE = [False, True, True, True, True, True]
+# "under" -> False, "max" / "nothing over" / "up to" -> True, no price -> True
+EXPECTED_INCLUSIVE = [False, True, True, True, True, True, False]
 
-COLUMNS = ["item", "category", "color", "size", "quantity", "max_price",
+# same idea for currency. "$", "bucks" -> USD, "£" -> GBP, "euros" -> EUR, no price -> None
+EXPECTED_CURRENCY = ["USD", "USD", "USD", None, "GBP", "USD", "EUR"]
+
+COLUMNS = ["item", "category", "color", "size", "quantity", "max_price", "currency",
            "max_price_inclusive", "merchant", "expires_at", "notes"]
 CELL_WIDTH = 22
 
@@ -121,6 +125,17 @@ def main():
                 + ", got " + str(fields.get("max_price_inclusive"))
             )
     print("max_price_inclusive:", len(results) - mismatches, "of", len(results), "as expected")
+
+    currency_mismatches = 0
+    for number, fields in enumerate(results, start=1):
+        expected = EXPECTED_CURRENCY[number - 1]
+        if fields.get("currency") != expected:
+            currency_mismatches += 1
+            print(
+                str(number) + ". currency: expected " + str(expected)
+                + ", got " + str(fields.get("currency"))
+            )
+    print("currency:", len(results) - currency_mismatches, "of", len(results), "as expected")
 
 
 if __name__ == "__main__":

@@ -14,6 +14,7 @@ from sqlalchemy.pool import StaticPool
 from backend.app import mandate_parser, mandates
 from backend.app.db import Base, get_session
 from backend.app.models import Mandate
+from backend.app.prompts import mandate as mandate_prompt
 
 FERNWOOD_REQUEST = (
     "Get me black trail runners, women's size 9, under $120, from Fernwood Supply Co, "
@@ -52,6 +53,7 @@ ALL_NULL = {
     "size": None,
     "quantity": None,
     "max_price": None,
+    "currency": None,
     # strict mode always sends it, and the prompt says true when there's no price
     "max_price_inclusive": True,
     "merchant": None,
@@ -203,6 +205,84 @@ def test_up_to_price_is_inclusive(db_sessions):
     assert response.json()["max_price_inclusive"] is True
     with db_sessions() as session:
         assert session.get(Mandate, response.json()["id"]).max_price_inclusive is True
+
+
+def test_euro_cap_keeps_the_amount_and_the_currency(db_sessions):
+    # "under 100 euros" stores 100 + EUR, no conversion. this used to come through as a null
+    # max_price with the amount buried in notes, which let the order slip past the rules
+    fields = dict(ALL_NULL)
+    fields["item"] = "rain jacket"
+    fields["max_price"] = 100
+    fields["currency"] = "EUR"
+    fields["max_price_inclusive"] = False
+    client = make_app(db_sessions, FakeAnthropic([tool_call(fields)]))
+
+    response = client.post(
+        "/mandates", json={"buyer_label": "Sam", "request_text": "A rain jacket under 100 euros"}
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["max_price"] == "100.00"
+    assert body["max_price_inclusive"] is False
+    assert body["rules"]["max_price"] == 100
+    assert body["rules"]["currency"] == "EUR"
+
+    with db_sessions() as session:
+        row = session.get(Mandate, body["id"])
+        assert row.max_price == Decimal("100.00")
+        assert row.rules["currency"] == "EUR"
+
+
+def test_dollar_cap_records_usd(db_sessions):
+    fields = dict(ALL_NULL)
+    fields["max_price"] = 120
+    fields["currency"] = "USD"
+    client = make_app(db_sessions, FakeAnthropic([tool_call(fields)]))
+
+    response = client.post(
+        "/mandates", json={"buyer_label": "Sam", "request_text": "trail runners, up to $120"}
+    )
+
+    assert response.json()["max_price"] == "120.00"
+    assert response.json()["rules"]["currency"] == "USD"
+
+
+def test_currency_stays_null_when_not_named(db_sessions):
+    fields = dict(ALL_NULL)
+    fields["max_price"] = 100
+    client = make_app(db_sessions, FakeAnthropic([tool_call(fields)]))
+
+    response = client.post(
+        "/mandates", json={"buyer_label": "Sam", "request_text": "a budget of 100"}
+    )
+
+    assert response.json()["max_price"] == "100.00"
+    assert response.json()["rules"]["currency"] is None
+
+
+def test_currency_is_tidied_up():
+    lowercase = dict(ALL_NULL)
+    lowercase["currency"] = " eur "
+    blank = dict(ALL_NULL)
+    blank["currency"] = "  "
+    missing = dict(ALL_NULL)
+    del missing["currency"]
+
+    assert mandate_parser.clean_fields(lowercase)["currency"] == "EUR"
+    assert mandate_parser.clean_fields(blank)["currency"] is None
+    assert mandate_parser.clean_fields(missing)["currency"] is None
+
+
+def test_currency_is_in_the_tool_schema():
+    # strict mode needs every property listed in required, and it has to accept null
+    schema = mandate_prompt.RECORD_MANDATE_TOOL["input_schema"]
+
+    assert schema["properties"]["currency"]["type"] == ["string", "null"]
+    assert "currency" in schema["required"]
+    assert "max_price" in schema["required"]
+    # the old instruction threw the amount away for non-USD caps
+    assert "set max_price to null" not in mandate_prompt.SYSTEM_PROMPT
 
 
 def test_inclusive_defaults_to_true_when_unclear():

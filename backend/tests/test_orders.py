@@ -3,18 +3,20 @@
 
 import json
 from decimal import Decimal
+from types import SimpleNamespace
 
 import pytest
 import responses
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from backend.app import orders
 from backend.app.db import Base, get_session
-from backend.app.models import Approval, CheckedBy, Decision, Mandate, Verdict
+from backend.app.models import Approval, CheckedBy, Decision, Mandate, Order, Verdict
 from backend.app.paypal_client import PayPalClient
 
 BASE = "https://api-m.sandbox.paypal.com"
@@ -31,7 +33,33 @@ ORDER_BODY = {
 }
 
 
-def authorized_paypal_order(order_id, authorization_id, amount="66.00"):
+class FakeClaude:
+    # stands in for the Anthropic client. without it these tests would really call Claude on any
+    # machine with a key in .env. answers match unless a test says otherwise
+
+    def __init__(self):
+        self.answer = {
+            "verdict": "match",
+            "risk_score": 5,
+            "reason": "Order matches the mandate.",
+            "mismatched_fields": [],
+        }
+        self.error = None
+        self.requests = []
+        self.beta = SimpleNamespace(messages=SimpleNamespace(create=self._create))
+
+    def with_options(self, **options):
+        return self
+
+    def _create(self, **kwargs):
+        self.requests.append(kwargs)
+        if self.error:
+            raise self.error
+        block = SimpleNamespace(type="tool_use", name="record_intent_check", input=self.answer)
+        return SimpleNamespace(stop_reason="tool_use", content=[block])
+
+
+def authorized_paypal_order(order_id, authorization_id, amount="66.00", status="CREATED"):
     # what a vault_id + AUTHORIZE create (or an /authorize call) returns: COMPLETED,
     # with the authorization already inside
     return {
@@ -41,7 +69,7 @@ def authorized_paypal_order(order_id, authorization_id, amount="66.00"):
             "payments": {
                 "authorizations": [{
                     "id": authorization_id,
-                    "status": "CREATED",
+                    "status": status,
                     "amount": {"currency_code": "USD", "value": amount},
                     "expiration_time": "2026-11-20T01:56:55Z",
                 }]
@@ -90,12 +118,26 @@ def db_sessions():
             max_price=Decimal("100.00"),
             merchant="Fernwood Supply Co",
         ))
+        # the wrong-store demo: any order against this one fails the hard rules
+        session.add(Mandate(
+            id=2,
+            buyer_label="Sam",
+            raw_request="Trail runners from Ridgeline Outdoors",
+            rules={},
+            max_price=Decimal("100.00"),
+            merchant="Ridgeline Outdoors",
+        ))
         session.commit()
     return sessions
 
 
 @pytest.fixture
-def client(db_sessions, paypal):
+def claude():
+    return FakeClaude()
+
+
+@pytest.fixture
+def client(db_sessions, paypal, claude):
     app = FastAPI()
     app.include_router(orders.router)
 
@@ -109,6 +151,7 @@ def client(db_sessions, paypal):
     paypal_client = PayPalClient("id", "secret", base_url=BASE)
     app.dependency_overrides[get_session] = test_session
     app.dependency_overrides[orders.get_paypal_client] = lambda: paypal_client
+    app.dependency_overrides[orders.get_anthropic_client] = lambda: claude
     return TestClient(app)
 
 
@@ -178,6 +221,7 @@ def test_vault_order_is_authorized_then_captured(client, paypal):
     assert order["payer_action_url"] is None
     # 42.00 + 2 x 9.50 + 5.00 shipping
     assert order["total"] == "66.00"
+    assert order["shipping_amount"] == "5.00"
 
     # what we sent PayPal: spike 2's vault shape, and amounts that add up
     sent = sent_json(paypal, "/v2/checkout/orders")
@@ -198,6 +242,33 @@ def test_vault_order_is_authorized_then_captured(client, paypal):
     assert captured.status_code == 200
     assert captured.json()["status"] == "captured"
     assert captured.json()["capture_id"] == "2GG279541U471931P"
+
+
+def test_shipping_amount_is_saved_on_the_row(client, paypal, db_sessions):
+    order = create_vault_order(client, paypal)
+
+    with db_sessions() as session:
+        saved = session.get(Order, order["id"])
+        assert saved.shipping_amount == Decimal("5.00")
+        assert saved.total == Decimal("66.00")
+
+
+def test_shipping_defaults_to_zero(client, paypal):
+    paypal.add(
+        responses.POST,
+        BASE + "/v2/checkout/orders",
+        status=201,
+        json=authorized_paypal_order("5O190127TN364715T", "0AW2184448108334S", "61.00"),
+    )
+    body = dict(ORDER_BODY)
+    body["vault_id"] = VAULT_ID
+    del body["shipping"]
+
+    response = client.post("/orders", json=body)
+
+    assert response.status_code == 201
+    assert response.json()["shipping_amount"] == "0.00"
+    assert response.json()["total"] == "61.00"
 
 
 def test_vault_order_then_void(client, paypal):
@@ -259,6 +330,271 @@ def test_no_vault_returns_payer_action_link_then_authorizes(client, paypal):
     assert authorized.status_code == 200
     assert authorized.json()["status"] == "authorized"
     assert authorized.json()["authorization_id"] == "7PS21555RT234531W"
+
+
+# ---- the intent check ----
+
+
+def saved_decisions(db_sessions):
+    with db_sessions() as session:
+        return session.query(Decision).order_by(Decision.id).all()
+
+
+def post_vault_order(client, paypal, mandate_id=1, status="CREATED"):
+    paypal.add(
+        responses.POST,
+        BASE + "/v2/checkout/orders",
+        status=201,
+        json=authorized_paypal_order("5O190127TN364715T", "0AW2184448108334S", status=status),
+    )
+    body = dict(ORDER_BODY)
+    body["vault_id"] = VAULT_ID
+    body["mandate_id"] = mandate_id
+    return client.post("/orders", json=body)
+
+
+def test_authorized_order_is_checked_and_the_response_has_the_result(client, paypal, claude,
+                                                                     db_sessions):
+    claude.answer = {
+        "verdict": "mismatch",
+        "risk_score": 85,
+        "reason": "Ordered red, mandate says black",
+        "mismatched_fields": ["color"],
+    }
+
+    order = create_vault_order(client, paypal)
+
+    check = order["intent_check"]
+    assert check["verdict"] == "mismatch"
+    assert check["risk_score"] == 85
+    assert check["reason"] == "Ordered red, mandate says black"
+    assert check["mismatched_fields"] == ["color"]
+    assert check["checked_by"] == "ai"
+    assert isinstance(check["latency_ms"], int)
+    assert len(check["rule_results"]) == 4
+    assert check["rule_results"][0]["rule"] == "price"
+    assert check["rule_results"][0]["passed"] is True
+    assert check["rule_results"][0]["reason"] == (
+        "Order is $66.00 ($61.00 items + $5.00 shipping), within the $100.00 cap"
+    )
+    assert len(claude.requests) == 1
+
+    # the response is what got saved, not a separate copy of it
+    decisions = saved_decisions(db_sessions)
+    assert len(decisions) == 1
+    assert decisions[0].id == check["id"]
+    assert decisions[0].order_id == order["id"]
+    assert decisions[0].risk_score == 85
+    assert decisions[0].mismatched_fields == ["color"]
+    assert decisions[0].latency_ms == check["latency_ms"]
+    assert decisions[0].rule_results[0]["rule"] == "price"
+
+
+def test_check_doesnt_touch_the_money(client, paypal):
+    # a match is the result most likely to capture by accident, and that's tomorrow's job
+    order = create_vault_order(client, paypal)
+
+    assert order["intent_check"]["verdict"] == "match"
+    assert order["status"] == "authorized"
+    assert order["capture_id"] is None
+    for call in paypal.calls:
+        assert "/capture" not in call.request.url
+        assert "/void" not in call.request.url
+
+
+def test_hard_rule_failure_saves_without_calling_claude(client, paypal, claude, db_sessions):
+    response = post_vault_order(client, paypal, mandate_id=2)
+
+    assert response.status_code == 201
+    check = response.json()["intent_check"]
+    assert check["verdict"] == "mismatch"
+    assert check["checked_by"] == "rules"
+    assert check["risk_score"] == 100
+    assert check["reason"] == "Mandate says Ridgeline Outdoors, order is at Fernwood Supply Co"
+    assert check["mismatched_fields"] == ["merchant"]
+    assert claude.requests == []
+    assert saved_decisions(db_sessions)[0].checked_by == CheckedBy.rules
+    # flagged but not voided, the human hasn't been asked yet
+    assert response.json()["status"] == "authorized"
+
+
+def test_no_vault_order_is_checked_at_authorize_not_create(client, paypal, claude, db_sessions):
+    order = create_unapproved_order(client, paypal)
+
+    # nothing's authorized yet, so nothing to check
+    assert order["intent_check"] is None
+    assert claude.requests == []
+    assert saved_decisions(db_sessions) == []
+
+    paypal.add(
+        responses.POST,
+        BASE + "/v2/checkout/orders/8XU44448NV0000000/authorize",
+        status=201,
+        json=authorized_paypal_order("8XU44448NV0000000", "7PS21555RT234531W"),
+    )
+    authorized = client.post("/orders/" + str(order["id"]) + "/authorize")
+
+    assert authorized.status_code == 200
+    assert authorized.json()["intent_check"]["verdict"] == "match"
+    assert len(claude.requests) == 1
+    assert len(saved_decisions(db_sessions)) == 1
+
+
+def test_failed_authorize_skips_the_check(client, paypal, claude, db_sessions):
+    order = create_unapproved_order(client, paypal)
+    paypal.add(
+        responses.POST,
+        BASE + "/v2/checkout/orders/8XU44448NV0000000/authorize",
+        status=422,
+        json={"name": "UNPROCESSABLE_ENTITY", "details": [{"issue": "ORDER_NOT_APPROVED"}]},
+    )
+
+    response = client.post("/orders/" + str(order["id"]) + "/authorize")
+
+    assert response.status_code == 502
+    assert claude.requests == []
+    assert saved_decisions(db_sessions) == []
+
+
+def test_failed_create_skips_the_check(client, paypal, claude, db_sessions):
+    paypal.add(
+        responses.POST,
+        BASE + "/v2/checkout/orders",
+        status=422,
+        json={"name": "UNPROCESSABLE_ENTITY", "details": [{"issue": "PAYEE_ACCOUNT_RESTRICTED"}]},
+    )
+    body = dict(ORDER_BODY)
+    body["vault_id"] = VAULT_ID
+
+    response = client.post("/orders", json=body)
+
+    assert response.status_code == 502
+    assert claude.requests == []
+    assert saved_decisions(db_sessions) == []
+
+
+def test_denied_authorization_skips_the_check(client, paypal, claude, db_sessions):
+    # PayPal answered fine, but there's no hold on the money
+    response = post_vault_order(client, paypal, status="DENIED")
+
+    assert response.status_code == 201
+    assert response.json()["status"] == "failed"
+    assert response.json()["intent_check"] is None
+    assert claude.requests == []
+    assert saved_decisions(db_sessions) == []
+
+
+def test_claude_being_down_doesnt_fail_the_order(client, paypal, claude, db_sessions):
+    claude.error = RuntimeError("Claude is having a day")
+
+    order = create_vault_order(client, paypal)
+
+    assert order["status"] == "authorized"
+    assert order["intent_check"]["verdict"] == "unsure"
+    assert order["intent_check"]["risk_score"] == 50
+    assert order["intent_check"]["reason"] == "Couldn't verify automatically, please review"
+    assert len(saved_decisions(db_sessions)) == 1
+
+
+def test_failed_save_still_returns_the_authorized_order(client, paypal, db_sessions, monkeypatch):
+    # an error here could make the agent buy again and place a second hold
+    def broken_build(order, result):
+        raise SQLAlchemyError("database went away")
+
+    monkeypatch.setattr(orders, "build_decision", broken_build)
+
+    order = create_vault_order(client, paypal)
+
+    assert order["status"] == "authorized"
+    assert order["authorization_id"] == "0AW2184448108334S"
+    assert order["intent_check"] is None
+    assert saved_decisions(db_sessions) == []
+
+
+def test_no_transaction_is_held_during_the_check(db_sessions, monkeypatch):
+    # Claude can take 20 seconds, and on Postgres an open transaction would keep a connection
+    # out of the pool that whole time, so the check has to run with none open. also proves the
+    # check doesn't lazy-load anything, which would quietly open one again
+    seen = {}
+    real_check = orders.run_intent_check
+
+    def spying_check(mandate, order, client=None):
+        seen["before"] = session.in_transaction()
+        result = real_check(mandate, order, client=client)
+        seen["after"] = session.in_transaction()
+        return result
+
+    monkeypatch.setattr(orders, "run_intent_check", spying_check)
+
+    with db_sessions() as session:
+        order = Order(
+            mandate_id=1,
+            items=[{"name": "Trail runner", "quantity": 1, "unit_price": "42.00"}],
+            total=Decimal("42.00"),
+            shipping_amount=Decimal("0.00"),
+            currency="USD",
+        )
+        session.add(order)
+        session.commit()
+
+        orders.check_and_save(session, order, FakeClaude())
+
+        assert seen == {"before": False, "after": False}
+        assert order.intent_check.verdict == Verdict.match
+
+
+def test_all_order_responses_show_the_check_result(client, paypal):
+    order = create_vault_order(client, paypal)
+    decision_id = order["intent_check"]["id"]
+    order_url = "/orders/" + str(order["id"])
+
+    detail = client.get(order_url).json()
+    assert detail["intent_check"]["id"] == decision_id
+    assert detail["decisions"][0]["id"] == decision_id
+    assert detail["decisions"][0]["mismatched_fields"] == []
+    assert len(detail["decisions"][0]["rule_results"]) == 4
+
+    assert client.get("/orders").json()[0]["intent_check"]["id"] == decision_id
+
+    mock_capture(paypal)
+    assert client.post(order_url + "/capture").json()["intent_check"]["id"] == decision_id
+
+
+def test_intent_check_is_the_newest_decision(client, paypal, db_sessions):
+    order = create_vault_order(client, paypal)
+    with db_sessions() as session:
+        session.add(Decision(
+            order_id=order["id"],
+            verdict=Verdict.unsure,
+            reason="Second look.",
+            checked_by=CheckedBy.ai,
+        ))
+        session.commit()
+
+    detail = client.get("/orders/" + str(order["id"])).json()
+
+    assert detail["intent_check"]["reason"] == "Second look."
+    assert detail["decisions"][-1]["reason"] == "Second look."
+
+
+def test_decision_from_before_the_check_was_wired_in_still_reads(client, paypal, db_sessions):
+    # rows saved earlier have null in the new columns
+    order = create_unapproved_order(client, paypal)
+    with db_sessions() as session:
+        session.add(Decision(
+            order_id=order["id"],
+            verdict=Verdict.match,
+            reason="Old row.",
+            checked_by=CheckedBy.rules,
+        ))
+        session.commit()
+
+    check = client.get("/orders/" + str(order["id"])).json()["intent_check"]
+
+    assert check["reason"] == "Old row."
+    assert check["mismatched_fields"] is None
+    assert check["rule_results"] is None
+    assert check["latency_ms"] is None
 
 
 # ---- illegal transitions ----
@@ -408,8 +744,9 @@ def test_get_order_includes_mandate_decisions_and_approvals(client, paypal, db_s
     detail = client.get("/orders/" + str(order["id"])).json()
 
     assert detail["mandate"]["merchant"] == "Fernwood Supply Co"
-    assert detail["decisions"][0]["verdict"] == "mismatch"
-    assert detail["decisions"][0]["reason"] == "Socks weren't in the mandate."
+    # the first decision is the one the intent check saved when the order was authorized
+    assert detail["decisions"][-1]["verdict"] == "mismatch"
+    assert detail["decisions"][-1]["reason"] == "Socks weren't in the mandate."
     assert detail["approvals"][0]["action"] is None
     assert detail["items"][0]["name"] == "Trail runner"
 

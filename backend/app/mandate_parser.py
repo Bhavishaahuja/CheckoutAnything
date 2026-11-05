@@ -101,6 +101,11 @@ def clean_fields(tool_input):
     if fields["merchant"]:
         fields["merchant"] = fields["merchant"].strip().rstrip(".")
 
+    # "eur" and "EUR" are the same currency. something that isn't a real code stays as it
+    # is on purpose: it won't match the order, so a human gets to look at it
+    if fields["currency"]:
+        fields["currency"] = fields["currency"].strip().upper()
+
     return fields
 
 
