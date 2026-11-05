@@ -83,26 +83,34 @@ This is a hackathon demo in the PayPal sandbox. The security is real but deliber
 
 | Who | Holds | Can do |
 |---|---|---|
-| Shopping agent | `AGENT_API_KEY` | Create mandates, create and authorize orders. Nothing else |
-| Merchant dashboard | `MERCHANT_API_KEY` | Read orders and mandates, create review links |
+| Shopping agent | `AGENT_API_KEY` | Create mandates, create and authorize orders, read an order's status. Nothing else |
+| Merchant dashboard | An 8 hour session token, from logging in with `DEMO_MERCHANT_PASSWORD` | Read orders and mandates, create review links |
+| Merchant scripts | `MERCHANT_API_KEY` | The same as the dashboard |
 | Human reviewing an order | One review link | See that one order, approve or reject it once |
 
 What this protects:
 
 - **An agent can't approve its own order.** It can't read a review link or create one, and approving takes a link.
 - **Review links are single-use and stored hashed.** Only the SHA-256 of a link's token is saved, so a leaked database can't approve anything. A link dies when its PayPal authorization expires.
-- **Attention is measured on the server.** `decision_ms` runs from the first time the link was opened to the tap, so a lying client can't fake attention for the rubber-stamp watch. The client's own number is stored separately and not trusted.
+- **No API key in the browser.** The dashboard logs in with a password and holds a session token, so the merchant key stays on the server.
+- **Review tokens stay out of our logs.** The access log rewrites `/review/<token>` to `/review/[redacted]`.
+- **Attention is measured on the server.** `decision_ms` runs from when the confirm page says it rendered to the tap, on the server's clock. A link preview fetching the page doesn't start it. The client's own number is stored separately and not trusted.
 - **Money can't move twice.** A row lock plus a payment claim stops double taps, and capture and void use a derived `PayPal-Request-Id`.
 - **Missing config fails closed.** An unset API key means a 401, and any failure in the check sends the order to a human.
 
 What it doesn't protect, and what a production version would change:
 
-- **Real merchant login.** A production version would use real merchant accounts with per-user sessions, not one shared key. Anything shipped in a browser bundle is readable by whoever loads the page, so the dashboard should sit behind a login with the key held on a server.
+- **Real merchant login.** A production version would use real merchant accounts with per-user sessions. See Known limits for how far the demo login goes.
 - **Key rotation.** Rotating a key here means changing an environment variable and redeploying.
 - **Who holds a review link.** Anyone with the link can decide that order, so a production version would tie it to the signed-in human.
-- **Tokens in URLs.** A review token is in the path, so it can land in access logs and browser history. A production version would exchange it for a session on first open.
-- **Link previews.** A chat app that previews a link opens it, which starts the attention clock early and can make a quick tap look considered.
-- **Rate limiting.** There is none. A token is 32 random bytes, so guessing isn't practical, but nothing slows down attempts on the API keys.
+- **Tokens in URLs.** A review token is in the path, so it can still land in browser history and in any proxy's own request logs, which our filter can't reach. A production version would exchange it for a session on first open.
+
+## Known limits
+
+- **A create timeout can double an order.** If `POST /orders` times out talking to PayPal, the order is marked `failed`, but PayPal may have placed the hold anyway. An agent that retries creates a second order and a second hold. The fix would be an `Idempotency-Key` header on `POST /orders`.
+- **Session auth is demo-grade.** There's one shared password and no user accounts. Sessions can't be revoked one at a time: they run out after 8 hours, or changing `MERCHANT_API_KEY` ends all of them. The login limit is 10 tries per minute per address, held in memory, so it resets on restart and isn't shared between processes.
+- **The attention clock trusts the page.** The confirm page reports when it rendered. A script holding a link could report that, wait, and then approve, which looks like attention. It can stop a preview bot or a lying number, not a determined link holder.
+- **The agent still sees the reason at order time.** `POST /orders` returns `intent_check`, including why an order was flagged. `GET /agent/orders/{id}` doesn't, but an agent could use that first response to adjust and try again.
 
 ## Sandbox logins
 

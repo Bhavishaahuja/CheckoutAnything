@@ -153,8 +153,8 @@ class Order(Base):
 
     @property
     def approval(self):
-        # the human's review, or None if nobody has opened the link. action stays empty on a
-        # review that's been opened but not decided yet
+        # the human's review, or None if the confirm page hasn't rendered. action stays empty on
+        # a review that's been opened but not decided yet
         if not self.approvals:
             return None
         return self.approvals[-1]
@@ -195,7 +195,7 @@ class Approval(Base):
         string_enum(ApprovalAction, "approval_action")
     )
     decided_by: Mapped[str | None] = mapped_column(String(200))
-    # stamped by the server the first time the review link is opened, and never moved after
+    # stamped by the server the first time the confirm page says it rendered, never moved after
     opened_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     # when the tap reached the server
     decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

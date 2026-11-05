@@ -8,9 +8,10 @@
 #   - the link dies with the PayPal authorization, since there's nothing left to decide after that
 #   - approving or rejecting uses it up, in the same commit as the payment claim
 #
-# Timing is measured here too. Opening the link stamps opened_at once, and decision_ms is the
-# server's own clock from there to the tap. The client's number gets saved next to it but nothing
-# trusts it, so a lying client can't fake attention.
+# Timing is measured here too. POST .../opened stamps opened_at once, and decision_ms is the
+# server's own clock from there to the tap. It's a separate call and not part of GET because chat
+# apps fetch links to build previews, and that would start the clock before anyone had looked. The
+# client's own number gets saved next to it but nothing trusts it.
 
 import hashlib
 import logging
@@ -103,14 +104,11 @@ def hash_token(token):
     return hashlib.sha256(token.encode()).hexdigest()
 
 
-def load_order_by_token(session, token):
-    # locked, because opening and using a link both change the row
-    query = (
-        select(Order)
-        .where(Order.review_token_hash == hash_token(token))
-        .with_for_update()
-        .execution_options(populate_existing=True)
-    )
+def load_order_by_token(session, token, lock=True):
+    # locked unless it's only being read, because opening and using a link both change the row
+    query = select(Order).where(Order.review_token_hash == hash_token(token))
+    if lock:
+        query = query.with_for_update().execution_options(populate_existing=True)
     return session.scalars(query).first()
 
 
@@ -141,12 +139,22 @@ def review_conflict(session, order, message):
     return conflict
 
 
-def load_live_order(session, token):
-    order = load_order_by_token(session, token)
+def load_live_order(session, token, lock=True):
+    order = load_order_by_token(session, token, lock=lock)
     if order is None:
         raise link_error(session, 404, "This review link isn't valid")
     if hold_has_expired(order):
         raise link_error(session, 410, "This review link has expired")
+    return order
+
+
+def load_open_link_order(session, token, lock=True):
+    # for the page and the opened stamp: there's nothing to show once the link is done with
+    order = load_live_order(session, token, lock=lock)
+    if order.review_token_used_at is not None:
+        raise link_error(session, 410, "This review link has already been used")
+    if order.review_state != ReviewState.needs_review:
+        raise link_error(session, 410, "This order isn't waiting for review anymore")
     return order
 
 
@@ -228,22 +236,20 @@ def create_review_link(order_id: int, session: DbSession):
 
 @router.get("/review/{token}", response_model=ReviewView)
 def open_review(token: str, session: DbSession):
-    order = load_live_order(session, token)
+    # read only, so a link preview or a refresh changes nothing
+    return load_open_link_order(session, token, lock=False)
 
-    if order.review_token_used_at is not None:
-        raise link_error(session, 410, "This review link has already been used")
-    if order.review_state != ReviewState.needs_review:
-        raise link_error(session, 410, "This order isn't waiting for review anymore")
 
-    # first open only. the row lock means two opens at once can't both get here, and refreshing
-    # the page can't reset the clock and make a quick tap look considered
+@router.post("/review/{token}/opened", status_code=204)
+def mark_opened(token: str, session: DbSession):
+    # first call only. the row lock means two at once can't both get through, and calling it again
+    # can't reset the clock and make a quick tap look considered
+    order = load_open_link_order(session, token)
+
     query = select(Approval).where(Approval.order_id == order.id).order_by(Approval.id.desc())
     if session.scalars(query).first() is None:
         session.add(Approval(order_id=order.id, opened_at=utc_now()))
-
-    view = ReviewView.model_validate(order)
     session.commit()
-    return view
 
 
 @router.post("/review/{token}/approve", response_model=ReviewView)

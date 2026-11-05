@@ -36,6 +36,8 @@ class Settings(BaseSettings):
     # sent as the X-API-Key header. left empty, that whole side of the API just returns 401
     agent_api_key: str = ""
     merchant_api_key: str = ""
+    # the dashboard's login. left empty, login is off and the dashboard can't get a session
+    demo_merchant_password: str = ""
 
     database_url: str = "postgresql+psycopg://postgres:postgres@localhost:5432/leash"
 

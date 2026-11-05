@@ -58,6 +58,7 @@ from backend.app.paypal_client import PayPalError, client_from_settings, first_a
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/orders", tags=["orders"])
+agent_router = APIRouter(prefix="/agent", tags=["agent"])
 
 CENT = Decimal("0.01")
 CURRENCY = "USD"
@@ -174,6 +175,17 @@ class OrderOut(BaseModel):
     intent_check: DecisionOut | None
     # the human's review. null until the link is opened, action is null until they decide
     approval: ApprovalOut | None
+
+
+class AgentOrderStatus(BaseModel):
+    # all the agent gets to see once an order is placed: where it stands. these four fields are
+    # the whole shape, so a token or a reason can't come back here even by accident
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    status: OrderStatus
+    review_state: ReviewState | None
+    total: Decimal
 
 
 class OrderCreated(OrderOut):
@@ -690,4 +702,11 @@ def list_orders(session: DbSession, limit: int = 50):
 
 @router.get("/{order_id}", response_model=OrderDetail, dependencies=[Depends(require_merchant)])
 def get_order(order_id: int, session: DbSession):
+    return load_order(session, order_id)
+
+
+@agent_router.get(
+    "/orders/{order_id}", response_model=AgentOrderStatus, dependencies=[Depends(require_agent)]
+)
+def get_agent_order_status(order_id: int, session: DbSession):
     return load_order(session, order_id)

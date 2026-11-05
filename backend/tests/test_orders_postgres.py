@@ -250,7 +250,7 @@ def test_opening_at_the_same_moment_stamps_once(app, sessions, order_id, token):
     def open_link(index):
         client = TestClient(app)
         barrier.wait()
-        results[index] = client.get("/review/" + token).status_code
+        results[index] = client.post("/review/" + token + "/opened").status_code
 
     threads = []
     for index in range(TAPS):
@@ -260,14 +260,14 @@ def test_opening_at_the_same_moment_stamps_once(app, sessions, order_id, token):
     for thread in threads:
         thread.join(timeout=60)
 
-    assert results == [200] * TAPS
+    assert results == [204] * TAPS
     with sessions() as session:
         assert session.query(Approval).filter_by(order_id=order_id).count() == 1
 
 
 def test_server_timing_on_real_timestamps(app, sessions, order_id, token):
     client = TestClient(app)
-    assert client.get("/review/" + token).status_code == 200
+    assert client.post("/review/" + token + "/opened").status_code == 204
     time.sleep(0.5)
 
     # lying by a lot

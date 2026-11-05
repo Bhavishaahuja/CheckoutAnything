@@ -5,7 +5,8 @@
 #      approved through a review link if Claude wanted a human to look
 #   3. order B with the saved vault id -> not what it asked for -> needs review -> the merchant
 #      creates a link -> the human opens it and rejects
-#   4. the agent key gets a 401 on everything it shouldn't reach, and reusing a link fails
+#   4. the agent key gets a 401 on everything it shouldn't reach, its status route shows four
+#      fields, the dashboard login works, and reusing a link fails
 #   5. read both back from PayPal: A's authorization CAPTURED and its capture COMPLETED,
 #      B's authorization VOIDED. then send A's capture again with the same PayPal-Request-Id,
 #      which has to return the same capture and not take the money twice
@@ -15,7 +16,8 @@
 #   python backend/scripts/week1_e2e.py https://leash-api.onrender.com    Render
 #
 # Needs spikes/.vault_token.json (run spikes/spike2_vault.py once) and the PayPal keys in
-# your local .env, for the read-back, plus AGENT_API_KEY and MERCHANT_API_KEY matching the API's.
+# your local .env, for the read-back, plus AGENT_API_KEY, MERCHANT_API_KEY and
+# DEMO_MERCHANT_PASSWORD matching the API's.
 # The API side needs its own keys (Render env vars).
 # Money never really moves: it's sandbox, and order B is voided.
 
@@ -145,8 +147,10 @@ def main():
     with open(VAULT_FILE) as f:
         vault_id = json.load(f)["vault_id"]
 
-    if not AGENT["X-API-Key"] or not MERCHANT["X-API-Key"]:
-        print("AGENT_API_KEY and MERCHANT_API_KEY have to be in .env, matching the API's.")
+    if (not AGENT["X-API-Key"] or not MERCHANT["X-API-Key"]
+            or not get_settings().demo_merchant_password):
+        print("AGENT_API_KEY, MERCHANT_API_KEY and DEMO_MERCHANT_PASSWORD have to be in .env, "
+              "matching the API's.")
         sys.exit(1)
 
     wait_for_health(base_url)
@@ -165,6 +169,7 @@ def main():
         print("  Claude wanted a human to look, approving")
         a_link = review_link(base_url, order_a)
         call("GET", base_url, a_link)
+        requests.post(base_url + a_link + "/opened", timeout=120)
         call("POST", base_url, a_link + "/approve", TAP)
         order_a = call("GET", base_url, a_path, headers=MERCHANT)
         check("Order A review_state", order_a["review_state"], "approved")
@@ -187,10 +192,29 @@ def main():
     expect_status("GET", base_url, "/orders", AGENT, 401, "agent reading orders")
     expect_status("GET", base_url, b_path, AGENT, 401, "agent reading an order")
 
+    # all it gets to see is where the order stands
+    status = call("GET", base_url, "/agent/orders/" + str(order_b["id"]), headers=AGENT)
+    check("agent status fields", sorted(status), ["id", "review_state", "status", "total"])
+    check("agent status review_state", status["review_state"], "needs_review")
+
+    print("\nThe dashboard logging in...")
+    expect_status("GET", base_url, "/orders", None, 401, "dashboard before logging in")
+    session = call("POST", base_url, "/auth/session",
+                   {"password": get_settings().demo_merchant_password})
+    dashboard = {"Authorization": "Bearer " + session["session_token"]}
+    print("  session expires:", session["expires_at"])
+    expect_status("GET", base_url, "/orders", dashboard, 200, "dashboard reading orders")
+    expect_status("POST", base_url, "/orders", dashboard, 401, "dashboard placing an order")
+
     print("\nThe human opening their link and rejecting...")
-    b_link = review_link(base_url, order_b)
+    b_path_link = "/orders/" + str(order_b["id"]) + "/review-link"
+    b_link = "/review/" + call("POST", base_url, b_path_link, headers=dashboard)["review_token"]
+    # what a chat app does to build a preview. it can't start the clock
     page = call("GET", base_url, b_link)
     print("  they see:", page["intent_check"]["reason"])
+    time.sleep(1)
+    opened = requests.post(base_url + b_link + "/opened", timeout=120)
+    check("confirm page says it rendered", opened.status_code, 204)
     time.sleep(2)
     call("POST", base_url, b_link + "/reject", TAP)
     order_b = call("GET", base_url, b_path, headers=MERCHANT)
@@ -200,7 +224,7 @@ def main():
     check("Order B client_decision_ms", order_b["approval"]["client_decision_ms"], 4200)
     # the server's clock, not the 4200 the client said
     server_ms = order_b["approval"]["decision_ms"]
-    # at least the 2 seconds waited above, and a slow free-tier Render can add a lot on top
+    # the 2 seconds after opening and not the 1 before it. a slow free-tier Render can add a lot
     check("Order B decision_ms is the server's own", 2000 <= server_ms < 30000, True)
     print("  decision_ms:", server_ms)
 
@@ -238,8 +262,8 @@ def main():
     if problems:
         print("Week 1 e2e FAILED: " + ", ".join(problems))
         sys.exit(1)
-    print("Week 1 e2e passed: mandate, auto-decide, review link, API keys, replay, "
-          "confirmed by PayPal.")
+    print("Week 1 e2e passed: mandate, auto-decide, review link, API keys, dashboard login, "
+          "replay, confirmed by PayPal.")
 
 
 if __name__ == "__main__":

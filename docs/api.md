@@ -6,26 +6,53 @@ Backend source: `backend/app/orders.py` and `backend/app/review.py`.
 
 ## Authentication
 
-There are three kinds of caller. Sending the wrong key, or none, returns `401` with `{"detail": "Missing or wrong API key"}`.
+There are four kinds of caller. Sending the wrong credential, or none, returns `401`.
 
 | Caller | Sends | Can reach |
 |---|---|---|
-| Shopping agent | `X-API-Key: <AGENT_API_KEY>` | `POST /mandates`, `POST /orders`, `POST /orders/{id}/authorize` |
-| Merchant dashboard | `X-API-Key: <MERCHANT_API_KEY>` | `GET /orders`, `GET /orders/{id}`, `GET /mandates/{id}`, `POST /orders/{id}/review-link` |
-| Human on the confirm page | The token in the URL, no key | `GET /review/{token}`, `POST /review/{token}/approve`, `POST /review/{token}/reject` |
+| Shopping agent | `X-API-Key: <AGENT_API_KEY>` | `POST /mandates`, `POST /orders`, `POST /orders/{id}/authorize`, `GET /agent/orders/{id}` |
+| Merchant dashboard | `Authorization: Bearer <session token>` | `GET /orders`, `GET /orders/{id}`, `GET /mandates/{id}`, `POST /orders/{id}/review-link` |
+| Merchant scripts | `X-API-Key: <MERCHANT_API_KEY>` | The same as the dashboard |
+| Human on the confirm page | The token in the URL, nothing else | `GET /review/{token}`, `POST /review/{token}/opened`, `POST /review/{token}/approve`, `POST /review/{token}/reject` |
 
-A key only works on its own row. The merchant key can't place orders, and the agent key can't read them.
+A credential only works on its own row. A dashboard session can't place orders, and the agent key can't read them.
 
-`GET /health` needs nothing.
+`GET /health` and `POST /auth/session` need nothing.
 
-The confirm page must not send the merchant key. The human's phone only has the link.
+**The frontend must never contain an API key or the password.** Anything in the Vite bundle is readable by whoever loads the page, and a test fails if `frontend/` mentions one. The dashboard logs in instead, and the confirm page only has its link.
+
+### Logging in: `POST /auth/session`
+
+The dashboard asks the human for the password and sends it here.
+
+```json
+{ "password": "the demo password" }
+```
+
+Success is a `200`:
+
+```json
+{
+  "session_token": "1793934245.3f9a...",
+  "expires_at": "2026-11-05T23:04:05Z"
+}
+```
+
+Send it as `Authorization: Bearer <session_token>` on merchant routes. Keep it in memory or `sessionStorage`, not `localStorage` and not anywhere in the build. Treat `session_token` as opaque, don't parse it. Don't keep the password.
+
+| Code | When | What to do |
+|---|---|---|
+| `401` on login | Wrong password | Ask again |
+| `401` on a merchant route | The session expired after 8 hours or was ended | Drop the token and show the login |
+| `429` | Over 10 tries a minute from one address, right or wrong. `Retry-After` says how many seconds | Ask them to wait |
 
 ## How a human reviews an order
 
 1. An order lands in `needs_review`.
 2. The dashboard calls `POST /orders/{id}/review-link` and gets a token. This is the only time the token is ever returned, so hold on to it long enough to send it.
 3. The human opens a link to the confirm page, which calls `GET /review/{token}`.
-4. They tap, and the page calls `POST /review/{token}/approve` or `/reject`.
+4. Once the page has rendered, it calls `POST /review/{token}/opened` once. That starts the attention clock.
+5. They tap, and the page calls `POST /review/{token}/approve` or `/reject`.
 
 The confirm page needs to take the token from its URL. The current `/confirm/:orderId` route should become `/confirm/:token`.
 
@@ -127,7 +154,7 @@ Review links only work when `status` is `authorized` and `review_state` is `need
 - **`max_price`** can be in another currency, so don't hardcode `$`. Read `mandate.rules.currency`. If that's `null`, treat it as USD.
 - **`max_price_inclusive`**: `true` means "up to" and `false` means "under".
 - **`intent_check`** is `null` before the order is checked. It's also `null` if saving the result failed, and that order will be in `needs_review` with nothing to explain why, so handle a missing reason.
-- **`approval`** is `null` until a human opens their link. It then exists with `action: null` until they decide. Auto-approved orders never have one.
+- **`approval`** is `null` until the confirm page reports it rendered. It then exists with `action: null` until they decide. Auto-approved orders never have one.
 
 ### `intent_check`
 
@@ -148,9 +175,9 @@ Review links only work when `status` is `authorized` and `review_state` is `need
 | Field | Type | Notes |
 |---|---|---|
 | `action` | `approve`, `reject` or `null` | `null` means opened but not decided yet |
-| `opened_at` | time | Stamped by the server the first time the link was opened. Refreshing doesn't move it |
+| `opened_at` | time | Stamped by the server on the first `POST /review/{token}/opened`. Later calls don't move it |
 | `decided_at` | time or `null` | When the tap reached the server |
-| `decision_ms` | int or `null` | `decided_at` minus `opened_at`, on the server's clock. This is the attention number. `0` means the link was never opened |
+| `decision_ms` | int or `null` | `decided_at` minus `opened_at`, on the server's clock. This is the attention number. `0` means the page never reported it opened |
 | `client_decision_ms` | int or `null` | What the client said it measured. Not trusted, don't show it as the real number |
 | `decided_by` | string or `null` | Always `null` for now, there are no logins |
 
@@ -191,11 +218,11 @@ The mandate, including `rules` and `max_price`.
 
 ## Review endpoints
 
-These take the token in the path and no API key. Any error's `detail` has a `message` that's safe to show the human.
+These take the token in the path and nothing else. Any error's `detail` has a `message` that's safe to show the human.
 
 ### `GET /review/{token}`
 
-What the confirm page shows. The first call starts the attention clock, so only call it once the page is really in front of the human, not to pre-fetch or to build a link preview.
+What the confirm page shows. It's read only and changes nothing, so a link preview or a refresh is harmless.
 
 ```json
 {
@@ -229,6 +256,14 @@ What the confirm page shows. The first call starts the attention clock, so only 
 | `200` | The link is good |
 | `404` | No such link, or a newer one replaced it |
 | `410` | The link expired, was already used, or the order isn't waiting for review anymore |
+
+### `POST /review/{token}/opened`
+
+Starts the attention clock. Call it once, after the page has rendered and the order is really on screen. Don't call it when fetching the data, and don't call it from anywhere a link preview could reach. No body, and success is a `204` with nothing in it.
+
+Only the first call counts, so a refresh calling it again doesn't reset the clock. If it's never called, approving still works and records `decision_ms` as `0`, so don't let a failed call here block the buttons.
+
+It returns the same `404` and `410` as `GET /review/{token}`.
 
 ### `POST /review/{token}/approve` and `POST /review/{token}/reject`
 
@@ -277,6 +312,19 @@ These now return `404`. `captureOrder` and `voidOrder` in `frontend/src/api.ts` 
 - `POST /orders/{id}/reject`
 
 ## Agent endpoints
+
+### `GET /agent/orders/{id}`
+
+Where an order stands, and nothing else. This is how the agent finds out what a human decided. It never has a token, a reason, or mandate details.
+
+```json
+{
+  "id": 42,
+  "status": "authorized",
+  "review_state": "needs_review",
+  "total": "120.00"
+}
+```
 
 ### `POST /orders` and `POST /orders/{id}/authorize`
 
