@@ -13,14 +13,25 @@ from dataclasses import dataclass, field
 from backend.app import mandate_parser
 from backend.app.config import get_settings
 from backend.app.intent.ai_check import FAILED_REASON, FAILED_RISK_SCORE, check_order_intent
-from backend.app.intent.rules import RuleResult, check_hard_rules, hard_rules_verdict
+from backend.app.intent.rules import (
+    RULE_CURRENCY,
+    RULE_EXPIRY,
+    RULE_MERCHANT,
+    RULE_PRICE,
+    RuleResult,
+    check_hard_rules,
+    hard_rules_verdict,
+)
 from backend.app.models import CheckedBy, Decision, Verdict
 
 logger = logging.getLogger(__name__)
 
 # a failed hard rule isn't a judgment call. the order broke something the shopper said exactly
 HARD_RULE_RISK_SCORE = 100
-REASON_SEPARATOR = "; "
+
+# when several rules fail, the merchant sees the most important one first. the wrong store or a
+# dead mandate means the shopper never wanted this at all, a high price might just need a yes
+RULE_PRIORITY = [RULE_MERCHANT, RULE_EXPIRY, RULE_CURRENCY, RULE_PRICE]
 
 
 @dataclass(frozen=True)
@@ -79,22 +90,37 @@ def run_checks(mandate, order, client, now, clock, started):
 
 def rejected_by_rules(rule_results, clock, started):
     failed_rules = []
-    failed_reasons = []
+    reason_by_rule = {}
     for result in rule_results:
         if not result.passed:
             failed_rules.append(result.rule)
-            failed_reasons.append(result.reason)
+            reason_by_rule[result.rule] = result.reason
 
     return IntentCheckResult(
         verdict=Verdict.mismatch,
         risk_score=HARD_RULE_RISK_SCORE,
-        # every failure, so fixing one doesn't reveal another later
-        reason=REASON_SEPARATOR.join(failed_reasons),
+        reason=leading_reason(failed_rules, reason_by_rule),
         mismatched_fields=failed_rules,
         rule_results=rule_results,
         checked_by=CheckedBy.rules,
         latency_ms=elapsed_ms(clock, started),
     )
+
+
+def leading_reason(failed_rules, reason_by_rule):
+    # one line: the top failure plus a count of the rest. rule_results has the full list
+    # a rule someone adds later without a priority still gets reported, just not first
+    leading_rule = failed_rules[0]
+    for rule in RULE_PRIORITY:
+        if rule in reason_by_rule:
+            leading_rule = rule
+            break
+
+    reason = reason_by_rule[leading_rule]
+    others = len(failed_rules) - 1
+    if others > 0:
+        reason += " (+" + str(others) + " more)"
+    return reason
 
 
 def elapsed_ms(clock, started):

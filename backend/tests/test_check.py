@@ -12,7 +12,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from backend.app.db import Base
-from backend.app.intent.check import build_decision, run_intent_check
+from backend.app.intent.check import build_decision, leading_reason, run_intent_check
 from backend.app.models import CheckedBy, Decision, Mandate, Order, Verdict
 
 NOW = datetime(2026, 11, 4, 12, 0, 0, tzinfo=timezone.utc)
@@ -102,20 +102,50 @@ def test_failed_rule_never_calls_claude():
     assert result.mismatched_fields == ["price"]
 
 
-def test_every_failed_rule_is_reported():
+def test_several_failures_lead_with_the_top_one_and_count_the_rest():
     fake = FakeAnthropic()
     mandate = make_mandate(merchant="Ridgeline Outdoors", expires_at=NOW - timedelta(days=1))
 
     result = run_intent_check(mandate, make_order(total="142.00"), client=fake, now=NOW)
 
     assert fake.requests == []
-    assert result.mismatched_fields == ["price", "merchant", "expiry"]
     assert result.reason == (
-        "Order is $142.00, mandate cap is $120.00; "
-        "Mandate says Ridgeline Outdoors, order is at Fernwood Supply Co; "
-        "Mandate expired 2026-11-03 12:00 UTC"
+        "Mandate says Ridgeline Outdoors, order is at Fernwood Supply Co (+2 more)"
     )
-    assert "\n" not in result.reason
+    # the full picture is still in the other fields
+    assert result.mismatched_fields == ["price", "merchant", "expiry"]
+    failed_reasons = []
+    for rule_result in result.rule_results:
+        if not rule_result.passed:
+            failed_reasons.append(rule_result.reason)
+    assert failed_reasons == [
+        "Order is $142.00, mandate cap is $120.00",
+        "Mandate says Ridgeline Outdoors, order is at Fernwood Supply Co",
+        "Mandate expired 2026-11-03 12:00 UTC",
+    ]
+
+
+@pytest.mark.parametrize(("failing", "expected"), [
+    (["price", "merchant"], "merchant reason (+1 more)"),
+    (["price", "expiry"], "expiry reason (+1 more)"),
+    (["price", "currency"], "currency reason (+1 more)"),
+    (["merchant", "expiry"], "merchant reason (+1 more)"),
+    (["currency", "expiry"], "expiry reason (+1 more)"),
+    (["currency", "merchant"], "merchant reason (+1 more)"),
+    (["price", "currency", "expiry", "merchant"], "merchant reason (+3 more)"),
+    (["price"], "price reason"),
+    # a future rule nobody gave a priority to still shows up
+    (["new_rule"], "new_rule reason"),
+    (["new_rule", "price"], "price reason (+1 more)"),
+])
+def test_reason_follows_the_rule_priority(failing, expected):
+    # hand-built because the real rules can't fail in every combination: a currency mismatch
+    # makes the price rule skip, for one
+    reason_by_rule = {}
+    for rule in failing:
+        reason_by_rule[rule] = rule + " reason"
+
+    assert leading_reason(failing, reason_by_rule) == expected
 
 
 def test_rejected_order_includes_all_rule_results():
