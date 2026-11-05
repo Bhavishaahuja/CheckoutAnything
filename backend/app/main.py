@@ -1,8 +1,12 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from backend.app import mandates, orders
+from backend.app import mandates, orders, review, session
 from backend.app.config import get_settings
+from backend.app.log_redaction import install_log_redaction
+
+# before anything can be served, so no request gets logged with its token
+install_log_redaction()
 
 app = FastAPI(title="Leash API")
 
@@ -24,6 +28,9 @@ app.add_middleware(
 # mandates first since orders get checked against them
 app.include_router(mandates.router)
 app.include_router(orders.router)
+app.include_router(orders.agent_router)
+app.include_router(review.router)
+app.include_router(session.router)
 
 
 @app.get("/health")

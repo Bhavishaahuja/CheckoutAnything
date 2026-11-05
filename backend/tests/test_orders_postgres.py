@@ -12,6 +12,7 @@ import os
 import threading
 import time
 import uuid
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 import pytest
@@ -19,10 +20,11 @@ from alembic import command
 from alembic.config import Config
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from keyed_client import KeyedClient
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 
-from backend.app import orders
+from backend.app import orders, review
 from backend.app.db import get_session
 from backend.app.models import Approval, Mandate, Order, OrderStatus, ReviewState
 
@@ -56,7 +58,7 @@ class SlowPayPal:
         self.open_transactions.append(count)
         time.sleep(PAYPAL_SECONDS)
 
-    def capture_authorization(self, authorization_id, request_id=None):
+    def capture_authorization(self, authorization_id, request_id=None, budget_seconds=None):
         with self.lock:
             self.captures.append(request_id)
         self._during_the_call()
@@ -92,6 +94,7 @@ def paypal(engine):
 def app(sessions, paypal):
     application = FastAPI()
     application.include_router(orders.router)
+    application.include_router(review.router)
 
     def test_session():
         session = sessions()
@@ -118,6 +121,7 @@ def order_id(sessions):
             currency="USD",
             status=OrderStatus.authorized,
             review_state=ReviewState.needs_review,
+            authorization_expires_at=datetime.now(timezone.utc) + timedelta(days=29),
         )
         session.add(order)
         session.commit()
@@ -140,6 +144,13 @@ def wide_race_window(monkeypatch):
         return blocker
 
     monkeypatch.setattr(orders, "review_blocker", slow_blocker)
+
+
+@pytest.fixture
+def token(app, order_id):
+    response = KeyedClient(app).post("/orders/" + str(order_id) + "/review-link")
+    assert response.status_code == 201
+    return response.json()["review_token"]
 
 
 def tap_all_at_once(app, paths):
@@ -169,8 +180,8 @@ def status_codes(results):
     return sorted(codes)
 
 
-def test_double_approve_captures_once(app, paypal, sessions, order_id, wide_race_window):
-    path = "/orders/" + str(order_id) + "/approve"
+def test_double_approve_captures_once(app, paypal, sessions, order_id, token, wide_race_window):
+    path = "/review/" + token + "/approve"
 
     results = tap_all_at_once(app, [path] * TAPS)
 
@@ -186,10 +197,10 @@ def test_double_approve_captures_once(app, paypal, sessions, order_id, wide_race
         assert len(order.approvals) == 1
 
 
-def test_losing_taps_get_the_current_states_right_away(app, paypal, order_id, wide_race_window):
+def test_losing_taps_get_the_current_states_right_away(app, token, wide_race_window):
     # they get a 409 while the first tap is still at PayPal. waiting in line behind it would mean
     # each one holding a connection for the whole PayPal call
-    path = "/orders/" + str(order_id) + "/approve"
+    path = "/review/" + token + "/approve"
 
     started = time.monotonic()
     results = tap_all_at_once(app, [path] * TAPS)
@@ -207,8 +218,8 @@ def test_losing_taps_get_the_current_states_right_away(app, paypal, order_id, wi
 
 
 def test_approve_and_reject_at_the_same_moment_only_one_wins(app, paypal, sessions, order_id,
-                                                             wide_race_window):
-    url = "/orders/" + str(order_id)
+                                                             token, wide_race_window):
+    url = "/review/" + token
 
     results = tap_all_at_once(app, [url + "/approve", url + "/reject"])
 
@@ -225,18 +236,48 @@ def test_approve_and_reject_at_the_same_moment_only_one_wins(app, paypal, sessio
             assert order.review_state == ReviewState.rejected
 
 
-def test_no_transaction_is_open_during_the_paypal_call(app, paypal, order_id):
-    tap_all_at_once(app, ["/orders/" + str(order_id) + "/approve"])
+def test_no_transaction_is_open_during_the_paypal_call(app, paypal, token):
+    tap_all_at_once(app, ["/review/" + token + "/approve"])
 
     assert paypal.open_transactions == [0]
 
 
-def test_approval_row_has_real_timestamps(app, sessions, order_id):
-    tap_all_at_once(app, ["/orders/" + str(order_id) + "/approve"])
+def test_opening_at_the_same_moment_stamps_once(app, sessions, order_id, token):
+    # two tabs, or a preview fetch racing the real open. the row lock means one row, one timestamp
+    barrier = threading.Barrier(TAPS)
+    results = [None] * TAPS
 
+    def open_link(index):
+        client = TestClient(app)
+        barrier.wait()
+        results[index] = client.post("/review/" + token + "/opened").status_code
+
+    threads = []
+    for index in range(TAPS):
+        threads.append(threading.Thread(target=open_link, args=(index,)))
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=60)
+
+    assert results == [204] * TAPS
+    with sessions() as session:
+        assert session.query(Approval).filter_by(order_id=order_id).count() == 1
+
+
+def test_server_timing_on_real_timestamps(app, sessions, order_id, token):
+    client = TestClient(app)
+    assert client.post("/review/" + token + "/opened").status_code == 204
+    time.sleep(0.5)
+
+    # lying by a lot
+    response = client.post("/review/" + token + "/approve", json={"decision_ms": 1500000})
+
+    assert response.status_code == 200
     with sessions() as session:
         approval = session.query(Approval).filter_by(order_id=order_id).one()
-        assert approval.decision_ms == 1500
         # timestamptz, so Postgres keeps the zone
         assert approval.decided_at.tzinfo is not None
-        assert (approval.decided_at - approval.opened_at).total_seconds() == 1.5
+        assert approval.opened_at.tzinfo is not None
+        assert 500 <= approval.decision_ms < 1500
+        assert approval.client_decision_ms == 1500000

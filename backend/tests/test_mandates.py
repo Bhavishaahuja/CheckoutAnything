@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from keyed_client import AGENT_HEADERS, MERCHANT_HEADERS, KeyedClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -85,7 +86,32 @@ def make_app(db_sessions, fake_client):
 
     app.dependency_overrides[get_session] = test_session
     app.dependency_overrides[mandates.get_anthropic_client] = lambda: fake_client
-    return TestClient(app)
+    return KeyedClient(app)
+
+
+def plain_client(db_sessions, fake_client):
+    # no key added for it, these tests choose their own
+    return TestClient(make_app(db_sessions, fake_client).app)
+
+
+def test_creating_a_mandate_needs_the_agent_key(db_sessions):
+    fake = FakeAnthropic([])
+    client = plain_client(db_sessions, fake)
+    body = {"buyer_label": "Sam", "request_text": "x"}
+
+    assert client.post("/mandates", json=body).status_code == 401
+    assert client.post("/mandates", json=body, headers=MERCHANT_HEADERS).status_code == 401
+    # Claude costs money, so it can't get as far as that without a key
+    assert fake.requests == []
+
+
+def test_reading_a_mandate_needs_the_merchant_key(db_sessions):
+    client = plain_client(db_sessions, FakeAnthropic([]))
+
+    assert client.get("/mandates/1").status_code == 401
+    assert client.get("/mandates/1", headers=AGENT_HEADERS).status_code == 401
+    # right key, and now it gets as far as looking for one
+    assert client.get("/mandates/1", headers=MERCHANT_HEADERS).status_code == 404
 
 
 def test_tool_output_maps_to_db_row(db_sessions):

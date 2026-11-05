@@ -33,6 +33,12 @@ class Settings(BaseSettings):
 
     anthropic_api_key: str = ""
 
+    # sent as the X-API-Key header. left empty, that whole side of the API just returns 401
+    agent_api_key: str = ""
+    merchant_api_key: str = ""
+    # the dashboard's login. left empty, login is off and the dashboard can't get a session
+    demo_merchant_password: str = ""
+
     database_url: str = "postgresql+psycopg://postgres:postgres@localhost:5432/leash"
 
     # deployed frontend, on top of the Vite dev server which is always allowed

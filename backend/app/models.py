@@ -14,6 +14,7 @@ from sqlalchemy import (
     Numeric,
     String,
     Text,
+    UniqueConstraint,
     func,
     true,
 )
@@ -96,6 +97,8 @@ class Mandate(Base):
 class Order(Base):
     # one agent order and where its PayPal money is at
     __tablename__ = "orders"
+    # named, so the migration can drop it again on any database
+    __table_args__ = (UniqueConstraint("review_token_hash", name="uq_orders_review_token_hash"),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
     mandate_id: Mapped[int] = mapped_column(ForeignKey("mandates.id"), index=True)
@@ -122,6 +125,11 @@ class Order(Base):
     # set while a capture or void is on its way to PayPal, so a second tap can't send another one
     # without holding a row lock for that whole call. see claim_order in orders.py
     payment_claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # SHA-256 of the current review link's token. the token itself is never stored, so a leaked
+    # database can't approve anything. the link dies with authorization_expires_at
+    review_token_hash: Mapped[str | None] = mapped_column(String(64))
+    # when the link was used. set in the same commit as the payment claim
+    review_token_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     # PayPal authorizations last 29 days (spike 2), the human has to decide before this
     authorization_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = created_at_column()
@@ -145,7 +153,8 @@ class Order(Base):
 
     @property
     def approval(self):
-        # the human's decision, or None if nobody has made one
+        # the human's review, or None if the confirm page hasn't rendered. action stays empty on
+        # a review that's been opened but not decided yet
         if not self.approvals:
             return None
         return self.approvals[-1]
@@ -186,12 +195,14 @@ class Approval(Base):
         string_enum(ApprovalAction, "approval_action")
     )
     decided_by: Mapped[str | None] = mapped_column(String(200))
-    # worked out as decided_at minus decision_ms, the server never sees the page open
+    # stamped by the server the first time the confirm page says it rendered, never moved after
     opened_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     # when the tap reached the server
     decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    # measured on the client, page open to tap. it's the number the rubber-stamp watch trusts,
-    # since it leaves out network time
+    # decided_at minus opened_at. the rubber-stamp watch reads this one, because both ends are
+    # the server's own clock and a lying client can't fake attention
     decision_ms: Mapped[int | None] = mapped_column(Integer)
+    # what the client said it measured, kept only to compare against. never trusted
+    client_decision_ms: Mapped[int | None] = mapped_column(Integer)
 
     order: Mapped[Order] = relationship(back_populates="approvals")

@@ -39,7 +39,7 @@ check_setup.py    sanity check that PayPal + Anthropic keys work
 - Natural variable names (`order_total`, not `ot`). Casual inline comments that explain the why.
 - Explicit for-loops over clever one-liners or heavy comprehensions.
 - Never guess PayPal endpoint shapes. Before writing integration code, check developer.paypal.com. The OpenAPI schemas at `developer.paypal.com/api/<api>/<version>/schema.yaml` are the source of truth.
-- Every PayPal POST sends a fresh `PayPal-Request-Id` (`str(uuid.uuid4())`). Capture and void are the exception: theirs is derived (`payment_request_id` in `orders.py`) so a retry can't move money twice.
+- Every PayPal POST sends a fresh `PayPal-Request-Id` (`str(uuid.uuid4())`). Authorize, capture and void are the exception: theirs are derived (`authorize_request_id` and `payment_request_id` in `orders.py`) so a retry can't move money twice.
 - Never commit `.env` or any secret. Config comes from environment variables (see `.env.example`).
 - The demo store is fictional: "Fernwood Supply Co". No real brands anywhere.
 - No em dashes in any docs or UI copy. Use a colon, comma, or period instead.

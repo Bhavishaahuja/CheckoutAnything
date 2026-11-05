@@ -2,7 +2,59 @@
 
 What the frontend can rely on. Field names here are stable. Adding a field isn't a breaking change, so ignore ones you don't recognize. Anything that renames or removes a field gets called out to Shachi first.
 
-Backend source: `backend/app/orders.py`.
+Backend source: `backend/app/orders.py` and `backend/app/review.py`.
+
+## Authentication
+
+There are four kinds of caller. Sending the wrong credential, or none, returns `401`.
+
+| Caller | Sends | Can reach |
+|---|---|---|
+| Shopping agent | `X-API-Key: <AGENT_API_KEY>` | `POST /mandates`, `POST /orders`, `POST /orders/{id}/authorize`, `GET /agent/orders/{id}` |
+| Merchant dashboard | `Authorization: Bearer <session token>` | `GET /orders`, `GET /orders/{id}`, `GET /mandates/{id}`, `POST /orders/{id}/review-link` |
+| Merchant scripts | `X-API-Key: <MERCHANT_API_KEY>` | The same as the dashboard |
+| Human on the confirm page | The token in the URL, nothing else | `GET /review/{token}`, `POST /review/{token}/opened`, `POST /review/{token}/approve`, `POST /review/{token}/reject` |
+
+A credential only works on its own row. A dashboard session can't place orders, and the agent key can't read them.
+
+`GET /health` and `POST /auth/session` need nothing.
+
+**The frontend must never contain an API key or the password.** Anything in the Vite bundle is readable by whoever loads the page, and a test fails if `frontend/` mentions one. The dashboard logs in instead, and the confirm page only has its link.
+
+### Logging in: `POST /auth/session`
+
+The dashboard asks the human for the password and sends it here.
+
+```json
+{ "password": "the demo password" }
+```
+
+Success is a `200`:
+
+```json
+{
+  "session_token": "1793934245.3f9a...",
+  "expires_at": "2026-11-05T23:04:05Z"
+}
+```
+
+Send it as `Authorization: Bearer <session_token>` on merchant routes. Keep it in memory or `sessionStorage`, not `localStorage` and not anywhere in the build. Treat `session_token` as opaque, don't parse it. Don't keep the password.
+
+| Code | When | What to do |
+|---|---|---|
+| `401` on login | Wrong password | Ask again |
+| `401` on a merchant route | The session expired after 8 hours or was ended | Drop the token and show the login |
+| `429` | Over 10 tries a minute from one address, right or wrong. `Retry-After` says how many seconds | Ask them to wait |
+
+## How a human reviews an order
+
+1. An order lands in `needs_review`.
+2. The dashboard calls `POST /orders/{id}/review-link` and gets a token. This is the only time the token is ever returned, so hold on to it long enough to send it.
+3. The human opens a link to the confirm page, which calls `GET /review/{token}`.
+4. Once the page has rendered, it calls `POST /review/{token}/opened` once. That starts the attention clock.
+5. They tap, and the page calls `POST /review/{token}/approve` or `/reject`.
+
+The confirm page needs to take the token from its URL. The current `/confirm/:orderId` route should become `/confirm/:token`.
 
 ## Two states on every order
 
@@ -20,18 +72,18 @@ The combinations you'll see:
 | `status` | `review_state` | Meaning | Show |
 |---|---|---|---|
 | `created` | `null` | Waiting for the buyer to approve at `payer_action_url` | Waiting on buyer |
-| `authorized` | `needs_review` | Money is on hold and a human has to decide | Approve and Reject buttons |
+| `authorized` | `needs_review` | Money is on hold and a human has to decide | A way to get a review link |
 | `captured` | `auto_approved` | Clean match, captured with no human involved | Done |
 | `captured` | `approved` | A human approved, money taken | Done |
 | `voided` | `rejected` | A human rejected, hold released | Done |
 | `failed` | `null` | PayPal wouldn't place the hold | Failed |
-| `failed` | `needs_review` | PayPal declined the capture | Failed. Approve and Reject return 409 |
+| `failed` | `needs_review` | PayPal declined the capture | Failed |
 
-Only show Approve and Reject when `status` is `authorized` and `review_state` is `needs_review`. Any other combination gets a 409.
+Review links only work when `status` is `authorized` and `review_state` is `needs_review`.
 
 ## The order object
 
-`GET /orders` returns a list of these, newest first. `GET /orders/{id}`, `POST /orders`, `POST /orders/{id}/authorize`, `POST /orders/{id}/approve` and `POST /orders/{id}/reject` all return one. Order fields are at the top level, with `mandate`, `intent_check` and `approval` as named objects.
+`GET /orders` returns a list of these, newest first, and `GET /orders/{id}` returns one. So do the agent's `POST /orders` and `POST /orders/{id}/authorize`. Order fields are at the top level, with `mandate`, `intent_check` and `approval` as named objects.
 
 ```json
 {
@@ -102,7 +154,7 @@ Only show Approve and Reject when `status` is `authorized` and `review_state` is
 - **`max_price`** can be in another currency, so don't hardcode `$`. Read `mandate.rules.currency`. If that's `null`, treat it as USD.
 - **`max_price_inclusive`**: `true` means "up to" and `false` means "under".
 - **`intent_check`** is `null` before the order is checked. It's also `null` if saving the result failed, and that order will be in `needs_review` with nothing to explain why, so handle a missing reason.
-- **`approval`** is `null` unless a human decided. Auto-approved orders never have one.
+- **`approval`** is `null` until the confirm page reports it rendered. It then exists with `action: null` until they decide. Auto-approved orders never have one.
 
 ### `intent_check`
 
@@ -122,13 +174,14 @@ Only show Approve and Reject when `status` is `authorized` and `review_state` is
 
 | Field | Type | Notes |
 |---|---|---|
-| `action` | `approve`, `reject` | |
-| `decision_ms` | int | What the client sent: page open to tap |
-| `decided_at` | time | When the tap reached the server |
-| `opened_at` | time | Worked out as `decided_at` minus `decision_ms`, since the server never sees the page open |
+| `action` | `approve`, `reject` or `null` | `null` means opened but not decided yet |
+| `opened_at` | time | Stamped by the server on the first `POST /review/{token}/opened`. Later calls don't move it |
+| `decided_at` | time or `null` | When the tap reached the server |
+| `decision_ms` | int or `null` | `decided_at` minus `opened_at`, on the server's clock. This is the attention number. `0` means the page never reported it opened |
+| `client_decision_ms` | int or `null` | What the client said it measured. Not trusted, don't show it as the real number |
 | `decided_by` | string or `null` | Always `null` for now, there are no logins |
 
-## Endpoints
+## Merchant endpoints
 
 ### `GET /orders?limit=50`
 
@@ -142,24 +195,93 @@ The order object, plus the full history. `intent_check` and `approval` are the n
 { "decisions": [ ], "approvals": [ ] }
 ```
 
-### `POST /orders/{id}/approve` and `POST /orders/{id}/reject`
+### `POST /orders/{id}/review-link`
 
-Approve captures the money and reject releases the hold. Both take the same body, and `decision_ms` is required: milliseconds from the page opening to the tap, measured on the client. It must be a whole number from 0 to 2147483647.
+Creates a review link and returns it. No body. Success is a `201`:
+
+```json
+{
+  "review_token": "kL0x...43 characters...",
+  "expires_at": "2026-12-03T01:56:55Z"
+}
+```
+
+This response is the only place the token ever appears. It isn't stored, so it can't be read back from `GET /orders`.
+
+Calling this again makes a new token and kills the old one. That's how to recover a lost link, and also how to recover after a `502` that says to ask for a new link. Don't call it on every page load, or a link already sent to someone stops working.
+
+`409` if the order isn't waiting for review, a payment is in progress, or the PayPal hold has expired. `404` if there's no such order.
+
+### `GET /mandates/{id}`
+
+The mandate, including `rules` and `max_price`.
+
+## Review endpoints
+
+These take the token in the path and nothing else. Any error's `detail` has a `message` that's safe to show the human.
+
+### `GET /review/{token}`
+
+What the confirm page shows. It's read only and changes nothing, so a link preview or a refresh is harmless.
+
+```json
+{
+  "id": 42,
+  "items": [
+    { "name": "Trail runner", "color": "red", "size": "women's 9", "quantity": 1, "unit_price": "110.00" }
+  ],
+  "total": "120.00",
+  "shipping_amount": "10.00",
+  "currency": "USD",
+  "status": "authorized",
+  "review_state": "needs_review",
+  "authorization_expires_at": "2026-12-03T01:56:55Z",
+  "mandate": {
+    "buyer_label": "Sam",
+    "raw_request": "Black trail runners, women's size 9, up to $120, from Fernwood"
+  },
+  "intent_check": {
+    "verdict": "mismatch",
+    "risk_score": 90,
+    "reason": "Ordered red, mandate says black",
+    "mismatched_fields": ["color"]
+  }
+}
+```
+
+`intent_check` can be `null`, so handle a missing reason. `authorization_expires_at` is also when the link stops working.
+
+| Code | When |
+|---|---|
+| `200` | The link is good |
+| `404` | No such link, or a newer one replaced it |
+| `410` | The link expired, was already used, or the order isn't waiting for review anymore |
+
+### `POST /review/{token}/opened`
+
+Starts the attention clock. Call it once, after the page has rendered and the order is really on screen. Don't call it when fetching the data, and don't call it from anywhere a link preview could reach. No body, and success is a `204` with nothing in it.
+
+Only the first call counts, so a refresh calling it again doesn't reset the clock. If it's never called, approving still works and records `decision_ms` as `0`, so don't let a failed call here block the buttons.
+
+It returns the same `404` and `410` as `GET /review/{token}`.
+
+### `POST /review/{token}/approve` and `POST /review/{token}/reject`
+
+Approve captures the money and reject releases the hold. The body is optional. If you send `decision_ms` it's saved as `client_decision_ms`, and has to be a whole number from 0 to 2147483647.
 
 ```json
 { "decision_ms": 4200 }
 ```
 
-Success is a `200` with the updated order object.
-
-Errors are all under `detail`, and `message` is safe to show the human:
+Success is a `200` with the same shape as `GET /review/{token}`, showing the new `status` and `review_state`.
 
 | Code | When | What to do |
 |---|---|---|
-| `404` | No such order | |
-| `409` | Not waiting for review, or a payment is already in progress | Refresh the order and show its current state |
-| `422` | `decision_ms` is missing or invalid | A frontend bug |
-| `502` | PayPal failed. The order is unchanged | Offer to try again, it's safe |
+| `404` | No such link, or a newer one replaced it | Say the link isn't valid |
+| `409` | Already used, not waiting for review, or a payment is in progress | Show the current state from `detail` |
+| `410` | The link expired | Say it expired |
+| `422` | `decision_ms` is invalid | A frontend bug |
+| `502` | PayPal failed. The order is unchanged | Offer to try again with the same link, it's safe |
 
 The `409` and most `502` bodies carry the current states:
 
@@ -176,14 +298,36 @@ The `409` and most `502` bodies carry the current states:
 Two `502` cases are different:
 
 - **PayPal declined the capture:** `status` comes back as `failed`, and trying again gets a `409`.
-- **PayPal succeeded but saving failed:** only `message` is present. Trying again is safe, but it returns a `409` for up to 2 minutes first.
+- **PayPal succeeded but saving failed:** only `message` is present. The link is used up, so the merchant has to create a new one after a couple of minutes. Going again with it is safe and won't charge twice.
 
 Double taps are safe. Only one goes through, and the others get a `409`. Still disable the button while a request is in flight.
 
-### Removed: `POST /orders/{id}/capture` and `POST /orders/{id}/void`
+## Removed routes
 
-These now return `404`. Use approve and reject. `captureOrder` and `voidOrder` in `frontend/src/api.ts` should be replaced.
+These now return `404`. `captureOrder` and `voidOrder` in `frontend/src/api.ts` should be replaced with calls to the review endpoints.
 
-### For the agent: `POST /orders`, `POST /orders/{id}/authorize`
+- `POST /orders/{id}/capture`
+- `POST /orders/{id}/void`
+- `POST /orders/{id}/approve`
+- `POST /orders/{id}/reject`
+
+## Agent endpoints
+
+### `GET /agent/orders/{id}`
+
+Where an order stands, and nothing else. This is how the agent finds out what a human decided. It never has a token, a reason, or mandate details.
+
+```json
+{
+  "id": 42,
+  "status": "authorized",
+  "review_state": "needs_review",
+  "total": "120.00"
+}
+```
+
+### `POST /orders` and `POST /orders/{id}/authorize`
 
 These return the order object after the check and any auto-capture, so they can take several seconds. `POST /orders` also has `payer_action_url`, set only when there's no `vault_id` and the buyer has to approve at PayPal.
+
+A network failure talking to PayPal is a `502` with a `message`, and the `paypal_*` fields in `detail` are `null`. After a `502`, `POST /orders/{id}/authorize` can be retried, and `POST /orders` leaves that order as `failed`.
