@@ -5,6 +5,11 @@ from functools import lru_cache
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+# the one fictional store Leash runs for. not env vars, these never change between deploys
+STORE_NAME = "Fernwood Supply Co"
+# what shoppers actually call it. "from Fernwood" shouldn't send a clean order to review
+STORE_ALIASES = ["fernwood", "fernwood supply", "fernwood supply co"]
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")

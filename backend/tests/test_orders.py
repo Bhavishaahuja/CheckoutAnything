@@ -14,7 +14,7 @@ from sqlalchemy.pool import StaticPool
 
 from backend.app import orders
 from backend.app.db import Base, get_session
-from backend.app.models import Approval, CheckedBy, Decision, Mandate, Verdict
+from backend.app.models import Approval, CheckedBy, Decision, Mandate, Order, Verdict
 from backend.app.paypal_client import PayPalClient
 
 BASE = "https://api-m.sandbox.paypal.com"
@@ -178,6 +178,7 @@ def test_vault_order_is_authorized_then_captured(client, paypal):
     assert order["payer_action_url"] is None
     # 42.00 + 2 x 9.50 + 5.00 shipping
     assert order["total"] == "66.00"
+    assert order["shipping_amount"] == "5.00"
 
     # what we sent PayPal: spike 2's vault shape, and amounts that add up
     sent = sent_json(paypal, "/v2/checkout/orders")
@@ -198,6 +199,33 @@ def test_vault_order_is_authorized_then_captured(client, paypal):
     assert captured.status_code == 200
     assert captured.json()["status"] == "captured"
     assert captured.json()["capture_id"] == "2GG279541U471931P"
+
+
+def test_shipping_amount_is_saved_on_the_row(client, paypal, db_sessions):
+    order = create_vault_order(client, paypal)
+
+    with db_sessions() as session:
+        saved = session.get(Order, order["id"])
+        assert saved.shipping_amount == Decimal("5.00")
+        assert saved.total == Decimal("66.00")
+
+
+def test_shipping_defaults_to_zero(client, paypal):
+    paypal.add(
+        responses.POST,
+        BASE + "/v2/checkout/orders",
+        status=201,
+        json=authorized_paypal_order("5O190127TN364715T", "0AW2184448108334S", "61.00"),
+    )
+    body = dict(ORDER_BODY)
+    body["vault_id"] = VAULT_ID
+    del body["shipping"]
+
+    response = client.post("/orders", json=body)
+
+    assert response.status_code == 201
+    assert response.json()["shipping_amount"] == "0.00"
+    assert response.json()["total"] == "61.00"
 
 
 def test_vault_order_then_void(client, paypal):

@@ -98,6 +98,9 @@ class Order(Base):
     vault_id: Mapped[str | None] = mapped_column(String(64))
     items: Mapped[list] = mapped_column(JSON)
     total: Mapped[Decimal] = mapped_column(Numeric(10, 2))
+    # the part of total that's shipping. null on orders saved before this column existed,
+    # we don't know their split and 0 would be a made-up number
+    shipping_amount: Mapped[Decimal | None] = mapped_column(Numeric(10, 2))
     currency: Mapped[str] = mapped_column(String(3), default="USD")
     status: Mapped[OrderStatus] = mapped_column(
         string_enum(OrderStatus, "order_status"), default=OrderStatus.created

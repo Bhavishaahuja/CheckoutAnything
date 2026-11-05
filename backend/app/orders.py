@@ -20,7 +20,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from backend.app.config import get_settings
+from backend.app.config import STORE_NAME, get_settings
 from backend.app.db import get_session
 from backend.app.models import ApprovalAction, CheckedBy, Mandate, Order, OrderStatus, Verdict
 from backend.app.paypal_client import PayPalError, client_from_settings, first_authorization
@@ -29,7 +29,6 @@ router = APIRouter(prefix="/orders", tags=["orders"])
 
 CENT = Decimal("0.01")
 CURRENCY = "USD"
-STORE_NAME = "Fernwood Supply Co"
 
 
 # ---- request / response shapes ----
@@ -62,6 +61,7 @@ class OrderOut(BaseModel):
     vault_id: str | None
     items: list
     total: Decimal
+    shipping_amount: Decimal | None
     currency: str
     status: OrderStatus
     authorization_expires_at: datetime | None
@@ -317,6 +317,8 @@ def create_order(body: OrderCreate, session: DbSession, paypal: PayPal):
         mandate_id=mandate.id,
         items=items_json,
         total=Decimal("0"),
+        # quantized so a defaulted "0" still reads back as 0.00
+        shipping_amount=body.shipping.quantize(CENT),
         currency=CURRENCY,
         vault_id=body.vault_id,
         status=OrderStatus.created,

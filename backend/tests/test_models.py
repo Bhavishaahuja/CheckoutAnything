@@ -1,13 +1,16 @@
 # models + the Alembic migration, on a throwaway SQLite file so CI doesn't need Postgres
 
+import io
 from decimal import Decimal
 
 from alembic import command
 from alembic.autogenerate import compare_metadata
 from alembic.config import Config
 from alembic.migration import MigrationContext
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, inspect
+from sqlalchemy.dialects import postgresql
 from sqlalchemy.orm import Session
+from sqlalchemy.schema import CreateTable
 
 from backend.app import models
 from backend.app.db import Base
@@ -27,6 +30,48 @@ def test_migration_matches_models(tmp_path):
     with engine.connect() as connection:
         differences = compare_metadata(MigrationContext.configure(connection), Base.metadata)
     assert differences == []
+
+
+def test_expiry_columns_are_timestamptz_in_the_models():
+    mandate_ddl = str(CreateTable(models.Mandate.__table__).compile(dialect=postgresql.dialect()))
+    order_ddl = str(CreateTable(models.Order.__table__).compile(dialect=postgresql.dialect()))
+
+    assert "expires_at TIMESTAMP WITH TIME ZONE" in mandate_ddl
+    assert "authorization_expires_at TIMESTAMP WITH TIME ZONE" in order_ddl
+
+
+def test_migrations_create_timestamptz_on_postgres():
+    # offline mode writes out the real Postgres SQL without needing a server. this is the
+    # path prod takes, models could say one thing and the migrations another
+    output = io.StringIO()
+    alembic_config = Config("alembic.ini", output_buffer=output)
+    alembic_config.set_main_option("sqlalchemy.url", "postgresql+psycopg://user:pw@localhost/leash")
+
+    command.upgrade(alembic_config, "head", sql=True)
+
+    sql = output.getvalue()
+    assert "expires_at TIMESTAMP WITH TIME ZONE" in sql
+    assert "authorization_expires_at TIMESTAMP WITH TIME ZONE" in sql
+    assert "ADD COLUMN shipping_amount NUMERIC(10, 2)" in sql
+
+
+def test_shipping_amount_migration_goes_down_and_back_up(tmp_path):
+    url = "sqlite:///" + str(tmp_path / "test.db")
+    alembic_config = Config("alembic.ini")
+    alembic_config.set_main_option("sqlalchemy.url", url)
+    command.upgrade(alembic_config, "head")
+
+    command.downgrade(alembic_config, "b32974d76993")
+    columns = []
+    for column in inspect(create_engine(url)).get_columns("orders"):
+        columns.append(column["name"])
+    assert "shipping_amount" not in columns
+
+    command.upgrade(alembic_config, "head")
+    columns = []
+    for column in inspect(create_engine(url)).get_columns("orders"):
+        columns.append(column["name"])
+    assert "shipping_amount" in columns
 
 
 def test_order_flow_round_trip(tmp_path):
