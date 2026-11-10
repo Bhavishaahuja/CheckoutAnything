@@ -429,6 +429,47 @@ def refresh_check_orders(session, check, orders):
     session.commit()
 
 
+# review states where Check stopped the money and waited on a human
+HELD_REVIEW_STATES = ("needs_review", "approved", "rejected")
+# verdicts that would have held it, for a row that never got a review_state back
+HELD_VERDICTS = ("mismatch", "unsure")
+
+
+def was_held(order):
+    if order.review_state is not None:
+        return order.review_state in HELD_REVIEW_STATES
+    return order.check_verdict in HELD_VERDICTS
+
+
+def held_rates(orders):
+    # per created_by: how many of its orders went through Check and how many Check held.
+    # only orders Check actually saw count, and a fix's replacement isn't a new purchase
+    counts = {}
+    order_seen = []
+    for order in orders:
+        if order.check_order_id is None or order.check_replaces_id is not None:
+            continue
+        if order.created_by not in counts:
+            counts[order.created_by] = {"total": 0, "held": 0}
+            order_seen.append(order.created_by)
+        counts[order.created_by]["total"] += 1
+        if was_held(order):
+            counts[order.created_by]["held"] += 1
+
+    rates = []
+    for created_by in order_seen:
+        total = counts[created_by]["total"]
+        held = counts[created_by]["held"]
+        rates.append({
+            "created_by": created_by,
+            "total": total,
+            "held": held,
+            # whole percent, total is never 0 here since a row only exists once it has one
+            "held_pct": round(held * 100 / total),
+        })
+    return rates
+
+
 def order_to_dict(order, store_name=None):
     return {
         "id": order.id,

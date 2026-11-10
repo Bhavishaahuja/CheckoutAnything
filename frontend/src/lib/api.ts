@@ -4,9 +4,11 @@
 import { mockApi } from "@/lib/mock"
 import {
   EVENT_TYPES,
+  type AgentHeldRate,
   type AgentReply,
   type AppConfig,
   type ChatMessage,
+  type CheckStats,
   type ConnectResponse,
   type Dispute,
   type DisputeEvidence,
@@ -118,6 +120,10 @@ export interface Api {
   // fails with status 401 when there is no login or it has run out
   reviewLink(orderId: number): Promise<ReviewLink>
   listDisputes(): Promise<Dispute[]>
+  // Check's rubber-stamp watch. 503 when Check or its merchant key isn't set
+  checkStats(): Promise<CheckStats>
+  // per agent: how many of its orders went through Check, and how many Check held
+  agentHeldRates(): Promise<AgentHeldRate[]>
   syncDisputes(): Promise<DisputeSync>
   disputeEvidence(disputeId: number): Promise<DisputeEvidence>
   redraftDispute(disputeId: number): Promise<DisputeEvidence>
@@ -233,6 +239,10 @@ const realApi: Api = {
   },
 
   listDisputes: async () => (await request<{ disputes: Dispute[] }>("/disputes")).disputes,
+
+  checkStats: () => request<CheckStats>("/check/stats"),
+
+  agentHeldRates: async () => (await request<{ agents: AgentHeldRate[] }>("/orders/agent-stats")).agents,
 
   syncDisputes: () => request<DisputeSync>("/disputes/sync", { method: "POST" }),
 

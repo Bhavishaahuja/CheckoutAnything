@@ -13,6 +13,8 @@
 #   POST /stores/{id}/orders    buy (price computed server-side)
 #   POST /agent/chat            demo shopping agent
 #   GET  /orders                all orders
+#   GET  /orders/agent-stats    per agent: orders through Check and how many it held
+#   GET  /check/stats           is Check's rubber-stamp watch on (merchant only, from Check)
 #   POST /auth/session          the merchant's login, passed through to Check
 #   POST /orders/{id}/review-link   link to the confirm page for an order on hold (Check).
 #                                   needs the login
@@ -34,21 +36,24 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from backend.app import check_client, connect, models, review, shop
-from backend.app.agent import ShoppingAgent
+from backend.app.agent import BUYER_LABEL, ShoppingAgent
 from backend.app.check_client import CheckError
 from backend.app.config import DEMO_STORE_SLUGS, allowed_fetch_hosts, cors_origins, get_settings
 from backend.app.db import create_tables, get_session, new_session
 from backend.app.demo import load_fixture
 from backend.app.events import bus, sse_format
 from backend.app.fetcher import FetchError, check_url, fetch_page
-from backend.app.models import Store, StoreSpecRow
-from backend.app.orders import OrderError
+from backend.app.models import Order, Store, StoreSpecRow
+from backend.app.orders import OrderError, held_rates
 from backend.app.paypal_client import client_from_settings
 from backend.app.verifier import describe_ai_error
 
 logger = logging.getLogger(__name__)
 
 DbSession = Annotated[Session, Depends(get_session)]
+
+# what the strip above the orders grid calls each kind of order
+AGENT_LABELS = {"agent": BUYER_LABEL, "manual": "Manual orders"}
 
 
 # ---- request shapes ----
@@ -495,6 +500,32 @@ def create_app(settings=None, paypal=None, ai_factory=None, fetch=None, agent_cl
             "url": settings.check_frontend_url + "/confirm/" + link["review_token"],
             "expires_at": link.get("expires_at"),
         }
+
+    @app.get("/check/stats")
+    def check_stats():
+        # just the rubber-stamp bits of Check's /stats, for the strip above the orders grid.
+        # merchant only, like Check keeps it, so the agent can't time its orders around it
+        client = merchant_check()
+        try:
+            stats = client.get_stats()
+        except CheckError as error:
+            raise check_failure(error) from error
+        return {
+            "rubber_stamp_active": bool(stats.get("rubber_stamp_active")),
+            "fast_streak": stats.get("fast_streak") or 0,
+            "fast_threshold_ms": stats.get("fast_threshold_ms"),
+            "median_decision_ms": stats.get("median_decision_ms"),
+        }
+
+    @app.get("/orders/agent-stats")
+    def agent_stats(session: DbSession):
+        # how often Check holds each agent's orders, from our own orders table
+        rows = list(session.execute(select(Order).order_by(Order.id)).scalars())
+        agents = held_rates(rows)
+        for agent_row in agents:
+            agent_row["label"] = AGENT_LABELS.get(agent_row["created_by"],
+                                                  agent_row["created_by"])
+        return {"agents": agents}
 
     @app.get("/disputes")
     def disputes():

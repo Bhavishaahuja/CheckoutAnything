@@ -253,6 +253,12 @@ class FakeCheck:
         self.fail_mandate = None
         self.fail_order = None
         self.held_total = None
+        self.stats = {
+            "total_orders": 7, "auto_captured": 3, "needs_review": 1, "approved": 2,
+            "voided": 1, "median_decision_ms": 1400, "fast_streak": 3,
+            "rubber_stamp_active": True, "fast_threshold_ms": 2000,
+            "recent_decision_ms": [900, 1200, 1500],
+        }
 
     def create_mandate(self, request_text, merchant, buyer_label):
         if self.fail_mandate is not None:
@@ -373,6 +379,10 @@ class FakeCheck:
         token = "token-" + str(order_id) + "-" + str(len(self.review_links) + 1)
         self.review_links.append(token)
         return {"review_token": token, "expires_at": "2026-12-03T01:56:55Z"}
+
+    def get_stats(self):
+        # the shape of Check's GET /stats, with the extra numbers the route should drop
+        return copy.deepcopy(self.stats)
 
     def list_disputes(self, limit=200):
         return [{"id": 3, "paypal_dispute_id": "PP-R-ABC-10001234", "order_id": 41,
