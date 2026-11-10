@@ -16,10 +16,19 @@ jobs:
           python-version: "3.11"
           cache: pip
 
+      # the same two installs as the buildCommand in render.yaml
       - name: Install dependencies
         run: |
           pip install -r requirements.txt
-          pip install -r requirements-dev.txt
+          pip install --no-deps paypal-agent-toolkit
+
+      # before the dev requirements go in, so this sees only what the hosted API has.
+      # requirements-dev.txt lists httpx too, and that would hide a gap in requirements.txt
+      - name: Agent Toolkit imports with the hosted API's packages
+        run: python -c "from paypal_agent_toolkit.shared.api import PayPalAPI; from paypal_agent_toolkit.shared.configuration import Context"
+
+      - name: Install dev dependencies
+        run: pip install -r requirements-dev.txt
 
       - name: Ruff
         run: ruff check .

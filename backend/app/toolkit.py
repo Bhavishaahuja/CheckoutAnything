@@ -12,6 +12,8 @@
 #
 # It's installed with --no-deps (see the README): the package pins old versions of
 # openai-agents, langchain and crewai-tools that this app never imports.
+# --no-deps also skips the things it really does import, like httpx, so those are listed in
+# our own requirements.txt.
 
 import json
 
@@ -26,9 +28,10 @@ def get_order_details(client_id, client_secret, paypal_order_id):
         from paypal_agent_toolkit.shared.api import PayPalAPI
         from paypal_agent_toolkit.shared.configuration import Context
     except ImportError as error:
+        # say what really failed. the package can be installed and still not import, when
+        # one of the modules it needs is missing (it's installed with --no-deps)
         raise ToolkitError(
-            "The PayPal Agent Toolkit isn't installed on the API "
-            "(pip install --no-deps paypal-agent-toolkit)"
+            "The PayPal Agent Toolkit couldn't be imported (" + str(error) + ")"
         ) from error
 
     if not client_id or not client_secret:
