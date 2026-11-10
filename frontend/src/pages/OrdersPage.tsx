@@ -2,17 +2,18 @@
 
 import type { ColDef, GetRowIdParams } from "ag-grid-community"
 import { AgGridReact, type CustomCellRendererProps } from "ag-grid-react"
-import { Bot, Check, ExternalLink, Hand, Hourglass, Search, ShieldCheck, ShieldQuestion, Undo2, X } from "lucide-react"
+import { Bot, Check, Hand, Hourglass, Search, ShieldCheck, ShieldQuestion, Undo2, X } from "lucide-react"
+import { AnimatePresence } from "motion/react"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 
 import { Card, CopyId, ErrorNote, Pill, Switch } from "@/components/bits"
-import { Button } from "@/components/ui/button"
+import { ReviewDrawer } from "@/components/ReviewDrawer"
 import { NumberTicker } from "@/components/magicui/number-ticker"
 import { api } from "@/lib/api"
-import { clockTime, dateAndTime, decisionTime, money } from "@/lib/format"
+import { clockTime, decisionTime, money } from "@/lib/format"
 import { flashGridRow } from "@/lib/gridFlash"
 import { calmTheme } from "@/lib/gridTheme"
-import type { Order, ReviewLink } from "@/lib/types"
+import type { Order } from "@/lib/types"
 import { useGridRows } from "@/lib/useGridRows"
 
 const POLL_MS = 3000
@@ -134,12 +135,15 @@ function ReviewCell({ data, context }: CustomCellRendererProps<OrderRow, unknown
     <span className="flex min-w-0 items-center gap-2">
       <Pill tone="warn">Needs review</Pill>
       {context.reviewLinks && (
+        // opens the drawer. it never decides anything from here, the confirm page does.
+        // 44px tall so it's a fair target on a touch screen
         <button
           type="button"
           onClick={() => context.openReview(data.id)}
-          className="inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline"
+          aria-label={"Review order " + data.id}
+          className="inline-flex h-11 items-center rounded-lg bg-primary px-3.5 text-[13px] font-medium text-primary-foreground hover:opacity-90"
         >
-          Confirm page <ExternalLink className="size-3" />
+          Review
         </button>
       )}
     </span>
@@ -163,8 +167,10 @@ export function OrdersPage({
   checkOn: boolean
   reviewLinks: boolean
 }) {
-  const [link, setLink] = useState<{ orderId: number; made: ReviewLink } | null>(null)
-  const [linkBusy, setLinkBusy] = useState(false)
+  // the order whose review drawer is open
+  const [reviewId, setReviewId] = useState<number | null>(null)
+  // bumped to load right away instead of waiting for the next poll
+  const [nudge, setNudge] = useState(0)
   const [rows, setRows] = useState<OrderRow[]>([])
   const [error, setError] = useState<string | null>(null)
   const [grouped, setGrouped] = useState(true)
@@ -213,7 +219,7 @@ export function OrdersPage({
       cancelled = true
       clearInterval(timer)
     }
-  }, [active, refreshKey])
+  }, [active, refreshKey, nudge])
 
   const { gridApi, onGridReady } = useGridRows(rows, (row) => String(row.id))
 
@@ -308,21 +314,14 @@ export function OrdersPage({
     [grouped, checkOn]
   )
 
-  // a new link kills the one made before, so this only runs on a click, never on a refresh
-  const openReview = useCallback(async (orderId: number) => {
-    setLinkBusy(true)
-    try {
-      const made = await api.reviewLink(orderId)
-      setLink({ orderId, made })
-      setError(null)
-    } catch (problem) {
-      setError(problem instanceof Error ? problem.message : "Couldn't make the review link")
-    } finally {
-      setLinkBusy(false)
-    }
-  }, [])
+  const openReview = useCallback((orderId: number) => setReviewId(orderId), [])
+  const closeReview = useCallback(() => setReviewId(null), [])
+  // the confirm page in the drawer finished a decision: read the row again now
+  const reviewDecided = useCallback(() => setNudge((count) => count + 1), [])
 
   const gridContext = useMemo<GridContext>(() => ({ reviewLinks, openReview }), [reviewLinks, openReview])
+
+  const reviewOrder = reviewId === null ? null : rows.find((row) => row.id === reviewId) || null
 
   let captured = 0
   let volume = 0
@@ -377,31 +376,6 @@ export function OrdersPage({
 
       {error && <ErrorNote>{error}</ErrorNote>}
 
-      {link && (
-        <Card className="flex flex-wrap items-center gap-3 px-4 py-3 text-[13px]">
-          <span className="font-medium">Confirm page for order {link.orderId}</span>
-          <CopyId value={link.made.url} className="min-w-0 flex-1" />
-          {link.made.expires_at && (
-            <span className="text-xs text-muted-foreground">works until {dateAndTime(link.made.expires_at)}</span>
-          )}
-          <a
-            href={link.made.url}
-            target="_blank"
-            rel="noreferrer"
-            className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-primary px-2.5 text-[13px] font-medium text-primary-foreground hover:opacity-90"
-          >
-            Open <ExternalLink className="size-3.5" />
-          </a>
-          <Button size="sm" variant="ghost" onClick={() => setLink(null)}>
-            Close
-          </Button>
-          <span className="w-full text-xs text-muted-foreground">
-            This is what the buyer sees on their phone. Asking for a new link turns this one off.
-          </span>
-        </Card>
-      )}
-      {linkBusy && <p className="text-xs text-muted-foreground">Making the link...</p>}
-
       <Card className="flex h-[560px] flex-col overflow-hidden">
         <div className="flex min-h-12 shrink-0 flex-wrap items-center justify-between gap-3 border-b border-border px-4 py-2">
           <label className="flex h-8 w-full max-w-64 items-center gap-2 rounded-lg border border-border px-2.5">
@@ -428,6 +402,8 @@ export function OrdersPage({
             columnDefs={columnDefs}
             defaultColDef={{ sortable: true, resizable: true, suppressMovable: true }}
             getRowId={(params: GetRowIdParams<OrderRow>) => String(params.data.id)}
+            // taller than the theme's 44 so the 44px Review button has air around it
+            rowHeight={52}
             enableCellSpan
             context={gridContext}
             tooltipShowDelay={300}
@@ -438,6 +414,12 @@ export function OrdersPage({
           />
         </div>
       </Card>
+
+      <AnimatePresence>
+        {reviewOrder && (
+          <ReviewDrawer key={reviewOrder.id} order={reviewOrder} onClose={closeReview} onDecided={reviewDecided} />
+        )}
+      </AnimatePresence>
     </div>
   )
 }

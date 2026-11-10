@@ -159,9 +159,20 @@ services:
         sync: false
       - key: VITE_USE_MOCKS
         value: "false"
+      # the checkout-anything site's URL. the confirm page reports a finished decision to this
+      # origin and no other (the review drawer in the Orders grid listens for it)
+      - key: VITE_CONNECT_URL
+        sync: false
       # AG Grid Enterprise trial key. set it in the dashboard, never in git
       - key: VITE_AG_GRID_LICENSE_KEY
         sync: false
+    headers:
+      # who may show this site in an iframe: itself and the checkout-anything site, whose review
+      # drawer frames the confirm page. a static site can't read an env var here, so if the
+      # checkout-anything service has a different URL, change it on this line too
+      - path: /*
+        name: Content-Security-Policy
+        value: frame-ancestors 'self' https://checkout-anything.onrender.com
     routes:
       # single-page app: /dashboard and /confirm/<token> only exist in the browser, so every
       # path that isn't a real file serves index.html

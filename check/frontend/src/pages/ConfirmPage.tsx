@@ -3,6 +3,7 @@ import { useParams } from 'react-router'
 import { ApiError, approveReview, getReview, markReviewOpened, rejectReview } from '../api'
 import { BrandMark } from '../components/BrandMark'
 import { describeItem, formatDuration, formatMoney } from '../lib/format'
+import { tellParentReviewDecided } from '../lib/parentMessage'
 import { useAsync } from '../lib/useAsync'
 import type { ApprovalAction, ReviewView } from '../types'
 
@@ -84,6 +85,9 @@ function Decide({ token, order }: { token: string; order: ReviewView }) {
       const send = action === 'approve' ? approveReview : rejectReview
       const updated = await send(token, decisionMs)
       setPhase({ kind: 'done', action, order: updated, decisionMs })
+      // inside the Checkout Anything review drawer this closes it and refreshes the row. on a
+      // phone there is no parent and nothing is sent
+      tellParentReviewDecided(action, updated.status, updated.review_state)
     } catch (error) {
       setPhase({ kind: 'failed', action, ...describeDecideError(error) })
     }

@@ -8,6 +8,9 @@ interface ImportMetaEnv {
   // AG Grid Enterprise trial key, for row grouping. unset means Enterprise still runs, with a
   // watermark and a console warning. it ends up in the public JS like any frontend key
   readonly VITE_AG_GRID_LICENSE_KEY?: string
+  // where the Checkout Anything app (frontend/ at the repo root) is served. it is the one site
+  // allowed to frame the confirm page, and the one the page reports a decision to
+  readonly VITE_CONNECT_URL?: string
 }
 
 interface ImportMeta {

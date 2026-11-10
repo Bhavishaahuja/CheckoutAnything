@@ -3,7 +3,10 @@
 #
 # Two keys, because Check keeps the two sides apart:
 #   agent key     POST /mandates and POST /orders. all it gets back is where the order stands
-#   merchant key  reading orders with the check result, review links and disputes
+#   merchant key  reading orders with the check result, and disputes
+#
+# Review links are the exception: they are made with the merchant's own login (a Check session
+# token), never with a key of ours, so only someone who knows the dashboard password gets one.
 #
 # Only used when CHECK_URL is set. With it unset, nothing in the app builds one of these.
 
@@ -52,10 +55,13 @@ class CheckClient:
     def _call(self, method, path, key, json_body=None, timeout=READ_TIMEOUT, params=None):
         if not key:
             raise CheckError("The key for this Check call isn't set on the API", 503)
+        return self._send(method, path, {"X-API-Key": key}, json_body, timeout, params)
+
+    def _send(self, method, path, headers, json_body=None, timeout=READ_TIMEOUT, params=None):
         try:
             response = self.http.request(
                 method, self.base_url + path, json=json_body, params=params,
-                headers={"X-API-Key": key}, timeout=timeout,
+                headers=headers, timeout=timeout,
             )
         except requests.RequestException as error:
             raise CheckError("Couldn't reach Check: " + type(error).__name__) from error
@@ -101,10 +107,19 @@ class CheckClient:
     def list_orders(self, limit=200):
         return self._call("GET", "/orders", self.merchant_key, params={"limit": limit})
 
-    def create_review_link(self, order_id):
-        # {review_token, expires_at}. asking again kills the link made before
-        return self._call(
-            "POST", "/orders/" + str(order_id) + "/review-link", self.merchant_key
+    # ---- the merchant's own login ----
+
+    def create_session(self, password):
+        # Check's dashboard login: the password for {session_token, expires_at}. none of our
+        # keys go with it, Check decides on the password alone (401 when it's wrong)
+        return self._send("POST", "/auth/session", {}, {"password": password})
+
+    def create_review_link(self, order_id, session_token):
+        # {review_token, expires_at}. asking again kills the link made before. sent with the
+        # merchant's session and no key, so Check is the one that says whether the login holds
+        return self._send(
+            "POST", "/orders/" + str(order_id) + "/review-link",
+            {"Authorization": "Bearer " + session_token},
         )
 
     def list_disputes(self, limit=200):

@@ -613,6 +613,14 @@ export const mockApi: Api = {
     return { mode, stores: started }
   },
 
+  hasSession() {
+    return false
+  },
+
+  async logIn() {
+    throw new Error("The mock has no Check service")
+  },
+
   async reviewLink() {
     throw new Error("The mock has no Check service")
   },

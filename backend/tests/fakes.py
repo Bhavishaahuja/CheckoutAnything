@@ -241,6 +241,9 @@ class FakeCheck:
         self.orders = {}
         self.sent_orders = []
         self.review_links = []
+        # the dashboard login. sessions holds every token handed out
+        self.password = "open-sesame"
+        self.sessions = []
         self.list_calls = 0
         # what the check decides for the next order: (status, review_state, intent_check)
         self.decide = (
@@ -315,7 +318,16 @@ class FakeCheck:
         newest_first = sorted(self.orders.values(), key=lambda order: -order["id"])
         return copy.deepcopy(newest_first[:limit])
 
-    def create_review_link(self, order_id):
+    def create_session(self, password):
+        if password != self.password:
+            raise CheckError("Wrong password", 401)
+        token = "session-" + str(len(self.sessions) + 1)
+        self.sessions.append(token)
+        return {"session_token": token, "expires_at": "2026-12-03T09:56:55Z"}
+
+    def create_review_link(self, order_id, session_token):
+        if session_token not in self.sessions:
+            raise CheckError("Missing or wrong API key", 401)
         order = self.get_order(order_id)
         if order["review_state"] != "needs_review":
             raise CheckError("This order isn't waiting for review", 409)

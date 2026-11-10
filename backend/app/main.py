@@ -8,7 +8,9 @@
 #   POST /stores/{id}/orders    buy (price computed server-side)
 #   POST /agent/chat            demo shopping agent
 #   GET  /orders                all orders
-#   POST /orders/{id}/review-link   link to the buyer's confirm page (Check)
+#   POST /auth/session          the merchant's login, passed through to Check
+#   POST /orders/{id}/review-link   link to the confirm page for an order on hold (Check).
+#                                   needs the login
 #   GET  /disputes, POST /disputes/sync, GET /disputes/{id}/evidence,
 #   POST /disputes/{id}/redraft, POST /disputes/{id}/submit-evidence   (Defend)
 #   POST /demo/reset            wipe demo data and reconnect the 3 demo stores
@@ -74,6 +76,11 @@ class ChatRequest(BaseModel):
     messages: list[ChatMessage] = Field(min_length=1, max_length=40)
 
 
+class LoginRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    password: str = Field(min_length=1, max_length=200)
+
+
 class ResetRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     mode: Literal["live", "replay"] | None = None
@@ -115,7 +122,8 @@ def create_app(settings=None, paypal=None, ai_factory=None, fetch=None, agent_cl
         CORSMiddleware,
         allow_origins=cors_origins(settings.frontend_origins),
         allow_methods=["GET", "POST"],
-        allow_headers=["Content-Type", "Last-Event-ID"],
+        # Authorization carries the merchant's session to the review-link route
+        allow_headers=["Content-Type", "Last-Event-ID", "Authorization"],
     )
 
     def begin_connect(session, url, mode):
@@ -161,6 +169,7 @@ def create_app(settings=None, paypal=None, ai_factory=None, fetch=None, agent_cl
             "check_configured": check is not None,
             # the grid can show check results, review links and disputes
             "check_merchant_configured": check is not None and check.can_read,
+            # orders on hold can be reviewed from the grid (after logging in)
             "check_review_links": check is not None and check.can_read
             and bool(settings.check_frontend_url),
         }
@@ -294,11 +303,38 @@ def create_app(settings=None, paypal=None, ai_factory=None, fetch=None, agent_cl
             return HTTPException(status_code=error.status_code, detail=str(error))
         return HTTPException(status_code=502, detail="Check: " + str(error))
 
+    def session_token_from(authorization):
+        # "Bearer <token>", the same header the Check dashboard sends its own API
+        scheme, _, token = (authorization or "").partition(" ")
+        token = token.strip()
+        if scheme.lower() != "bearer" or not token:
+            raise HTTPException(status_code=401, detail="Log in to review an order")
+        return token
+
+    @app.post("/auth/session")
+    def log_in(body: LoginRequest):
+        # the merchant's login is Check's dashboard login: one password for both apps. we only
+        # pass it along and hand back the session Check made, nothing is kept here
+        if check is None:
+            raise HTTPException(status_code=503, detail="CHECK_URL isn't set on the API")
+        try:
+            made = check.create_session(body.password)
+        except CheckError as error:
+            if error.status_code == 401:
+                raise HTTPException(status_code=401, detail="Wrong password") from error
+            raise check_failure(error) from error
+        return {"session_token": made["session_token"], "expires_at": made.get("expires_at")}
+
     @app.post("/orders/{order_id}/review-link", status_code=201)
-    def review_link(order_id: int, session: DbSession):
-        # the buyer's confirm page for an order on hold. every call makes a new link and
-        # kills the one before, so the frontend only asks when someone clicks
-        client = merchant_check()
+    def review_link(order_id: int, session: DbSession,
+                    authorization: Annotated[str | None, Header()] = None):
+        # the confirm page for an order on hold, behind the merchant's login. it never approves
+        # or rejects anything itself: the decision is made on the confirm page, so Check times
+        # it the same way as on the buyer's phone. every call makes a new link and kills the
+        # one before, so the frontend only asks when someone clicks
+        token = session_token_from(authorization)
+        if check is None:
+            raise HTTPException(status_code=503, detail="CHECK_URL isn't set on the API")
         if not settings.check_frontend_url:
             raise HTTPException(status_code=503,
                                 detail="CHECK_FRONTEND_URL isn't set on the API")
@@ -308,8 +344,13 @@ def create_app(settings=None, paypal=None, ai_factory=None, fetch=None, agent_cl
         if order.check_order_id is None:
             raise HTTPException(status_code=409, detail="This order didn't go through Check")
         try:
-            link = client.create_review_link(order.check_order_id)
+            link = check.create_review_link(order.check_order_id, token)
         except CheckError as error:
+            if error.status_code == 401:
+                # Check didn't take the session: expired, or made before its key changed
+                raise HTTPException(
+                    status_code=401, detail="Your login has expired, log in again"
+                ) from error
             raise check_failure(error) from error
         return {
             "url": settings.check_frontend_url + "/confirm/" + link["review_token"],
