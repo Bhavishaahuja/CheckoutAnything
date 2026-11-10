@@ -8,7 +8,7 @@ from backend.app.log_redaction import install_log_redaction
 # before anything can be served, so no request gets logged with its token
 install_log_redaction()
 
-app = FastAPI(title="Leash API")
+app = FastAPI(title="Checkout Anything: Check API")
 
 # no cookies anywhere, the dashboard sends its session as a header, so no credentials either
 app.add_middleware(

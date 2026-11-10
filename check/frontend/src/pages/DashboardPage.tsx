@@ -217,7 +217,7 @@ export function DashboardPage() {
 
     // the trust score: only filled in on group rows, see HeldRateCell
     const heldColumn: ColDef<Order> = {
-      headerName: 'Held by Leash',
+      headerName: 'Held by Check',
       colId: 'held',
       valueGetter: (params) => (params.data ? (wasHeld(params.data) ? 1 : 0) : null),
       aggFunc: heldRateAgg,

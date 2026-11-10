@@ -28,9 +28,10 @@ class EvidenceFileTooBig(Exception):
 
 
 def evidence_file_name(paypal_dispute_id):
-    # "leash-evidence-PP-R-ABC-10001234.pdf". anything outside the allowed characters becomes -
+    # "checkout-anything-evidence-PP-R-ABC-10001234.pdf". anything outside the allowed
+    # characters becomes -
     safe_id = re.sub(r"[^A-Za-z0-9\-_]", "-", paypal_dispute_id)
-    name = "leash-evidence-" + safe_id + ".pdf"
+    name = "checkout-anything-evidence-" + safe_id + ".pdf"
     # can't fail with the substitution above, this is a guard for whoever edits it next
     if not FILE_NAME_PATTERN.match(name):
         raise ValueError("Evidence file name doesn't fit PayPal's pattern: " + name)
