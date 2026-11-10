@@ -122,6 +122,11 @@ class CheckClient:
             {"Authorization": "Bearer " + session_token},
         )
 
+    def get_stats(self):
+        # the dashboard numbers, rubber-stamp watch included. merchant only on purpose: the
+        # agent never gets to know when the watch is on
+        return self._call("GET", "/stats", self.merchant_key)
+
     def list_disputes(self, limit=200):
         return self._call("GET", "/disputes", self.merchant_key, params={"limit": limit})
 

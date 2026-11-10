@@ -167,6 +167,24 @@ export interface ReviewLink {
   expires_at: string | null
 }
 
+// Check's rubber-stamp watch, from GET /check/stats. "Sharp mode" is the watch being on:
+// fast approvals in a row, so Check asks the human less often but makes each ask sharper
+export interface CheckStats {
+  rubber_stamp_active: boolean
+  fast_streak: number
+  fast_threshold_ms: number | null
+  median_decision_ms: number | null
+}
+
+// how often Check held each agent's orders, from GET /orders/agent-stats
+export interface AgentHeldRate {
+  created_by: string
+  label: string
+  total: number
+  held: number
+  held_pct: number
+}
+
 // Disputes come from the Check service as they are (check/docs/api.md).
 export interface Dispute {
   id: number

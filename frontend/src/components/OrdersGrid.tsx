@@ -41,7 +41,7 @@ import { flashGridCells, flashGridRow } from "@/lib/gridFlash"
 import { useGridLayout } from "@/lib/gridState"
 import { calmTheme } from "@/lib/gridTheme"
 import { heldLabel } from "@/lib/shortReason"
-import type { Order } from "@/lib/types"
+import type { AgentHeldRate, CheckStats, Order } from "@/lib/types"
 import { useGridRows } from "@/lib/useGridRows"
 import { cn } from "@/lib/utils"
 
@@ -368,6 +368,8 @@ export function OrdersGrid({
   rows,
   loaded,
   checkOn,
+  checkStats,
+  heldRates,
   reviewLinks,
   onOpenReview,
   onGoToAgent,
@@ -377,6 +379,10 @@ export function OrdersGrid({
   loaded: boolean
   // agent orders go through Check, so the grid shows what it decided
   checkOn: boolean
+  // Check's rubber-stamp watch. null when Check or its merchant key isn't set
+  checkStats: CheckStats | null
+  // per agent, how often Check held its orders. empty hides the line
+  heldRates: AgentHeldRate[]
   reviewLinks: boolean
   onOpenReview: (orderId: number) => void
   onGoToAgent: () => void
@@ -688,6 +694,35 @@ export function OrdersGrid({
               {fastApprovals === 1 ? "approval" : "approvals"} under {FAST_MS / 1000}s
             </span>
           </motion.div>
+        )}
+
+        {checkOn && checkStats && (
+          // whether Check's rubber-stamp watch is on right now. the agent never sees this
+          <span
+            role="status"
+            className={cn(
+              "flex h-8 items-center gap-1.5 rounded-lg px-2.5 text-[13px]",
+              checkStats.rubber_stamp_active ? "bg-warn-soft font-medium text-warn" : "bg-muted text-muted-foreground"
+            )}
+            title={
+              checkStats.rubber_stamp_active
+                ? checkStats.fast_streak + " fast approvals in a row, so Check holds fewer orders but makes each one count"
+                : "Approvals have been slow enough to have been read"
+            }
+          >
+            <span className={cn("size-1.5 rounded-full", checkStats.rubber_stamp_active ? "bg-warn" : "bg-muted-foreground/50")} aria-hidden />
+            {checkStats.rubber_stamp_active ? "Sharp mode on: asking less, but sharper" : "Sharp mode off"}
+          </span>
+        )}
+
+        {checkOn && heldRates.length > 0 && (
+          <span className="flex flex-wrap items-center gap-x-3 text-xs text-muted-foreground" title="Orders Check held for the buyer, out of every order it checked">
+            {heldRates.map((rate) => (
+              <span key={rate.created_by} className="tabular-nums">
+                {rate.label}: {rate.held} of {rate.total} held ({rate.held_pct}%)
+              </span>
+            ))}
+          </span>
         )}
 
         <AnimatePresence initial={false}>

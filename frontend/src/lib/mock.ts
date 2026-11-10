@@ -960,6 +960,15 @@ export const mockApi: Api = {
     return []
   },
 
+  async checkStats() {
+    throw new Error("The mock has no Check service")
+  },
+
+  async agentHeldRates() {
+    // the mock never sends orders through Check, so nothing to count
+    return []
+  },
+
   async syncDisputes() {
     return { orders_checked: 0, disputes_found: 0, created: 0, updated: 0, errors: [] }
   },

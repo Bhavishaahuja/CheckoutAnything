@@ -9,6 +9,7 @@ import { NumberTicker } from "@/components/magicui/number-ticker"
 import { OrdersGrid, type OrderRow } from "@/components/OrdersGrid"
 import { ReviewDrawer } from "@/components/ReviewDrawer"
 import { api } from "@/lib/api"
+import type { AgentHeldRate, CheckStats } from "@/lib/types"
 
 const POLL_MS = 3000
 
@@ -48,6 +49,9 @@ export function OrdersPage({
   const [error, setError] = useState<string | null>(null)
   const [loaded, setLoaded] = useState(false)
   const firstLoad = useRef(true)
+  // Check's rubber-stamp watch and the per-agent held rate. null hides them
+  const [checkStats, setCheckStats] = useState<CheckStats | null>(null)
+  const [heldRates, setHeldRates] = useState<AgentHeldRate[]>([])
 
   useEffect(() => {
     if (!active) return
@@ -92,13 +96,34 @@ export function OrdersPage({
       }
     }
 
-    void load()
-    const timer = setInterval(load, POLL_MS)
+    // the strip's numbers ride the same poll. a 503 just means Check isn't set up, so hide them
+    const loadStrip = async () => {
+      if (document.hidden || !checkOn) return
+      try {
+        const stats = await api.checkStats()
+        if (!cancelled) setCheckStats(stats)
+      } catch {
+        if (!cancelled) setCheckStats(null)
+      }
+      try {
+        const rates = await api.agentHeldRates()
+        if (!cancelled) setHeldRates(rates)
+      } catch {
+        if (!cancelled) setHeldRates([])
+      }
+    }
+
+    const tick = () => {
+      void load()
+      void loadStrip()
+    }
+    tick()
+    const timer = setInterval(tick, POLL_MS)
     return () => {
       cancelled = true
       clearInterval(timer)
     }
-  }, [active, refreshKey, nudge])
+  }, [active, refreshKey, nudge, checkOn])
 
   const openReview = useCallback((orderId: number) => setReviewId(orderId), [])
   const closeReview = useCallback(() => setReviewId(null), [])
@@ -161,7 +186,16 @@ export function OrdersPage({
       {error && <ErrorNote>{error}</ErrorNote>}
 
       <Card className="h-[640px] overflow-hidden">
-        <OrdersGrid rows={rows} loaded={loaded} checkOn={checkOn} reviewLinks={reviewLinks} onOpenReview={openReview} onGoToAgent={onGoToAgent} />
+        <OrdersGrid
+          rows={rows}
+          loaded={loaded}
+          checkOn={checkOn}
+          checkStats={checkOn ? checkStats : null}
+          heldRates={checkOn ? heldRates : []}
+          reviewLinks={reviewLinks}
+          onOpenReview={openReview}
+          onGoToAgent={onGoToAgent}
+        />
       </Card>
 
       <AnimatePresence>
