@@ -400,7 +400,7 @@ def main():
     # Windows consoles default to cp1252
     sys.stdout.reconfigure(encoding="utf-8")
 
-    parser = argparse.ArgumentParser(description="Seed demo orders through the Leash API")
+    parser = argparse.ArgumentParser(description="Seed demo orders through the Check API")
     parser.add_argument("--base-url", default=DEFAULT_BASE_URL)
     parser.add_argument("--reset", action="store_true",
                         help="void open seeded holds, delete seeded rows, and stop")

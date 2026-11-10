@@ -109,7 +109,7 @@ export function DisputesPage() {
         <div>
           <h1 className="page__title">Disputes</h1>
           <p className="page__lede">
-            When a buyer disputes a captured order, Leash answers with what they asked for and who released the money.
+            When a buyer disputes a captured order, Checkout Anything answers with what they asked for and who released the money.
           </p>
         </div>
         <button type="button" className="secondary-button" onClick={runSync} disabled={syncing}>

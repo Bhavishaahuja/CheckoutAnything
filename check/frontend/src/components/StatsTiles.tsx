@@ -74,7 +74,7 @@ function WatchTile({ stats }: { stats: Stats }) {
       </div>
       <p className="stat__note">
         {active
-          ? 'The last ' + stats.fast_streak + ' approvals took under ' + threshold + '. Leash now asks less often, but more pointedly.'
+          ? 'The last ' + stats.fast_streak + ' approvals took under ' + threshold + '. Check now asks less often, but more pointedly.'
           : filled + ' of ' + STREAK_TO_TRIGGER + ' approvals in a row under ' + threshold + '. Turns on at ' + STREAK_TO_TRIGGER + '.'}
       </p>
     </div>

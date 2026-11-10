@@ -1,6 +1,8 @@
-# Leash
+# Check and Defend
 
-AI shopping agents are starting to place real orders, and merchants have no way to know whether the human behind the agent actually wanted that order. Leash is proof of intent for agent orders. The merchant authorizes the PayPal payment but holds the capture while Claude checks the order against the human's mandate. Clean matches capture automatically. Anything off goes to the human with a one-line reason: approve captures, reject voids. If a dispute comes in later, the mandate and the approval are filed as evidence through PayPal's Disputes API. A rubber-stamp watch notices when the human stops really reading approvals and starts asking less often but more pointedly.
+The Check and Defend features of [Checkout Anything](../README.md). This folder is their service: the API, the dashboard and the buyer's confirm page. It started as a standalone prototype (codename Leash), which is why some internal names, the old repo and the first deploy's URLs still say so.
+
+AI shopping agents are starting to place real orders, and merchants have no way to know whether the human behind the agent actually wanted that order. Check is proof of intent for agent orders. The merchant authorizes the PayPal payment but holds the capture while Claude checks the order against the human's mandate. Clean matches capture automatically. Anything off goes to the human with a one-line reason: approve captures, reject voids. If a dispute comes in later, the mandate and the approval are filed as evidence through PayPal's Disputes API. A rubber-stamp watch notices when the human stops really reading approvals and starts asking less often but more pointedly.
 
 **Status: in progress.** Built for the PayPal AI Hackathon.
 

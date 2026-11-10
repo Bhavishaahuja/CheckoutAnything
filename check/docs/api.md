@@ -1,4 +1,4 @@
-# Leash API: orders
+# Check API: orders
 
 What the frontend can rely on. Field names here are stable. Adding a field isn't a breaking change, so ignore ones you don't recognize. Anything that renames or removes a field gets called out to Shachi first.
 
@@ -270,7 +270,7 @@ Counts for the dashboard, plus where the rubber-stamp watch stands.
 
 | Field | Notes |
 |---|---|
-| `auto_captured` | Orders Leash captured on its own (`review_state` is `auto_approved`) |
+| `auto_captured` | Orders Check captured on its own (`review_state` is `auto_approved`) |
 | `needs_review` | Holds waiting on a human right now |
 | `approved` | A human tapped approve |
 | `voided` | Every order whose hold was released |
@@ -294,7 +294,7 @@ The watch is global, not per shopper.
 
 ## Disputes
 
-When a buyer disputes a captured order, Leash files its records with PayPal as evidence: what the buyer authorized, what was ordered, how it was checked, and who released the money. All five routes are merchant only.
+When a buyer disputes a captured order, Checkout Anything files its records with PayPal as evidence: what the buyer authorized, what was ordered, how it was checked, and who released the money. All five routes are merchant only.
 
 The usual flow is: sync, open the evidence (the first look drafts the summary), read it, redraft if it needs another go, then submit.
 
@@ -356,7 +356,7 @@ The evidence packet plus a summary for the PayPal reviewer. Nothing is sent to P
 - **`decision`**: for a human approval, `released_by` is `human review`, with `decision_ms` (the server's own number), `opened_at` and `decided_at`. For an automatic capture, `decided_at` is the check's time, since the capture follows it straight away.
 - **`intent_check`** can be `null` if no check was saved.
 - The packet leaves out `buyer_label`.
-- **`summary`** is drafted by Claude from the packet and saved on the dispute: 3 to 6 plain sentences, 1500 characters at most. It sticks to what's in the packet, including facts that don't help the merchant. It's written for a PayPal reviewer, so it puts the packet's fields in plain English ("a risk rating of 100 out of 100", "Leash was in its normal review mode") and never uses a field name like `watch_mode`. Price caps read the way a person would say them: "up to $90" when the cap is inclusive, "under $90" when it isn't.
+- **`summary`** is drafted by Claude from the packet and saved on the dispute: 3 to 6 plain sentences, 1500 characters at most. It sticks to what's in the packet, including facts that don't help the merchant. It's written for a PayPal reviewer, so it puts the packet's fields in plain English ("a risk rating of 100 out of 100", "Checkout Anything was in its normal review mode") and never uses a field name like `watch_mode`. Price caps read the way a person would say them: "up to $90" when the cap is inclusive, "under $90" when it isn't.
 - **Only the first look drafts.** After that, this returns the saved draft without calling Claude, so opening the page again never changes the text. The saved draft is exactly what submit sends. To get a new one, use `POST /disputes/{id}/redraft`. Once evidence is submitted, this returns the summary that was sent.
 - `502` if the summary couldn't be drafted, including when a draft still contains one of the packet's field names. Try again. `404` if there's no such dispute.
 
@@ -383,9 +383,9 @@ Before sending, it reads the dispute from PayPal and checks:
 | No other submit in progress | `409`. A submit that crashed frees up after 2 minutes |
 | A summary was drafted | `409`, open `GET /disputes/{id}/evidence` first |
 | PayPal's status is `WAITING_FOR_SELLER_RESPONSE` **and** its details have a `provide-evidence` link | `409` with `detail.status` and `detail.provide_evidence_link`, so the page can say which. The row gets PayPal's latest status |
-| PayPal asked for an evidence type Leash can fill | `409` with `detail.requested_types` (see below) |
+| PayPal asked for an evidence type Checkout Anything can fill | `409` with `detail.requested_types` (see below) |
 
-The evidence type is the first one PayPal requested from the seller that Leash can fill. If it requested nothing, it's `OTHER`, and the notes start with a sentence saying so. Leash never sends `PROOF_OF_FULFILLMENT`, `PROOF_OF_REFUND` or `PROOF_OF_RETURN`, because PayPal requires tracking or refund IDs for those and Leash has none. If those are all PayPal asked for, the merchant has to answer in PayPal's Resolution Center.
+The evidence type is the first one PayPal requested from the seller that Checkout Anything can fill. If it requested nothing, it's `OTHER`, and the notes start with a sentence saying so. Checkout Anything never sends `PROOF_OF_FULFILLMENT`, `PROOF_OF_REFUND` or `PROOF_OF_RETURN`, because PayPal requires tracking or refund IDs for those and Checkout Anything has none. If those are all PayPal asked for, the merchant has to answer in PayPal's Resolution Center.
 
 If PayPal rejects the evidence, the response is a `502` with the same `paypal_*` fields as the order endpoints, and nothing is marked as submitted, so it can be tried again.
 
@@ -605,7 +605,7 @@ Success is a `200`:
 }
 ```
 
-Captured orders stay captured at PayPal, and disputes stay open there. The reset only forgets them in Leash. It doesn't seed again, run the script for that.
+Captured orders stay captured at PayPal, and disputes stay open there. The reset only forgets them in Checkout Anything. It doesn't seed again, run the script for that.
 
 | Code | When |
 |---|---|
@@ -617,6 +617,6 @@ Captured orders stay captured at PayPal, and disputes stay open there. The reset
 
 Merchant only. The delete half of `POST /demo/reset` on its own. Deletes the seeded orders and mandates, which are the ones with a `buyer_label` starting with `seed-demo:`. Success is a `200` with `deleted_orders`, `deleted_mandates` and `deleted_disputes`.
 
-Any dispute rows synced onto those orders are deleted too, since an order can't be deleted while a dispute points at it. That only forgets them in Leash: the dispute stays open at PayPal, the same way a capture does.
+Any dispute rows synced onto those orders are deleted too, since an order can't be deleted while a dispute points at it. That only forgets them in Checkout Anything: the dispute stays open at PayPal, the same way a capture does.
 
 It's a `409` with `open_order_ids` in `detail` while any of those orders still has an open hold, so nothing gets forgotten at PayPal. Void those first.

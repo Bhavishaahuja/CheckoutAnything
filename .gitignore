@@ -1,12 +1,12 @@
 # secrets
 .env
 .vault_token.json
-# Leash keeps its own env file and spike scratch. the patterns above already match in any
+# the Check service keeps its own env file and spike scratch. the patterns above already match in any
 # folder, these just say it out loud
-leash/.env
-leash/frontend/.env
-leash/frontend/.env.local
-leash/spikes/.vault_token.json
+check/.env
+check/frontend/.env
+check/frontend/.env.local
+check/spikes/.vault_token.json
 
 # python
 .venv/

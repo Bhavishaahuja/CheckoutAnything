@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { useParams } from 'react-router'
 import { ApiError, approveReview, getReview, markReviewOpened, rejectReview } from '../api'
-import { LeashMark } from '../components/LeashMark'
+import { BrandMark } from '../components/BrandMark'
 import { describeItem, formatDuration, formatMoney } from '../lib/format'
 import { useAsync } from '../lib/useAsync'
 import type { ApprovalAction, ReviewView } from '../types'
@@ -281,7 +281,7 @@ function ConfirmFrame({ children, footer }: { children: ReactNode; footer?: Reac
   return (
     <div className="confirm">
       <header className="confirm__head">
-        <LeashMark size={20} />
+        <BrandMark size={20} />
         <span>Fernwood Supply Co</span>
       </header>
       <main className="confirm__body">{children}</main>

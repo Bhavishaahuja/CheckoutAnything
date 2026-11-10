@@ -1,4 +1,4 @@
-# Leash
+# Check and Defend (part of Checkout Anything, codename Leash)
 
 Proof of intent for AI agent orders, built for merchants. PayPal AI Hackathon entry (Devpost, deadline Nov 12 2026).
 

@@ -50,8 +50,8 @@ HUMAN_DISPUTE = "PP-R-HUMN-10000002"
 CHECKED_AT = datetime(2026, 11, 5, 15, 4, 7, tzinfo=timezone.utc)
 SUMMARY = (
     "The buyer told their agent: black trail runners, women's size 9, up to $120, from "
-    "Fernwood Supply Co. The order was one pair at $98.00. Leash checked it before capture: "
-    "match, risk 5. It was captured automatically right after the check."
+    "Fernwood Supply Co. The order was one pair at $98.00. Checkout Anything checked it before "
+    "capture: match, risk 5. It was captured automatically right after the check."
 )
 
 
@@ -491,7 +491,7 @@ def test_the_prompt_asks_for_plain_english_not_field_names(client, db_sessions, 
     client.get("/disputes/" + str(dispute_id) + "/evidence")
     system = claude.requests[0]["system"]
     assert "never copy them into the notes" in system
-    assert "Leash was in its normal review mode" in system
+    assert "Checkout Anything was in its normal review mode" in system
     assert 'true is "up to $90", false is "under $90"' in system
     assert 'Never add "(inclusive)", "(not inclusive)"' in system
 
@@ -510,7 +510,9 @@ def test_a_summary_that_leaks_a_field_name_is_a_502(client, db_sessions, claude,
 
 def test_plain_english_words_from_the_packet_are_fine():
     packet = {"intent_check": {"verdict": "match", "risk_score": 10, "watch_mode": "normal"}}
-    summary = "Leash found a match, rated the risk 10 out of 100, in its normal review mode."
+    summary = (
+        "Checkout Anything found a match, rated the risk 10 out of 100, in its normal review mode."
+    )
     assert leaked_field_names(summary, packet) == []
     assert leaked_field_names("its risk_score was 10", packet) == ["risk_score"]
 
@@ -897,7 +899,7 @@ def test_pdf_refuses_to_pass_paypals_size_limit(monkeypatch):
 
 def test_file_name_fits_paypals_pattern():
     name = evidence_pdf.evidence_file_name("PP-R-ABC/10001234.x")
-    assert name == "leash-evidence-PP-R-ABC-10001234-x.pdf"
+    assert name == "checkout-anything-evidence-PP-R-ABC-10001234-x.pdf"
     assert evidence_pdf.FILE_NAME_PATTERN.match(name)
     assert name.count(".") == 1
 
@@ -933,10 +935,10 @@ def test_client_sends_evidence_as_multipart(mocked):
                json={"links": []})
     client = PayPalClient("id", "secret", base_url=BASE)
     evidence_input = {"evidences": [{"evidence_type": "OTHER", "notes": "n",
-                                     "documents": [{"name": "leash-evidence-x.pdf"}]}]}
+                                     "documents": [{"name": "evidence-x.pdf"}]}]}
 
-    client.provide_evidence(AUTO_DISPUTE, evidence_input, "leash-evidence-x.pdf", b"%PDF-1.4 x")
-    client.provide_evidence(AUTO_DISPUTE, evidence_input, "leash-evidence-x.pdf", b"%PDF-1.4 x")
+    client.provide_evidence(AUTO_DISPUTE, evidence_input, "evidence-x.pdf", b"%PDF-1.4 x")
+    client.provide_evidence(AUTO_DISPUTE, evidence_input, "evidence-x.pdf", b"%PDF-1.4 x")
 
     first = mocked.calls[1].request
     second = mocked.calls[2].request
@@ -945,7 +947,7 @@ def test_client_sends_evidence_as_multipart(mocked):
     body = first.body
     assert re.search(rb'name="input"\r\nContent-Type: application/json', body)
     assert json.dumps(evidence_input).encode() in body
-    assert re.search(rb'name="evidence-file"; filename="leash-evidence-x.pdf"', body)
+    assert re.search(rb'name="evidence-file"; filename="evidence-x.pdf"', body)
     assert b"%PDF-1.4 x" in body
     # a fresh PayPal-Request-Id on every POST
     assert first.headers["PayPal-Request-Id"] != second.headers["PayPal-Request-Id"]

@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { NavLink, Outlet } from 'react-router'
 import { SESSION_EXPIRED_EVENT, USE_MOCKS, hasSession, logOut } from '../api'
-import { LeashMark } from './LeashMark'
+import { BrandMark } from './BrandMark'
 import { LoginForm } from './LoginForm'
 import { useResetDemo } from '../lib/useResetDemo'
 import { ResetButton, ResetStrip } from './ResetDemo'
@@ -38,8 +38,8 @@ export function MerchantLayout() {
       <header className="topbar">
         <div className="topbar__inner">
           <NavLink to="/dashboard" className="brand">
-            <LeashMark />
-            <span className="brand__name">Leash</span>
+            <BrandMark />
+            <span className="brand__name">Checkout Anything</span>
           </NavLink>
           <span className="topbar__store">Fernwood Supply Co</span>
           <nav className="topbar__nav" aria-label="Main">

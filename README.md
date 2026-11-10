@@ -1,63 +1,76 @@
 # Checkout Anything
 
-PayPal made big stores agent-ready. Checkout Anything makes any store agent-ready from just a URL, in about a minute.
-
-Checkout Anything makes any store agent-ready. [Leash](leash/README.md) makes sure every agent order is one the human meant.
+Checkout Anything opens any store to AI agents, and makes sure every agent order is one the human actually meant.
 
 Built for the PayPal AI Hackathon. Sandbox only, fictional stores only.
 
-## Two projects, one repo
+PayPal's agentic commerce products (Agent Ready and Store Sync) reach merchants through supported platforms such as Wix, BigCommerce, Shopware and Cymbio. Everyone else is invisible to AI shopping agents: a hand-coded HTML shop, an artist with a commission price list, a bakery with a menu page. And once agents can buy, a merchant has no way to know whether the human behind the agent wanted that order. Checkout Anything covers both, in three features.
 
-| Folder | What it is |
-| --- | --- |
-| `backend/`, `frontend/`, `demo-stores/` | **Checkout Anything**: paste a store URL, get a verified buy endpoint any AI shopping agent can pay through. The rest of this README is about it. |
-| [`leash/`](leash/README.md) | **Leash**: proof of intent for agent orders. The merchant authorizes the PayPal payment but holds the capture while Claude checks the order against what the human asked for. Clean matches capture on their own, anything off goes to the human. |
+## Connect
 
-They run as separate services (each has its own `backend/app` package, database and frontend) and deploy from the one `render.yaml`. Leash's own docs are in [`leash/README.md`](leash/README.md) and [`leash/docs/api.md`](leash/docs/api.md).
-
-Leash was built in its own repo, [Bhavishaahuja/leash](https://github.com/Bhavishaahuja/leash), starting October 21, and moved here with `git subtree` so its full commit history came along: `git log` shows every Leash commit.
-
-## The problem
-
-PayPal's agentic commerce products (Agent Ready and Store Sync) reach merchants through supported platforms such as Wix, BigCommerce, Shopware and Cymbio. Everyone else is invisible to AI shopping agents: a hand-coded HTML shop, an artist with a commission price list, a bakery with a menu page. Today those sellers take payment by sending invoices by hand.
-
-## What it does
+Any store becomes buyable by an agent, from just its URL, in about a minute.
 
 1. The merchant pastes their store URL.
 2. Claude reads the page and writes a `store_spec`, a declarative JSON description of what is for sale and at what price.
 3. Fixed Python code verifies the spec. For every item it checks the price against the page, then creates a real PayPal sandbox order and checks what PayPal holds against the spec. On a mismatch Claude repairs the item (3 tries at most). Every step streams live to the UI.
-4. The verified store gets a buy endpoint. Any AI shopping agent can now buy from it through PayPal.
-5. A Claude shopping agent buys from the freshly connected store, pays with a vaulted sandbox wallet, and the payment is captured.
+4. The verified store gets a buy endpoint. Any AI shopping agent can now buy from it through PayPal, and a Claude shopping agent does, paying with a vaulted sandbox wallet.
 
 No integration is needed on the store's side. That is the difference from tools built on PayPal's Store Sync Cart API, which only work for shops that are already wired into PayPal.
 
+## Check
+
+Every agent order is held until it is shown to be what the human asked for.
+
+1. The human's request to their agent is saved as a mandate: the item, the limits, the store.
+2. The payment is authorized at PayPal but not captured.
+3. Fixed rules (price cap, store, expiry, currency) and then Claude compare the order with the mandate.
+4. A clean match is captured on its own. Anything off goes to the human on a one-screen confirm page with a one-line reason: approve captures, reject voids.
+5. A rubber-stamp watch times the approvals. When the human stops really reading them, it asks less often but more pointedly.
+
+## Defend
+
+When a buyer disputes a captured order, the merchant already holds the proof. Checkout Anything finds the dispute through PayPal's Disputes API, builds a packet from its own records (what the buyer asked for, what was ordered, how it was checked, who released the money and how long they took), has Claude draft a plain summary of it, and files both with PayPal as evidence.
+
+Check and Defend have their own API reference in [`check/docs/api.md`](check/docs/api.md) and setup notes in [`check/README.md`](check/README.md).
+
 ## Architecture
+
+One product, two backends. The Connect service is in `backend/` and `frontend/`. The Check service, which also does Defend, is in `check/`. Each has its own database, and both deploy from the one `render.yaml`.
+
+Today the two run side by side: the demo shopping agent pays and captures through the Connect service. Sending its orders through Check instead (the dashed arrow) is the next step and sits behind a `CHECK_URL` setting.
 
 ```mermaid
 flowchart LR
-    U[Merchant pastes URL] --> FE[React app with AG Grid]
-    FE -- POST /stores/connect --> API[FastAPI]
-    API -- SSE events --> FE
-    API --> F[fetcher.py: SSRF guard, HTML to text]
-    F --> X[extractor.py: Claude writes store_spec JSON]
-    X --> S[spec.py: Pydantic validation, 32 KB cap]
-    S --> V[verifier.py: page check, then PayPal check]
-    V -- mismatch reason --> X
-    V -- create and read back order --> PP[(PayPal sandbox Orders v2)]
-    V --> DB[(Postgres)]
-    AG[agent.py: Claude shopping agent] --> SH[shop.py: catalog and buy]
-    SH --> O[orders.py: price from spec, pay with vault id]
-    O --> PP
-    AG -- read order back --> TK[PayPal Agent Toolkit]
-    TK --> PP
-```
+    U[Merchant pastes URL] --> FE[Checkout Anything app: React, AG Grid]
+    AG[AI shopping agent] --> SH
 
-| Part | Where |
-|---|---|
-| API | `backend/app`, Python 3 + FastAPI, Postgres (sqlite locally) |
-| App | `frontend`, React + Vite + AG Grid Community |
-| Demo stores | `demo-stores`, three fictional static pages |
-| Hosting | Render: one web service, two static sites, one Postgres (`render.yaml`) |
+    subgraph CONNECT [Connect service: backend/]
+        API[FastAPI] --> F[fetcher.py: SSRF guard, HTML to text]
+        F --> X[extractor.py: Claude writes store_spec JSON]
+        X --> S[spec.py: Pydantic validation, 32 KB cap]
+        S --> V[verifier.py: page check, then PayPal check]
+        V -- mismatch reason --> X
+        SH[shop.py: catalog and buy] --> O[orders.py: price from the verified spec]
+    end
+
+    subgraph CHECK [Check service: check/]
+        M[mandates: the human's request, parsed] --> IC[intent check: fixed rules, then Claude]
+        IC -- clean match --> CAP[auto-capture]
+        IC -- anything off --> RV[confirm page: human approves or rejects]
+        RV --> RS[rubber-stamp watch]
+        CAP --> DSP[disputes: evidence packet and PDF]
+        RV --> DSP
+    end
+
+    FE -- POST /stores/connect, SSE back --> API
+    V -- create and read back order --> PP[(PayPal sandbox)]
+    O -- pay with vault id, capture --> PP
+    O -. with CHECK_URL: mandate and priced order .-> M
+    CAP -- authorize, capture, void --> PP
+    DSP -- Disputes API --> PP
+    V --> DB1[(Postgres: stores, specs, orders)]
+    IC --> DB2[(Postgres: mandates, checks, approvals, disputes)]
+```
 
 ## How verification works
 
@@ -122,7 +135,7 @@ dev.cmd
 
 That installs everything and opens three windows: the API on 8000, the app on 5173, the demo stores on 5174. Open http://localhost:5173.
 
-It also starts the Leash API on 8001 once `leash/.env` is filled in (the first run creates it from `leash/.env.example`). Leash needs a Postgres database, see [`leash/README.md`](leash/README.md).
+It also starts the Check API on 8001 once `check/.env` is filled in (the first run creates it from `check/.env.example`). The Check service needs a Postgres database, see [`check/README.md`](check/README.md).
 
 ### Keys
 
@@ -158,7 +171,7 @@ One test really talks to the sandbox. It is off by default:
 pytest -m live_sandbox
 ```
 
-Leash's tests are separate and run from its folder: `cd leash`, then `pytest`. CI runs both suites.
+The Check service's tests are separate and run from its folder: `cd check`, then `pytest`. CI runs both suites.
 
 ## Judge mode
 
@@ -238,7 +251,9 @@ Only AG Grid Community is used. Grouping orders by store is done with full-width
 
 The overall shape comes from [ControlAnything](https://github.com/Apolotary/controlanything) (MIT): generated artifacts that are declarative and size-capped, a verify loop that tests against the real target and repairs on failure, the agent's work streaming live next to the thing being connected, and a judge mode that replays labelled fixtures. No code was copied, that project is Node and WebXR and this one is Python and React.
 
-The PayPal client is adapted from the author's own Leash project.
+## History
+
+Check and Defend started as a standalone prototype (codename Leash) on Oct 21 and were merged here with full history. That repo is [Bhavishaahuja/leash](https://github.com/Bhavishaahuja/leash), and `git log` here shows every one of its commits. The Connect service's PayPal client is adapted from it.
 
 ## License
 

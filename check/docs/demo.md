@@ -28,11 +28,11 @@ filed again on camera. Set up a new one before recording.
 
 **Which order:** a captured order that isn't seeded. Order #1 (week1-e2e) is the safe choice.
 Disputes on seeded orders are fine too since #41 (a reset clears them), but a reset then forgets
-the dispute in Leash while it stays open at PayPal.
+the dispute in Checkout Anything while it stays open at PayPal.
 
 **Reason:** "not as described" (SNAD). PayPal requests `OTHER` evidence for it, which is what
-Leash files. Don't use "item not received": PayPal only asks for tracking or a refund there, and
-Leash has neither.
+Checkout Anything files. Don't use "item not received": PayPal only asks for tracking or a refund there, and
+Checkout Anything has neither.
 
 Allow an hour or more for setup: each PayPal step below takes about 10 to 15 minutes to settle.
 

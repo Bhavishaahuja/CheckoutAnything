@@ -1,4 +1,4 @@
-# Leash frontend
+# Check frontend
 
 Vite + React + TypeScript. Three screens:
 
