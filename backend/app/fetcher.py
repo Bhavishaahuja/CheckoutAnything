@@ -94,18 +94,26 @@ def check_url(url, allow_hosts=None, resolve=socket.getaddrinfo):
 
 
 def connected_address(response):
-    # the address the socket is really connected to. urllib3 keeps the connection on the raw
-    # response while the body is still unread (we always ask for stream=True)
-    connection = getattr(response.raw, "connection", None) or getattr(
-        response.raw, "_connection", None
-    )
-    sock = getattr(connection, "sock", None)
-    if sock is None:
-        return None
-    try:
-        return sock.getpeername()[0]
-    except OSError:
-        return None
+    # the address the socket is really connected to, read while the body is still unread
+    # (we always ask for stream=True). there are two places it can be:
+    #   - on the urllib3 connection, when the server keeps the connection open
+    #   - under the http.client response, when the server answered "Connection: close" and
+    #     the connection already let go of the socket
+    raw = response.raw
+    candidates = []
+    connection = getattr(raw, "connection", None) or getattr(raw, "_connection", None)
+    candidates.append(getattr(connection, "sock", None))
+    buffered = getattr(getattr(raw, "_fp", None), "fp", None)
+    candidates.append(getattr(getattr(buffered, "raw", None), "_sock", None))
+
+    for sock in candidates:
+        if sock is None:
+            continue
+        try:
+            return sock.getpeername()[0]
+        except (OSError, AttributeError):
+            continue
+    return None
 
 
 # ---- fetching ----
