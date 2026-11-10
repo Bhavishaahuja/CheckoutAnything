@@ -5,8 +5,8 @@ import json
 
 from sqlalchemy import delete, select
 
-from backend.app import models
-from backend.app.models import Order, Store, StoreSpecRow, VerificationRun
+from backend.app import models, review
+from backend.app.models import ColumnLabel, ItemReview, Order, Store, StoreSpecRow, VerificationRun
 from backend.app.orders import OrderError, order_to_dict, place_order, price_order
 from backend.app.spec import parse_spec, spec_to_json
 
@@ -117,28 +117,42 @@ def list_stores(session, live_only=False):
 
 
 def get_catalog(session, store):
-    # verified items only. this is what an agent is allowed to buy
+    # verified and published items only, in the merchant's order. this is what an agent is
+    # allowed to buy
     spec, version = latest_spec(session, store.id)
     if spec is None:
         return None
     verified = verified_item_ids(session, store.id)
+    reviews = review.ensure_reviews(session, store, spec)
     items = []
     for item in spec.items:
-        if item.available and item.id in verified:
-            items.append({
+        row = reviews.get(item.id)
+        if item.available and item.id in verified and row is not None and row.published:
+            items.append((row.position, {
                 "id": item.id,
                 "name": item.name,
                 "description": item.description,
+                "category": row.category,
                 "unit_price": item.unit_price,
+                # None when the merchant doesn't track stock
+                "stock": row.stock,
                 "variants": [variant.model_dump() for variant in item.variants],
                 "add_ons": [add_on.model_dump() for add_on in item.add_ons],
-            })
+            }))
+    items.sort(key=lambda entry: entry[0])
+    items = [entry for _position, entry in items]
+    labels = review.labels_for(session, store.id)
     return {
         "store_id": store.id,
         "merchant": spec.merchant.model_dump(),
         "source_url": store.source_url,
         "spec_version": version,
         "shipping": spec.shipping.model_dump(),
+        # what the merchant calls each field, renamed columns included
+        "field_labels": {
+            field: labels[field]
+            for field in ("name", "category", "description", "unit_price", "stock")
+        },
         "items": items,
     }
 
@@ -160,7 +174,20 @@ def buy(session, paypal, vault_id, store_id, item_id, variant_id=None, add_on_id
     quote = price_order(
         spec, verified_item_ids(session, store.id), item_id, variant_id, add_on_ids, quantity
     )
+    # the merchant's side: the item has to be published, and in stock when stock is tracked
+    row = review.ensure_reviews(session, store, spec).get(item_id)
+    if row is None or not row.published:
+        raise OrderError(
+            quote.line_name + " isn't live on PayPal yet, the merchant hasn't published it", 409
+        )
+    if row.stock is not None and quote.quantity > row.stock:
+        if row.stock == 0:
+            raise OrderError(quote.line_name + " is out of stock", 409)
+        raise OrderError("Only " + str(row.stock) + " of " + quote.line_name + " left", 409)
+
     order = place_order(session, paypal, vault_id, store, quote, created_by)
+    if order.status == "captured":
+        review.take_stock(session, store.id, item_id, quote.quantity)
     return order_to_dict(order, store.merchant_name), quote
 
 
@@ -177,6 +204,8 @@ def list_orders(session):
 def wipe_everything(session):
     # /demo/reset. only forgets things here, orders and captures stay at PayPal
     session.execute(delete(Order))
+    session.execute(delete(ItemReview))
+    session.execute(delete(ColumnLabel))
     session.execute(delete(VerificationRun))
     session.execute(delete(StoreSpecRow))
     session.execute(delete(Store))

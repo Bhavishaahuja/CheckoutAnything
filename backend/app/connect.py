@@ -8,7 +8,7 @@
 import logging
 import threading
 
-from backend.app import models, shop
+from backend.app import models, review, shop
 from backend.app.config import allowed_fetch_hosts
 from backend.app.demo import RecordingAI, ReplayAI, load_fixture, slug_for_url
 from backend.app.events import bus
@@ -162,6 +162,8 @@ def run_connect(store_id, url, mode, settings, paypal, session_factory,
             store.status = models.FAILED
             store.error = "No item passed verification"
         session.commit()
+        # the merchant's review rows: clean verified items go live, flagged ones wait
+        review.ensure_reviews(session, store, spec)
 
         if recording is not None and counts["verified"] > 0:
             recording.save()

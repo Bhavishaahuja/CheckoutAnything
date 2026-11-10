@@ -50,7 +50,7 @@ def get_session():
 
 
 def create_tables():
-    # four small tables and no migrations yet, so the API makes them on startup
+    # six small tables and no migrations yet, so the API makes them on startup
     from backend.app import models  # noqa: F401
 
     Base.metadata.create_all(get_engine())
