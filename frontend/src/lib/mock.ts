@@ -241,7 +241,8 @@ async function playRun(target: MockStore) {
   target.versions.push({ version: 1, note: "First extraction", created_at: now(), spec: copy(spec) })
   emit(target, "extract.done", "Claude found " + spec.items.length + " items at " + spec.merchant.name + ".", null, {
     item_count: spec.items.length,
-    merchant_name: spec.merchant.name,
+    spec: copy(spec),
+    version: 1,
   })
 
   for (let position = 0; position < spec.items.length; position++) {
@@ -326,7 +327,7 @@ async function playRun(target: MockStore) {
     spec.merchant.name + " is " + (counts.verified > 0 ? "live" : "not live") + ": " + counts.verified + " verified, " +
       counts.failed + " failed, " + counts.unavailable + " unavailable.",
     null,
-    { counts: { ...counts }, status: target.store.status }
+    { counts: { ...counts }, status: target.store.status, spec: copy(spec) }
   )
 }
 

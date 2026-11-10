@@ -65,6 +65,9 @@ function StatusCell({ data }: CustomCellRendererProps<CatalogRow>) {
   )
 }
 
+// the grid starts empty (never "loading"), rows then arrive as transactions
+const NO_ROWS: CatalogRow[] = []
+
 const centered = "flex items-center justify-center"
 
 export function CatalogGrid({
@@ -151,6 +154,7 @@ export function CatalogGrid({
     <div ref={wrapper} className="h-full">
     <AgGridReact<CatalogRow>
       theme={calmTheme}
+      rowData={NO_ROWS}
       columnDefs={columnDefs}
       defaultColDef={{ sortable: true, resizable: true, suppressMovable: true }}
       getRowId={(params: GetRowIdParams<CatalogRow>) => params.data.item_id}

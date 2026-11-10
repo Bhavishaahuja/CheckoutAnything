@@ -4,16 +4,18 @@ React (Vite + TypeScript), Tailwind CSS v4, AG Grid Community, [Magic UI](https:
 
 ## Run it
 
+From the repo root, `dev.cmd` starts the API, this app and the demo stores together. To run only the app:
+
 ```cmd
 cd frontend
 npm install
-copy .env.example .env
+copy .env.example .env.local
 npm run dev
 ```
 
-`VITE_API_URL` points at the FastAPI backend (default `http://localhost:8000`).
+`VITE_API_URL` points at the FastAPI backend (default `http://127.0.0.1:8000`).
 
-No backend running? Set `VITE_USE_MOCK=true` in `.env`. The UI then plays scripted connect runs for the three demo stores and shows a "Mock data, no backend" badge. Nothing in mock mode talks to PayPal or Claude.
+No backend running? Set `VITE_USE_MOCK=true` in `.env.local`. The UI then plays scripted connect runs for the three demo stores and shows a "Mock data, no backend" badge. Nothing in mock mode talks to PayPal or Claude.
 
 ## Screens
 

@@ -245,7 +245,7 @@ export function ConnectPage({
             <div className="flex min-h-12 shrink-0 flex-wrap items-center justify-between gap-x-6 gap-y-2 border-b border-border px-4 py-2">
               <div className="flex min-w-0 items-center gap-2.5">
                 <StoreIcon className="size-4 shrink-0 text-muted-foreground" />
-                <h2 className="truncate text-sm font-semibold">{run.merchantName || (hasRun ? "Reading the store" : "Catalog")}</h2>
+                <h2 className="truncate text-sm font-semibold">{run.merchantName || (connecting ? "Reading the store" : sourceUrl ? prettyName(sourceUrl) : "Catalog")}</h2>
                 <StoreStatusPill status={run.status} />
                 {isFixture && (
                   <Pill tone="warn" className="font-mono tracking-wider">

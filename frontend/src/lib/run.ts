@@ -10,6 +10,7 @@ import type {
   SpecItem,
   SpecResponse,
   StoreEvent,
+  StoreSpec,
   StoreStatus,
   VerificationRun,
 } from "@/lib/types"
@@ -132,7 +133,12 @@ function applyEvent(state: RunState, event: StoreEvent): RunState {
   if (event.type === "extract.started") next.stage = "extract"
   if (event.type === "extract.done") {
     next.stage = "verify"
-    if (typeof data.merchant_name === "string") next.merchantName = data.merchant_name
+    // the API sends the whole spec here, so the store's name shows before any item is checked
+    const spec = data.spec as StoreSpec | undefined
+    if (spec?.merchant) {
+      next.merchantName = spec.merchant.name
+      next.currency = spec.merchant.currency
+    }
   }
   if (event.type === "error") {
     next.stage = "error"
@@ -141,7 +147,8 @@ function applyEvent(state: RunState, event: StoreEvent): RunState {
   }
   if (event.type === "store.ready") {
     next.stage = "ready"
-    next.status = state.rows.some((row) => row.status === "verified") ? "live" : "failed"
+    if (data.status === "live" || data.status === "failed") next.status = data.status
+    else next.status = state.rows.some((row) => row.status === "verified") ? "live" : "failed"
   }
 
   if (event.item_id) {
@@ -150,7 +157,7 @@ function applyEvent(state: RunState, event: StoreEvent): RunState {
     let index = rows.findIndex((row) => row.item_id === event.item_id)
     if (index === -1) {
       if (!data.item) return next
-      rows.push({ ...rowFromItem(data.item, state.currency), flash: "new", flash_at: Date.now() })
+      rows.push({ ...rowFromItem(data.item, next.currency), flash: "new", flash_at: Date.now() })
       index = rows.length - 1
     }
     const row = { ...rows[index] }

@@ -1,0 +1,78 @@
+# Render Blueprint for Checkout Anything. Spec: https://render.com/docs/blueprint-spec
+# Everything here is new and separate from Leash: its own database, its own three services.
+
+databases:
+  - name: checkout-anything-db
+    region: oregon
+    # a free Render Postgres is deleted 30 days after it's created, which is before the
+    # judging window ends (Dec 15). so this is the smallest paid plan
+    plan: basic-256mb
+
+services:
+  - type: web
+    name: checkout-anything-api
+    runtime: python
+    # paid instances never spin down, so judges don't wait a minute for the first request
+    plan: starter
+    region: oregon
+    branch: main
+    autoDeployTrigger: commit
+    # the Agent Toolkit goes in with --no-deps: it pins old openai-agents, langchain and
+    # crewai-tools versions that this app never imports
+    buildCommand: pip install -r requirements.txt && pip install --no-deps paypal-agent-toolkit
+    # one process on purpose. the live event log of a connect run is kept in memory, a second
+    # worker wouldn't see it
+    startCommand: uvicorn backend.app.main:app_factory --factory --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
+      - key: DATABASE_URL
+        fromDatabase:
+          name: checkout-anything-db
+          property: connectionString
+      # sync: false means Render asks for the value in the dashboard and never reads it
+      # from this file
+      - key: PAYPAL_CLIENT_ID
+        sync: false
+      - key: PAYPAL_CLIENT_SECRET
+        sync: false
+      - key: BUYER_VAULT_ID
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      # the frontend's URL, like https://checkout-anything.onrender.com
+      - key: FRONTEND_ORIGINS
+        sync: false
+      # the demo stores' URL, like https://checkout-anything-stores.onrender.com
+      - key: DEMO_STORES_BASE_URL
+        sync: false
+      - key: PAYPAL_BASE_URL
+        value: https://api-m.sandbox.paypal.com
+      - key: DEMO_MODE
+        value: live
+
+  # the app itself. a static site lives on Render's CDN, so no region or plan
+  - type: web
+    name: checkout-anything
+    runtime: static
+    branch: main
+    autoDeployTrigger: commit
+    rootDir: frontend
+    buildCommand: npm ci && npm run build
+    staticPublishPath: dist
+    envVars:
+      # Vite bakes this into the bundle at build time, so changing it needs a rebuild.
+      # not a secret, it ends up in the public JS anyway
+      - key: VITE_API_URL
+        sync: false
+
+  # the three fictional demo stores, plain HTML with no build step
+  - type: web
+    name: checkout-anything-stores
+    runtime: static
+    branch: main
+    autoDeployTrigger: commit
+    rootDir: demo-stores
+    buildCommand: echo "nothing to build"
+    staticPublishPath: .

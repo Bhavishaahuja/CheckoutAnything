@@ -20,6 +20,9 @@ interface OrderRow extends Order {
   seen_at: number
 }
 
+// the grid starts empty (never "loading"), rows then arrive as transactions
+const NO_ROWS: OrderRow[] = []
+
 function Tile({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <Card className="px-4 py-3.5">
@@ -251,6 +254,7 @@ export function OrdersPage({ active, refreshKey }: { active: boolean; refreshKey
         <div ref={wrapper} className="min-h-0 flex-1">
           <AgGridReact<OrderRow>
             theme={calmTheme}
+            rowData={NO_ROWS}
             columnDefs={columnDefs}
             defaultColDef={{ sortable: true, resizable: true, suppressMovable: true }}
             getRowId={(params: GetRowIdParams<OrderRow>) => String(params.data.id)}
