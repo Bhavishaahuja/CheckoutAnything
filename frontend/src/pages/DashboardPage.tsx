@@ -4,21 +4,27 @@ import {
   ExternalFilterModule,
   ModuleRegistry,
   QuickFilterModule,
+  RowApiModule,
   RowSelectionModule,
   RowStyleModule,
   ValidationModule,
   themeQuartz,
   type ColDef,
   type IRowNode,
+  type RowClassParams,
   type RowClickedEvent,
+  type RowDataUpdatedEvent,
 } from 'ag-grid-community'
+import { LicenseManager, RowGroupingModule } from 'ag-grid-enterprise'
 import { AgGridReact } from 'ag-grid-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { listOrders } from '../api'
+import { DEMO_RESET_EVENT, getStats, listOrders } from '../api'
 import { OrderPanel } from '../components/OrderPanel'
+import { StatsTiles } from '../components/StatsTiles'
 import {
   DecideTimeCell,
   DecisionCell,
+  HeldRateCell,
   OrderCell,
   ReasonCell,
   RiskCell,
@@ -26,8 +32,8 @@ import {
   TotalCell,
 } from '../components/orderCells'
 import { buyerName, formatTime, summarizeItems } from '../lib/format'
-import { DECISION_LABELS, decisionKind, decisionMs, displayStatus } from '../lib/orderState'
-import { useAsync } from '../lib/useAsync'
+import { DECISION_LABELS, decisionKind, decisionMs, displayStatus, heldRateAgg, wasHeld } from '../lib/orderState'
+import { usePolling } from '../lib/usePolling'
 import type { Order } from '../types'
 
 // only the grid features we use, so the bundle stays small. ValidationModule only runs in dev
@@ -36,14 +42,28 @@ const gridModules = [
   ClientSideRowModelModule,
   QuickFilterModule,
   ExternalFilterModule,
+  // forEachNode and redrawRows, for the flash on rows that just changed
+  RowApiModule,
   RowSelectionModule,
   RowStyleModule,
   CellStyleModule,
+  // Enterprise: group by agent, and the per-agent held rate
+  RowGroupingModule,
 ]
 if (import.meta.env.DEV) {
   gridModules.push(ValidationModule)
 }
 ModuleRegistry.registerModules(gridModules)
+
+// the trial key comes from the build env (Render sets it). without one the grid still groups,
+// it just shows AG Grid's watermark
+const agGridLicenseKey = import.meta.env.VITE_AG_GRID_LICENSE_KEY
+if (agGridLicenseKey) {
+  LicenseManager.setLicenseKey(agGridLicenseKey)
+}
+
+// what a group row's name is when an old order has no agent on it
+const UNKNOWN_AGENT = 'Unknown agent'
 
 // Quartz, pulled toward the app's palette so the grid doesn't look bolted on
 const gridTheme = themeQuartz.withParams({
@@ -106,17 +126,33 @@ function useNarrowScreen(): boolean {
   return narrow
 }
 
-// stable loader identity so useAsync fetches once
+// stable loader identity so the poll doesn't restart on every render
 const loadOrders = () => listOrders()
+const loadStats = () => getStats()
+
+// how often the grid asks for fresh orders. fast enough that an approve on the phone shows up on the
+// laptop while you're still looking, slow enough to be nothing for the API
+const POLL_MS = 4000
+
+// how long a changed row keeps its flash class. matches the row-flash animation in index.css
+const FLASH_MS = 2400
 
 // Merchant view: every agent order, what the check said, and what the human did about it.
 export function DashboardPage() {
-  const orders = useAsync(loadOrders)
+  const { state: orders, stale, refresh: refreshOrders } = usePolling(loadOrders, POLL_MS)
+  const { state: stats, refresh: refreshStats } = usePolling(loadStats, POLL_MS)
   const gridRef = useRef<AgGridReact<Order>>(null)
+  // each row's status as of the last poll, so we can tell which rows just changed.
+  // null until the first load, which shouldn't flash anything
+  const lastStatuses = useRef<Map<number, string> | null>(null)
+  // rows flashing right now: order id to the status it flashes as
+  const flashing = useRef<Map<number, string>>(new Map())
+  const flashTimers = useRef<ReturnType<typeof setTimeout>[]>([])
   const [filter, setFilter] = useState<Filter>('all')
   const [search, setSearch] = useState('')
   const [selectedId, setSelectedId] = useState<number | null>(null)
   const narrow = useNarrowScreen()
+  const [groupByAgent, setGroupByAgent] = useState(false)
 
   const columnDefs = useMemo<ColDef<Order>[]>(() => {
     const timeColumn: ColDef<Order> = {
@@ -163,8 +199,39 @@ export function DashboardPage() {
       leadColumns = [timeColumn, orderColumn, statusColumn, totalColumn]
     }
 
+    // grouped, this column becomes the group rows (AG Grid hides it and draws the auto group column).
+    // ungrouped, it's a plain column so you can still see who placed each order
+    const agentColumn: ColDef<Order> = {
+      headerName: 'Agent',
+      colId: 'agent',
+      valueGetter: (params) => (params.data ? params.data.agent_name ?? UNKNOWN_AGENT : ''),
+      rowGroup: groupByAgent,
+      hide: groupByAgent || narrow,
+      width: 130,
+      cellClass: 'muted',
+    }
+
+    // the trust score: only filled in on group rows, see HeldRateCell
+    const heldColumn: ColDef<Order> = {
+      headerName: 'Held by Leash',
+      colId: 'held',
+      valueGetter: (params) => (params.data ? (wasHeld(params.data) ? 1 : 0) : null),
+      aggFunc: heldRateAgg,
+      cellRenderer: HeldRateCell,
+      hide: !groupByAgent,
+      // sorting groups by it puts the least trusted agent on top
+      comparator: (a, b) => {
+        const rateA = a && typeof a === 'object' && a.total ? a.held / a.total : 0
+        const rateB = b && typeof b === 'object' && b.total ? b.held / b.total : 0
+        return rateA - rateB
+      },
+      width: 150,
+    }
+
     return [
+      heldColumn,
       ...leadColumns,
+      agentColumn,
       {
         headerName: 'Risk',
         colId: 'risk',
@@ -196,7 +263,16 @@ export function DashboardPage() {
         width: 140,
       },
     ]
-  }, [narrow])
+  }, [narrow, groupByAgent])
+
+  // the column grouped rows show in: the agent's name and how many orders are under it
+  const autoGroupColumnDef = useMemo<ColDef<Order>>(
+    () => ({
+      headerName: 'Agent',
+      minWidth: 190,
+    }),
+    [],
+  )
 
   const defaultColDef = useMemo<ColDef<Order>>(
     () => ({
@@ -225,6 +301,67 @@ export function DashboardPage() {
     }
   }, [])
 
+  useEffect(() => {
+    // after a reset from the top bar, don't make the merchant wait for the next poll
+    function handleReset() {
+      refreshOrders()
+      refreshStats()
+    }
+    window.addEventListener(DEMO_RESET_EVENT, handleReset)
+    return () => window.removeEventListener(DEMO_RESET_EVENT, handleReset)
+  }, [refreshOrders, refreshStats])
+
+  useEffect(() => {
+    const timers = flashTimers.current
+    return () => {
+      for (const timer of timers) {
+        clearTimeout(timer)
+      }
+    }
+  }, [])
+
+  // runs after the grid has applied a poll. getRowId means it only touched rows that changed, so
+  // selection and scroll stay put. here we just find which rows are new or changed status and
+  // flash them in their new color: amber when a hold lands, green on capture, gray on void
+  const onRowDataUpdated = useCallback((event: RowDataUpdatedEvent<Order>) => {
+    const nextStatuses = new Map<number, string>()
+    const changedNodes: IRowNode<Order>[] = []
+    event.api.forEachNode((node) => {
+      if (!node.data) {
+        return
+      }
+      const status = displayStatus(node.data)
+      nextStatuses.set(node.data.id, status)
+      const before = lastStatuses.current?.get(node.data.id)
+      if (lastStatuses.current !== null && before !== status) {
+        flashing.current.set(node.data.id, status)
+        changedNodes.push(node)
+      }
+    })
+    lastStatuses.current = nextStatuses
+    if (changedNodes.length === 0) {
+      return
+    }
+
+    // redraw rebuilds the row element, so the CSS animation plays from the start
+    event.api.redrawRows({ rowNodes: changedNodes })
+    const timer = setTimeout(() => {
+      for (const node of changedNodes) {
+        if (node.data) {
+          flashing.current.delete(node.data.id)
+        }
+      }
+      // gridRef, not event.api: the grid may have been rebuilt since
+      gridRef.current?.api?.redrawRows({ rowNodes: changedNodes })
+    }, FLASH_MS)
+    flashTimers.current.push(timer)
+  }, [])
+
+  const getRowClass = useCallback((params: RowClassParams<Order>) => {
+    const status = params.data ? flashing.current.get(params.data.id) : undefined
+    return status ? 'row--flash row--flash-' + status : undefined
+  }, [])
+
   const closePanel = useCallback(() => {
     setSelectedId(null)
     gridRef.current?.api.deselectAll()
@@ -250,6 +387,8 @@ export function DashboardPage() {
           </p>
         </div>
       </div>
+
+      <StatsTiles stats={stats} />
 
       <div className="card">
         {orders.status === 'loading' && <p className="state">Loading orders...</p>}
@@ -278,14 +417,28 @@ export function DashboardPage() {
                   </button>
                 ))}
               </div>
-              <input
-                type="search"
-                className="search"
-                placeholder="Search item, buyer or order #"
-                aria-label="Search orders"
-                value={search}
-                onChange={(event) => setSearch(event.target.value)}
-              />
+              <div className="grid-toolbar__end">
+                <button
+                  type="button"
+                  className="segmented__button segmented__button--solo"
+                  aria-pressed={groupByAgent}
+                  onClick={() => setGroupByAgent((value) => !value)}
+                >
+                  Group by agent
+                </button>
+                <span className={'live' + (stale ? ' live--stale' : '')} role="status">
+                  <span className="live__dot" aria-hidden="true" />
+                  {stale ? 'Reconnecting...' : 'Live'}
+                </span>
+                <input
+                  type="search"
+                  className="search"
+                  placeholder="Search item, buyer or order #"
+                  aria-label="Search orders"
+                  value={search}
+                  onChange={(event) => setSearch(event.target.value)}
+                />
+              </div>
             </div>
             <div className="grid-wrap">
               <AgGridReact<Order>
@@ -295,6 +448,9 @@ export function DashboardPage() {
                 columnDefs={columnDefs}
                 defaultColDef={defaultColDef}
                 getRowId={(params) => String(params.data.id)}
+                autoGroupColumnDef={autoGroupColumnDef}
+                groupDefaultExpanded={-1}
+                suppressAggFuncInHeader
                 rowHeight={60}
                 headerHeight={40}
                 domLayout="autoHeight"
@@ -303,6 +459,8 @@ export function DashboardPage() {
                 doesExternalFilterPass={doesExternalFilterPass}
                 rowSelection={{ mode: 'singleRow', checkboxes: false, enableClickSelection: true }}
                 rowClassRules={{ 'row--needs-review': (params) => params.data?.review_state === 'needs_review' }}
+                getRowClass={getRowClass}
+                onRowDataUpdated={onRowDataUpdated}
                 onRowClicked={openOrder}
                 onCellKeyDown={(event) => {
                   // Enter on a focused row opens it, same as a click
