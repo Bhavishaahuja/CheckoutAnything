@@ -6,3 +6,5 @@ uvicorn[standard]
 pydantic-settings
 sqlalchemy
 psycopg[binary]
+# the PayPal Agent Toolkit imports httpx. it's installed with --no-deps, so pip won't pull it in
+httpx
