@@ -1,8 +1,8 @@
 [tool.ruff]
 target-version = "py311"
 line-length = 100
-# leash/ has its own pyproject and its own CI job
-extend-exclude = ["frontend", "leash"]
+# check/ has its own pyproject and its own CI job
+extend-exclude = ["frontend", "check"]
 
 [tool.ruff.lint]
 # pycodestyle errors/warnings, pyflakes, bugbear
