@@ -65,6 +65,7 @@ export function ConnectPage({
   const [url, setUrl] = useState("")
   const [starting, setStarting] = useState(false)
   const [formError, setFormError] = useState<string | null>(null)
+  const [formNote, setFormNote] = useState<string | null>(null)
   const [openItemId, setOpenItemId] = useState<string | null>(null)
 
   const run = useRun(activeStoreId, onStoresChanged)
@@ -81,9 +82,11 @@ export function ConnectPage({
     }
     setStarting(true)
     setFormError(null)
+    setFormNote(null)
     setOpenItemId(null)
     try {
       const started = await api.connectStore(cleaned, mode)
+      if (started.already_connected) setFormNote(started.message || "This store is already connected")
       onPickStore(started.store_id)
       onStoresChanged()
     } catch (problem) {
@@ -184,6 +187,11 @@ export function ConnectPage({
             <div className="mt-3 w-full text-left">
               <ErrorNote>{formError}</ErrorNote>
             </div>
+          )}
+          {formNote && !formError && (
+            <p className="mt-3 w-full text-left text-sm text-muted-foreground" role="status">
+              {formNote}
+            </p>
           )}
 
           {config && config.demo_store_urls.length > 0 && (

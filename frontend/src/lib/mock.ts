@@ -822,7 +822,13 @@ export const mockApi: Api = {
     await sleep(200)
     if (!/^https?:\/\//.test(url)) throw new Error("Only http and https URLs can be connected")
     const target = startStore(url, mode)
-    return { store_id: target.store.id, mode, events_url: "/stores/" + target.store.id + "/events" }
+    return {
+      store_id: target.store.id,
+      mode,
+      events_url: "/stores/" + target.store.id + "/events",
+      already_connected: false,
+      message: null,
+    }
   },
 
   subscribe(storeId, onEvent): EventSubscription {
