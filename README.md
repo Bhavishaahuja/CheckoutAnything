@@ -246,6 +246,8 @@ The hosted app runs live by default: it fetches the page and calls Claude. The *
 
 **Reset demo** wipes the stores and orders kept by this app and reconnects the three demo stores. Orders at PayPal are not touched.
 
+**Sloppy agent (demo)** on the Agent page is demo only and off by default: the agent buys the next size over (fixed code, not Claude), so Check gets a wrong order to hold. Check still gets the human's exact words, the price still comes from the verified spec, and the API refuses it unless `CHECK_URL` is set.
+
 Fixtures are recorded, never written by hand. With the API running with `RECORD_FIXTURES=1`:
 
 ```

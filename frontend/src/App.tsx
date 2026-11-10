@@ -220,6 +220,7 @@ export default function App() {
           <AgentPage
             stores={stores}
             claudeReady={config ? config.claude_configured : true}
+            checkReady={config ? config.check_configured : false}
             onOrdersChanged={bumpOrders}
             onGoToConnect={() => goTo("connect")}
           />

@@ -67,6 +67,14 @@ and you must not try to buy it again or buy something else instead.
 Only call check_payment when buy_item returned a paypal_order_id. If there is no capture id, \
 don't mention one."""
 
+# added to the system prompt when the demo's sloppy toggle is on
+SLOPPY_PROMPT = """
+
+Demo mode is on: buy_item may place the order for a different size than the one you picked. \
+Its result has "asked_for" and "bought" when that happened. Tell the user plainly what was \
+actually bought (the "bought" item) and where the order stands. Never say you bought what \
+they asked for when the result says otherwise."""
+
 # who the mandate is from. Check wants a label, and there are no shopper accounts here
 BUYER_LABEL = "Checkout Anything shopper"
 
@@ -143,6 +151,28 @@ def order_note(order):
     return line + "]"
 
 
+def next_variant_over(item, variant_id):
+    # the demo's sloppy swap, plain Python: the next variant in spec order, wrapping around.
+    # the base item (no variant) becomes the first variant. no variants, nothing to swap
+    if not item.variants:
+        return variant_id
+    if not variant_id:
+        return item.variants[0].id
+    for index in range(len(item.variants)):
+        if item.variants[index].id == variant_id:
+            return item.variants[(index + 1) % len(item.variants)].id
+    # a variant id the spec doesn't have: leave it, pricing will refuse it
+    return variant_id
+
+
+def line_label(item, variant_id):
+    # "Wool Camp Blanket (Medium)", or just the name for the base item
+    for variant in item.variants:
+        if variant.id == variant_id:
+            return item.name + " (" + variant.label + ")"
+    return item.name
+
+
 def filter_items(items, query):
     # keep items that mention any word of the query. nothing matching means show everything,
     # an agent that searched "bread" should still see the sourdough
@@ -165,7 +195,7 @@ def filter_items(items, query):
 
 class ShoppingAgent:
     def __init__(self, session, paypal, settings, client=None, order_reader=get_order_details,
-                 check=None):
+                 check=None, sloppy=False):
         self.session = session
         self.paypal = paypal
         self.settings = settings
@@ -173,6 +203,9 @@ class ShoppingAgent:
         self.order_reader = order_reader
         # a CheckClient, or None when CHECK_URL isn't set
         self.check = check
+        # demo only: buy the next size over, so Check has a wrong order to catch. main.py
+        # only lets this on when Check is there to hold it
+        self.sloppy = sloppy
         # the human's last message, word for word. set by chat()
         self.human_request = ""
         # store id -> mandate id, so two buys at one store in one chat share a mandate
@@ -229,14 +262,36 @@ class ShoppingAgent:
         catalog["items"] = filter_items(catalog["items"], query)
         return catalog
 
+    def sloppy_swap(self, store_id, item_id, variant_id):
+        # returns (variant to buy, item or None). only the variant changes, the price still
+        # comes from the verified spec inside shop.buy
+        store = shop.get_store(self.session, store_id)
+        if store is None:
+            return variant_id, None
+        spec, _version = shop.latest_spec(self.session, store.id)
+        if spec is None:
+            return variant_id, None
+        for item in spec.items:
+            if item.id == item_id:
+                return next_variant_over(item, variant_id), item
+        return variant_id, None
+
     def tool_buy_item(self, tool_input):
+        variant_id = tool_input.get("variant_id") or None
+        asked_variant_id = variant_id
+        swapped_item = None
+        if self.sloppy:
+            variant_id, swapped_item = self.sloppy_swap(
+                tool_input.get("store_id"), tool_input.get("item_id"), variant_id
+            )
+
         order, quote = shop.buy(
             self.session,
             self.paypal,
             self.settings.buyer_vault_id,
             tool_input.get("store_id"),
             tool_input.get("item_id"),
-            tool_input.get("variant_id") or None,
+            variant_id,
             tool_input.get("add_on_ids") or [],
             tool_input.get("quantity"),
             created_by="agent",
@@ -256,6 +311,14 @@ class ShoppingAgent:
             "error": order["error"],
             "order": order,
         }
+        if swapped_item is not None and variant_id != asked_variant_id:
+            # say what really happened, so the reply can't claim the asked-for size
+            result["asked_for"] = line_label(swapped_item, asked_variant_id)
+            result["bought"] = line_label(swapped_item, variant_id)
+            result["note"] = (
+                "Demo sloppy mode swapped the size: the order is for " + result["bought"]
+                + ", not " + result["asked_for"]
+            )
         if self.check is None:
             return result, order["status"] != "captured"
 
@@ -307,6 +370,8 @@ class ShoppingAgent:
         system_prompt = SYSTEM_PROMPT
         if self.check is not None:
             system_prompt += CHECK_PROMPT
+        if self.sloppy:
+            system_prompt += SLOPPY_PROMPT
 
         steps = []
         orders = []

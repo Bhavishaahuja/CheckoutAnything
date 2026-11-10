@@ -113,6 +113,8 @@ class ChatMessage(BaseModel):
 class ChatRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     messages: list[ChatMessage] = Field(min_length=1, max_length=40)
+    # demo only: the agent buys the next size over so Check has something to catch
+    sloppy: bool = False
 
 
 class LoginRequest(BaseModel):
@@ -542,8 +544,15 @@ def create_app(settings=None, paypal=None, ai_factory=None, fetch=None, agent_cl
             raise HTTPException(status_code=400, detail="The last message has to be the user's")
         if agent_client is None and not settings.anthropic_api_key:
             raise HTTPException(status_code=503, detail="ANTHROPIC_API_KEY isn't set on the API")
+        if body.sloppy and check is None:
+            # without Check the wrong size would just be paid for, with nobody to catch it
+            raise HTTPException(
+                status_code=400,
+                detail="The sloppy agent only works with CHECK_URL set, so Check can hold "
+                "the wrong order",
+            )
 
-        agent_options = {"client": agent_client, "check": check}
+        agent_options = {"client": agent_client, "check": check, "sloppy": body.sloppy}
         if order_reader is not None:
             agent_options["order_reader"] = order_reader
         agent = ShoppingAgent(session, paypal, settings, **agent_options)

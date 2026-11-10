@@ -3,7 +3,7 @@
 import { ArrowUp, Bot, Check, ChevronRight, CreditCard, ListChecks, Search, Store as StoreIcon, TriangleAlert } from "lucide-react"
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react"
 
-import { Card, CopyId, ErrorNote, Pill } from "@/components/bits"
+import { Card, CopyId, ErrorNote, Pill, Switch } from "@/components/bits"
 import { AnimatedShinyText } from "@/components/magicui/animated-shiny-text"
 import { BlurFade } from "@/components/magicui/blur-fade"
 import { Confetti, type ConfettiRef } from "@/components/magicui/confetti"
@@ -131,16 +131,21 @@ function StepCard({ step }: { step: AgentStep }) {
 export function AgentPage({
   stores,
   claudeReady,
+  checkReady,
   onOrdersChanged,
   onGoToConnect,
 }: {
   stores: Store[]
   claudeReady: boolean
+  // Check is on (CHECK_URL), which the sloppy demo toggle needs
+  checkReady: boolean
   onOrdersChanged: () => void
   onGoToConnect: () => void
 }) {
   const [turns, setTurns] = useState<Turn[]>([])
   const [draft, setDraft] = useState("")
+  // demo only, off by default. the API refuses it unless Check is there to hold the order
+  const [sloppy, setSloppy] = useState(false)
   const nextId = useRef(1)
   const scroller = useRef<HTMLDivElement>(null)
   const confetti = useRef<ConfettiRef>(null)
@@ -193,7 +198,7 @@ export function AgentPage({
     const id = nextId.current++
     setTurns((current) => [...current, { id, question: cleaned, pending: true, answer: null, error: null, shown: 0 }])
     try {
-      const answer = await api.agentChat(history)
+      const answer = await api.agentChat(history, sloppy && checkReady)
       setTurns((current) => current.map((turn) => (turn.id === id ? { ...turn, pending: false, answer } : turn)))
     } catch (problem) {
       const message = problem instanceof Error ? problem.message : "The agent call failed"
@@ -298,6 +303,15 @@ export function AgentPage({
           {!claudeReady && (
             <p className="mb-2 text-xs text-warn">ANTHROPIC_API_KEY isn't set on the API, so the agent can't answer yet.</p>
           )}
+          <div className="mx-auto mb-2 flex max-w-2xl flex-wrap items-center gap-x-3 gap-y-1">
+            <Pill tone="warn">DEMO</Pill>
+            <Switch checked={sloppy && checkReady} onChange={setSloppy} label="Sloppy agent (demo)" disabled={!checkReady} />
+            <span className="text-xs text-muted-foreground">
+              {checkReady
+                ? "Swaps in the next size over to show Check catching it"
+                : "Needs Check (CHECK_URL) on the API, so the wrong order gets held"}
+            </span>
+          </div>
           <div className="mx-auto flex max-w-2xl items-center gap-2 rounded-xl border border-border bg-background px-3 py-1.5 focus-within:border-primary">
             <label className="sr-only" htmlFor="agent-input">
               Message the shopping agent

@@ -108,7 +108,8 @@ export interface Api {
   renameColumn(storeId: number, field: string, label: string): Promise<ReviewResponse>
   createOrder(storeId: number, body: OrderRequest): Promise<Order>
   listOrders(): Promise<Order[]>
-  agentChat(messages: ChatMessage[]): Promise<AgentReply>
+  // sloppy is the demo toggle: the agent buys the next size over so Check can catch it
+  agentChat(messages: ChatMessage[], sloppy?: boolean): Promise<AgentReply>
   resetDemo(mode: Mode): Promise<ResetResponse>
   // the merchant's login (the Check dashboard's password). only review links need it
   hasSession(): boolean
@@ -205,8 +206,8 @@ const realApi: Api = {
 
   listOrders: async () => (await request<{ orders: Order[] }>("/orders")).orders,
 
-  agentChat: (messages) =>
-    request<AgentReply>("/agent/chat", { method: "POST", body: JSON.stringify({ messages }) }),
+  agentChat: (messages, sloppy = false) =>
+    request<AgentReply>("/agent/chat", { method: "POST", body: JSON.stringify({ messages, sloppy }) }),
 
   resetDemo: (mode) =>
     request<ResetResponse>("/demo/reset", { method: "POST", body: JSON.stringify({ mode }) }),
