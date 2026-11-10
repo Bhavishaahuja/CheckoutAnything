@@ -8,8 +8,10 @@
 
 import type { CustomOverlayProps } from "ag-grid-react"
 import { LoaderCircle, SearchX } from "lucide-react"
+import { motion } from "motion/react"
 import { useSyncExternalStore, type ReactNode } from "react"
 
+import { Press, Rise, SOFT } from "@/components/grid/motion"
 import { Button } from "@/components/ui/button"
 
 export interface OverlayContent {
@@ -65,7 +67,10 @@ export function GridOverlay(props: CustomOverlayProps<unknown, { overlay: Overla
   if (props.overlayType === "loading") {
     const { title, step, progress } = content.loading
     return (
-      <div role="status" aria-live="polite" className="pointer-events-auto flex w-72 max-w-full flex-col items-center gap-3 px-4 text-center">
+      <Rise className="pointer-events-auto flex w-72 max-w-full flex-col items-center gap-3 px-4 text-center">
+        <span role="status" aria-live="polite" className="sr-only">
+          {title}. {step}
+        </span>
         <LoaderCircle className="spin-slow size-5 text-primary" aria-hidden />
         <div className="text-sm font-medium">{title}</div>
         {progress !== undefined && (
@@ -77,27 +82,36 @@ export function GridOverlay(props: CustomOverlayProps<unknown, { overlay: Overla
             aria-label={title}
             className="h-1.5 w-full overflow-hidden rounded-full bg-muted"
           >
-            <div
-              className="h-full rounded-full bg-primary transition-[width] duration-500 ease-out"
-              style={{ width: Math.max(4, Math.round(progress * 100)) + "%" }}
+            {/* the bar springs to each step instead of jumping */}
+            <motion.div
+              className="h-full rounded-full bg-primary"
+              initial={{ width: "4%" }}
+              animate={{ width: Math.max(4, Math.round(progress * 100)) + "%" }}
+              transition={SOFT}
             />
           </div>
         )}
-        {step && <div className="text-xs text-muted-foreground">{step}</div>}
-      </div>
+        {step && (
+          <motion.div key={step} className="text-xs text-muted-foreground" initial={{ opacity: 0, y: 4 }} animate={{ opacity: 1, y: 0 }} transition={SOFT}>
+            {step}
+          </motion.div>
+        )}
+      </Rise>
     )
   }
 
   if (props.overlayType === "noMatchingRows") {
     const { title, actionLabel, onAction } = content.noMatch
     return (
-      <div className="pointer-events-auto flex flex-col items-center gap-3 px-4 text-center">
+      <Rise className="pointer-events-auto flex flex-col items-center gap-3 px-4 text-center">
         <SearchX className="size-5 text-muted-foreground" aria-hidden />
         <div className="text-sm font-medium">{title}</div>
-        <Button size="sm" variant="outline" onClick={onAction}>
-          {actionLabel}
-        </Button>
-      </div>
+        <Press>
+          <Button size="sm" variant="outline" onClick={onAction}>
+            {actionLabel}
+          </Button>
+        </Press>
+      </Rise>
     )
   }
 
@@ -112,14 +126,34 @@ export function GridOverlay(props: CustomOverlayProps<unknown, { overlay: Overla
   const { icon, title, hint, actionLabel, onAction, busy } = content.empty
   return (
     <div className="pointer-events-auto flex max-w-sm flex-col items-center gap-2 px-4 text-center">
-      {icon && <div className="mb-1 text-muted-foreground [&_svg]:size-6">{icon}</div>}
-      <div className="text-sm font-medium">{title}</div>
-      {hint && <div className="text-[13px] text-pretty text-muted-foreground">{hint}</div>}
+      {/* the pieces arrive one after the other */}
+      {icon && (
+        <motion.div
+          className="mb-1 text-muted-foreground [&_svg]:size-6"
+          initial={{ opacity: 0, scale: 0.6 }}
+          animate={{ opacity: 1, scale: 1, y: [0, -3, 0] }}
+          transition={{ ...SOFT, y: { duration: 2.6, repeat: Infinity, ease: "easeInOut" } }}
+        >
+          {icon}
+        </motion.div>
+      )}
+      <Rise delay={0.05} className="text-sm font-medium">
+        {title}
+      </Rise>
+      {hint && (
+        <Rise delay={0.1} className="text-[13px] text-pretty text-muted-foreground">
+          {hint}
+        </Rise>
+      )}
       {actionLabel && onAction && (
-        <Button size="sm" className="mt-2" onClick={onAction} disabled={busy}>
-          {busy && <LoaderCircle className="spin-slow" />}
-          {actionLabel}
-        </Button>
+        <Rise delay={0.16} className="mt-2">
+          <Press disabled={busy}>
+            <Button size="sm" onClick={onAction} disabled={busy}>
+              {busy && <LoaderCircle className="spin-slow" />}
+              {actionLabel}
+            </Button>
+          </Press>
+        </Rise>
       )}
     </div>
   )

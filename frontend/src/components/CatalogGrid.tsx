@@ -21,6 +21,7 @@ import type {
 } from "ag-grid-community"
 import { AgGridReact, type CustomCellRendererProps } from "ag-grid-react"
 import { Check, Download, PanelRightOpen, Redo2, RotateCcw, Store as StoreIcon, TriangleAlert, Undo2, Upload } from "lucide-react"
+import { AnimatePresence, motion } from "motion/react"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 
 import { CheckMark, CopyId, RowStatusPill } from "@/components/bits"
@@ -28,6 +29,7 @@ import { ColumnsMenu } from "@/components/grid/ColumnsMenu"
 import { EditableHeader, type HeaderContext } from "@/components/grid/EditableHeader"
 import { FLAG_COLUMN, FlagTooltip, flagForColumn } from "@/components/grid/FlagTooltip"
 import { createOverlayStore, GridOverlay, type OverlayContent, type OverlayStore } from "@/components/grid/GridOverlay"
+import { CountRoll, POP, Press } from "@/components/grid/motion"
 import { PriceEditor } from "@/components/grid/PriceEditor"
 import { Button } from "@/components/ui/button"
 import { api } from "@/lib/api"
@@ -67,7 +69,12 @@ function ConfirmButton({ row, colId, context }: { row: CatalogRow; colId: string
   const flag = flagForColumn(row, colId)
   if (!flag || flag.resolved || !context.editable) return null
   return (
-    <button
+    <motion.button
+      initial={{ scale: 0, opacity: 0 }}
+      animate={{ scale: 1, opacity: 1 }}
+      whileHover={{ scale: 1.12 }}
+      whileTap={{ scale: 0.82 }}
+      transition={POP}
       type="button"
       tabIndex={-1}
       aria-label={"Confirm the " + FIELD_WORDS[flag.field] + " of " + row.name + " is right"}
@@ -80,7 +87,7 @@ function ConfirmButton({ row, colId, context }: { row: CatalogRow; colId: string
       className="ml-auto flex size-6 shrink-0 items-center justify-center rounded-md border border-warn/40 bg-card text-warn hover:bg-warn hover:text-card"
     >
       <Check className="size-3.5" strokeWidth={3} />
-    </button>
+    </motion.button>
   )
 }
 
@@ -89,9 +96,16 @@ function FlagMark({ row, colId }: { row: CatalogRow; colId: string }) {
   if (!flag || flag.resolved) return null
   // amber is never the only signal: the icon and its label say the same thing
   return (
-    <span className="shrink-0 text-warn" role="img" aria-label="Needs a look">
+    <motion.span
+      className="shrink-0 text-warn"
+      role="img"
+      aria-label="Needs a look"
+      initial={{ scale: 0, rotate: -30 }}
+      animate={{ scale: 1, rotate: 0 }}
+      transition={POP}
+    >
       <TriangleAlert className="size-3.5" />
-    </span>
+    </motion.span>
   )
 }
 
@@ -755,46 +769,86 @@ export function CatalogGrid({
       {hasRows && (
         <div className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-2 border-b border-border px-4 py-2">
           {/* the counter: how many cells the agent wasn't sure about are still open */}
-          {flaggedTotal > 0 && needsLook > 0 && (
-            <button
-              type="button"
-              onClick={jumpToNextFlag}
-              title="Go to the next one"
-              className="flex h-8 items-center gap-1.5 rounded-lg bg-warn-soft px-2.5 text-[13px] font-medium text-warn hover:brightness-95"
-            >
-              <TriangleAlert className="size-3.5" aria-hidden />
-              <span aria-live="polite">
-                {needsLook} {needsLook === 1 ? "field needs" : "fields need"} a look
-              </span>
-            </button>
-          )}
-          {flaggedTotal > 0 && needsLook === 0 && (
-            <span className="flex h-8 items-center gap-1.5 rounded-lg bg-ok-soft px-2.5 text-[13px] font-medium text-ok" aria-live="polite">
-              <Check className="size-3.5" strokeWidth={3} aria-hidden /> 0 fields need a look
-            </span>
-          )}
+          <AnimatePresence mode="popLayout" initial={false}>
+            {flaggedTotal > 0 && needsLook > 0 && (
+              <motion.button
+                key="open"
+                layout
+                exit={{ opacity: 0, scale: 0.9 }}
+                whileTap={{ scale: 0.96 }}
+                transition={POP}
+                type="button"
+                onClick={jumpToNextFlag}
+                title="Go to the next one"
+                aria-label={needsLook + (needsLook === 1 ? " field needs" : " fields need") + " a look. Go to the next one"}
+                className="flex h-8 items-center gap-1.5 rounded-lg bg-warn-soft px-2.5 text-[13px] font-medium text-warn hover:brightness-95"
+              >
+                <TriangleAlert className="size-3.5" aria-hidden />
+                {/* the number rolls down as each cell is dealt with */}
+                <CountRoll value={needsLook} />
+                <span>{needsLook === 1 ? "field needs" : "fields need"} a look</span>
+              </motion.button>
+            )}
+            {flaggedTotal > 0 && needsLook === 0 && (
+              <motion.span
+                key="done"
+                layout
+                initial={{ opacity: 0, scale: 0.8 }}
+                animate={{ opacity: 1, scale: [0.8, 1.08, 1] }}
+                transition={{ duration: 0.45 }}
+                className="flex h-8 items-center gap-1.5 rounded-lg bg-ok-soft px-2.5 text-[13px] font-medium text-ok"
+              >
+                <motion.span initial={{ scale: 0, rotate: -90 }} animate={{ scale: 1, rotate: 0 }} transition={{ ...POP, delay: 0.12 }} className="flex">
+                  <Check className="size-3.5" strokeWidth={3} aria-hidden />
+                </motion.span>
+                0 fields need a look
+              </motion.span>
+            )}
+          </AnimatePresence>
+          <span className="sr-only" aria-live="polite">
+            {flaggedTotal > 0 ? needsLook + (needsLook === 1 ? " field needs" : " fields need") + " a look" : ""}
+          </span>
 
           {editable && (
             <div className="flex items-center gap-2">
-              <Button
-                size="sm"
-                variant={takeOffline ? "outline" : "default"}
-                disabled={publishing || selected.length === 0 || stillAmber.length > 0}
-                aria-describedby={publishHint ? "publish-hint" : undefined}
-                onClick={() => void publish()}
-              >
-                <Upload />
-                {takeOffline
-                  ? "Take " + selected.length + " offline"
-                  : toPublish.length > 0
-                    ? "Publish " + toPublish.length + " to PayPal"
-                    : "Publish to PayPal"}
-              </Button>
-              {publishHint && (
-                <span id="publish-hint" className={cn("text-xs", stillAmber.length > 0 ? "font-medium text-warn" : "text-muted-foreground")}>
-                  {publishHint}
-                </span>
-              )}
+              <Press disabled={publishing || selected.length === 0 || stillAmber.length > 0}>
+                <Button
+                  size="sm"
+                  variant={takeOffline ? "outline" : "default"}
+                  disabled={publishing || selected.length === 0 || stillAmber.length > 0}
+                  aria-describedby={publishHint ? "publish-hint" : undefined}
+                  // the rolling number shows two digits for a moment, the name never does
+                  aria-label={takeOffline ? "Take " + selected.length + " offline" : toPublish.length > 0 ? "Publish " + toPublish.length + " to PayPal" : "Publish to PayPal"}
+                  onClick={() => void publish()}
+                >
+                  <motion.span className="flex" animate={publishing ? { y: [0, -3, 0] } : { y: 0 }} transition={publishing ? { duration: 0.6, repeat: Infinity } : POP}>
+                    <Upload />
+                  </motion.span>
+                  {takeOffline ? (
+                    <>Take <CountRoll value={selected.length} /> offline</>
+                  ) : toPublish.length > 0 ? (
+                    <>Publish <CountRoll value={toPublish.length} /> to PayPal</>
+                  ) : (
+                    "Publish to PayPal"
+                  )}
+                </Button>
+              </Press>
+              <AnimatePresence mode="wait" initial={false}>
+                {publishHint && (
+                  <motion.span
+                    key={stillAmber.length > 0 ? "blocked" : "hint"}
+                    id="publish-hint"
+                    initial={{ opacity: 0, x: -6 }}
+                    // a blocked publish gets a small shake, the "not yet" gesture
+                    animate={stillAmber.length > 0 ? { opacity: 1, x: [0, -4, 4, -2, 2, 0] } : { opacity: 1, x: 0 }}
+                    exit={{ opacity: 0 }}
+                    transition={{ duration: stillAmber.length > 0 ? 0.4 : 0.18 }}
+                    className={cn("text-xs", stillAmber.length > 0 ? "font-medium text-warn" : "text-muted-foreground")}
+                  >
+                    {publishHint}
+                  </motion.span>
+                )}
+              </AnimatePresence>
             </div>
           )}
 
@@ -807,9 +861,21 @@ export function CatalogGrid({
               )}
               title={save.kind === "error" ? save.text : undefined}
             >
-              {save.kind === "saving" && "Saving..."}
-              {save.kind === "saved" && save.text}
-              {save.kind === "error" && save.text}
+              <AnimatePresence mode="wait" initial={false}>
+                {save.kind !== "idle" && (
+                  <motion.span
+                    key={save.kind + (save.kind === "saving" ? "" : save.text)}
+                    className="inline-flex items-center gap-1"
+                    initial={{ opacity: 0, y: 5 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -5 }}
+                    transition={{ duration: 0.16 }}
+                  >
+                    {save.kind === "saved" && <Check className="size-3 text-ok" strokeWidth={3} aria-hidden />}
+                    {save.kind === "saving" ? "Saving..." : save.text}
+                  </motion.span>
+                )}
+              </AnimatePresence>
             </span>
             {editable && (
               <>

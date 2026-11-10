@@ -34,6 +34,14 @@ The header has the Replay mode switch and the Reset demo button (inline confirm)
 
 All 20 features and why each is there are in the root README, under [How we use AG Grid](../README.md#how-we-use-ag-grid). The shared pieces are `src/lib/gridTheme.ts`, `src/lib/gridState.ts`, `src/lib/gridFind.tsx`, `src/lib/useGridRows.ts` and `src/components/grid/`.
 
+**Motion in the grids' own UI** (`src/components/grid/motion.tsx`)
+- Counters roll when they change: fields that need a look, rows to publish, find position, pinned orders, fast approvals
+- The amber counter turns into a green check with a bounce at 0, and a blocked publish shakes its reason
+- Status pills, mismatch marks and the Fast approval chip spring in. Approve and Reject press in, and the rubber-stamp strip jolts when another fast approval lands
+- Tooltips, the price editor, the columns menu and the overlays scale and rise in. The loading bar springs between steps
+- The Intent review / Purchases switch is one pill that slides (`layoutId`)
+- `MotionConfig reducedMotion="user"` in `main.tsx` turns movement off for anyone whose system asks for less
+
 **Motion + AG Grid** (`src/lib/gridFlash.ts`)
 - When an item verifies: AG Grid flashes the row green, and Motion runs a staggered lift across its cells
 - When an item fails for good: red flash plus a short shake

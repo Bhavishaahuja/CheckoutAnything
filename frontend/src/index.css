@@ -129,6 +129,10 @@ button:disabled {
 /* the row whose spec drawer is open */
 .ag-row.row-open { box-shadow: inset 3px 0 0 var(--primary); }
 
+/* state colours ease in and out instead of snapping */
+.ag-cell { transition: background-color 0.35s ease, box-shadow 0.35s ease; }
+.ag-row { transition: background-color 0.35s ease, box-shadow 0.35s ease, color 0.35s ease; }
+
 /* a cell the agent was unsure about. the tint is backed by an icon in the cell */
 .ag-cell.cell-flag {
   background: var(--warn-soft);

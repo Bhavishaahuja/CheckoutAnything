@@ -29,11 +29,13 @@ import {
   Zap,
 } from "lucide-react"
 import { animate } from "motion"
+import { AnimatePresence, motion } from "motion/react"
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type FormEvent, type ReactNode } from "react"
 
 import { ErrorNote, Pill } from "@/components/bits"
 import { ColumnsMenu } from "@/components/grid/ColumnsMenu"
 import { createOverlayStore, GridOverlay, type OverlayStore } from "@/components/grid/GridOverlay"
+import { CountRoll, POP, Press } from "@/components/grid/motion"
 import { Button } from "@/components/ui/button"
 import { USE_MOCK } from "@/lib/api"
 import { clockTime, duration, money } from "@/lib/format"
@@ -137,9 +139,9 @@ function ValueCell(props: CellProps) {
   return (
     <span className="flex min-w-0 items-center gap-1.5">
       {off && (
-        <span className="shrink-0 text-bad" role="img" aria-label="Does not match">
+        <motion.span className="shrink-0 text-bad" role="img" aria-label="Does not match" initial={{ scale: 0, rotate: -45 }} animate={{ scale: 1, rotate: 0 }} transition={POP}>
           <EqualNot className="size-3.5" strokeWidth={2.5} />
-        </span>
+        </motion.span>
       )}
       <span className="truncate">
         <FindText text={text} rowId={props.node.id || ""} colId={colId} store={props.context.find} />
@@ -164,10 +166,15 @@ function RiskCell({ data }: CellProps) {
 function StatusCell({ data }: CellProps) {
   if (!data) return null
   const look = KINDS[data.kind]
+  // the pill springs in again every time the order moves to a new state
   return (
-    <Pill tone={look.tone} className="[&_svg]:size-3.5">
-      {look.icon} {look.label}
-    </Pill>
+    <AnimatePresence mode="popLayout" initial={false}>
+      <motion.span key={data.kind} className="inline-flex" initial={{ scale: 0.6, opacity: 0, y: 6 }} animate={{ scale: 1, opacity: 1, y: 0 }} exit={{ scale: 0.8, opacity: 0, y: -6 }} transition={POP}>
+        <Pill tone={look.tone} className="[&_svg]:size-3.5">
+          {look.icon} {look.label}
+        </Pill>
+      </motion.span>
+    </AnimatePresence>
   )
 }
 
@@ -185,12 +192,15 @@ function DecideTimeCell({ data, context }: CellProps) {
     <span className="flex items-center gap-2">
       <span className="font-mono tabular-nums">{duration(approval.decision_ms)}</span>
       {fast && (
-        <span
+        <motion.span
+          initial={{ scale: 0, opacity: 0 }}
+          animate={{ scale: 1, opacity: 1 }}
+          transition={{ ...POP, delay: 0.15 }}
           className="inline-flex h-5 items-center gap-1 rounded-md bg-warn-soft px-1.5 text-[11px] leading-none font-medium whitespace-nowrap text-warn"
           title={"Approved in under " + context.fastMs / 1000 + "s. The rubber-stamp watch counts these."}
         >
           <Zap className="size-3" aria-hidden /> Fast approval
-        </span>
+        </motion.span>
       )}
     </span>
   )
@@ -208,7 +218,8 @@ function ActionsCell({ data, context }: CellProps) {
   const mine = busy[data.id]
   const name = data.items[0]?.name || "this order"
   return (
-    <span className="flex items-center gap-1.5">
+    <motion.span className="flex items-center gap-1.5" initial={{ opacity: 0, x: 10 }} animate={{ opacity: 1, x: 0 }} transition={POP}>
+      <Press disabled={Boolean(mine)}>
       <Button
         size="sm"
         className="h-7 bg-ok px-2 text-white dark:text-background"
@@ -219,6 +230,8 @@ function ActionsCell({ data, context }: CellProps) {
         {mine === "approve" ? <LoaderCircle className="spin-slow" /> : <Check strokeWidth={3} />}
         {mine === "approve" ? "Capturing" : "Approve"}
       </Button>
+      </Press>
+      <Press disabled={Boolean(mine)}>
       <Button
         size="sm"
         variant="outline"
@@ -230,7 +243,8 @@ function ActionsCell({ data, context }: CellProps) {
         {mine === "reject" ? <LoaderCircle className="spin-slow" /> : <X strokeWidth={3} />}
         {mine === "reject" ? "Voiding" : "Reject"}
       </Button>
-    </span>
+      </Press>
+    </motion.span>
   )
 }
 
@@ -630,6 +644,16 @@ export function LeashOrdersGrid({ active }: { active: boolean }) {
   }
   const watchOn = Boolean(stats?.rubber_stamp_active)
 
+  // another fast approval makes the strip jolt, so it is noticed the moment it happens
+  const strip = useRef<HTMLDivElement>(null)
+  const lastFast = useRef<number | null>(null)
+  useEffect(() => {
+    const grew = lastFast.current !== null && fastApprovals > lastFast.current
+    lastFast.current = fastApprovals
+    if (!grew || !strip.current || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return
+    animate(strip.current, { scale: [1, 1.07, 1], rotate: [0, -1.5, 1.5, 0] }, { duration: 0.5, ease: "easeOut" })
+  }, [fastApprovals])
+
   if (!signedIn) {
     return (
       <SignIn
@@ -664,7 +688,7 @@ export function LeashOrdersGrid({ active }: { active: boolean }) {
           {find.term.trim() !== "" && (
             <>
               <span className="px-1 text-xs whitespace-nowrap text-muted-foreground tabular-nums" role="status" aria-live="polite">
-                {find.count === 0 ? "No matches" : find.current + " of " + find.count}
+                {find.count === 0 ? "No matches" : <><CountRoll value={find.current} /> of {find.count}</>}
               </span>
               <button type="button" onClick={find.previous} disabled={find.count === 0} aria-label="Previous match" className="flex size-6 items-center justify-center rounded-md hover:bg-muted disabled:opacity-40">
                 <ChevronUp className="size-4" />
@@ -677,8 +701,11 @@ export function LeashOrdersGrid({ active }: { active: boolean }) {
         </div>
 
         {/* the rubber-stamp watch: approvals too fast to have been read */}
-        <div
+        <motion.div
+          ref={strip}
+          layout
           role="status"
+          aria-label={"Rubber-stamp risk: " + fastApprovals + (fastApprovals === 1 ? " approval" : " approvals") + " under " + fastMs / 1000 + " seconds"}
           className={cn(
             "flex h-8 items-center gap-1.5 rounded-lg px-2.5 text-[13px]",
             fastApprovals > 0 ? "bg-warn-soft font-medium text-warn" : "bg-muted text-muted-foreground"
@@ -686,15 +713,26 @@ export function LeashOrdersGrid({ active }: { active: boolean }) {
           title="An approval this fast was almost certainly not read. Three in a row turn Leash's sharp mode on."
         >
           <Zap className="size-3.5" aria-hidden />
-          Rubber-stamp risk: {fastApprovals} {fastApprovals === 1 ? "approval" : "approvals"} under {fastMs / 1000}s
-          {watchOn && <span className="ml-1 rounded-md bg-warn px-1.5 py-0.5 text-[11px] text-card">Sharp mode is on</span>}
-        </div>
-
-        {pinned.length > 0 && (
-          <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
-            <Hand className="size-3.5 text-warn" aria-hidden /> {pinned.length} pinned until you decide
+          <span>Rubber-stamp risk:</span> <CountRoll value={fastApprovals} />
+          <span>
+            {fastApprovals === 1 ? "approval" : "approvals"} under {fastMs / 1000}s
           </span>
-        )}
+          <AnimatePresence>
+            {watchOn && (
+              <motion.span key="sharp" initial={{ scale: 0, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0, opacity: 0 }} transition={POP} className="ml-1 rounded-md bg-warn px-1.5 py-0.5 text-[11px] text-card">
+                Sharp mode is on
+              </motion.span>
+            )}
+          </AnimatePresence>
+        </motion.div>
+
+        <AnimatePresence initial={false}>
+          {pinned.length > 0 && (
+            <motion.span key="pinned" layout initial={{ opacity: 0, x: -8 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -8 }} className="flex items-center gap-1.5 text-xs text-muted-foreground">
+              <Hand className="size-3.5 text-warn" aria-hidden /> <CountRoll value={pinned.length} /> pinned until you decide
+            </motion.span>
+          )}
+        </AnimatePresence>
 
         <div className="ml-auto flex items-center gap-1.5">
           <span className="mr-1 hidden items-center gap-1.5 text-xs text-muted-foreground md:flex">

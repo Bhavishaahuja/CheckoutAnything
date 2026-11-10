@@ -5,6 +5,7 @@
 import type { ColDef, GetRowIdParams } from "ag-grid-community"
 import { AgGridReact, type CustomCellRendererProps } from "ag-grid-react"
 import { Bot, Check, Hand, ReceiptText, RotateCcw, Search, X } from "lucide-react"
+import { motion } from "motion/react"
 import { useEffect, useMemo, useRef, useState } from "react"
 
 import { Card, CopyId, ErrorNote, Pill, Switch } from "@/components/bits"
@@ -264,11 +265,14 @@ export function OrdersPage({ active, refreshKey, onGoToAgent }: { active: boolea
               aria-pressed={view === entry}
               onClick={() => setView(entry)}
               className={cn(
-                "h-8 rounded-md px-3 text-[13px] font-medium transition-colors",
-                view === entry ? "bg-card shadow-sm" : "text-muted-foreground hover:text-foreground"
+                "relative h-8 rounded-md px-3 text-[13px] font-medium transition-colors",
+                view !== entry && "text-muted-foreground hover:text-foreground"
               )}
             >
-              {entry === "review" ? "Intent review (Leash)" : "Purchases"}
+              {view === entry && (
+                <motion.span layoutId="orders-view" className="absolute inset-0 rounded-md bg-card shadow-sm" transition={{ type: "spring", stiffness: 420, damping: 32 }} />
+              )}
+              <span className="relative">{entry === "review" ? "Intent review (Leash)" : "Purchases"}</span>
             </button>
           ))}
         </div>

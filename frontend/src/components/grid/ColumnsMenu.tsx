@@ -4,8 +4,10 @@
 
 import type { GridApi } from "ag-grid-community"
 import { Columns3, Link } from "lucide-react"
+import { AnimatePresence, motion } from "motion/react"
 import { useEffect, useId, useRef, useState } from "react"
 
+import { POP } from "@/components/grid/motion"
 import { Button } from "@/components/ui/button"
 
 interface Entry {
@@ -79,12 +81,17 @@ export function ColumnsMenu<Row>({
       <Button size="sm" variant="outline" aria-expanded={open} aria-controls={menuId} onClick={() => setOpen((was) => !was)}>
         <Columns3 /> <span className="hidden sm:inline">Columns</span>
       </Button>
+      <AnimatePresence>
       {open && (
-        <div
+        <motion.div
           id={menuId}
           role="group"
           aria-label="Show or hide columns"
-          className="calm-scroll absolute top-full right-0 z-20 mt-1.5 max-h-80 w-64 overflow-y-auto rounded-xl border border-border bg-card p-1.5 shadow-lg"
+          className="calm-scroll absolute top-full right-0 z-20 mt-1.5 max-h-80 w-64 origin-top-right overflow-y-auto rounded-xl border border-border bg-card p-1.5 shadow-lg"
+          initial={{ opacity: 0, scale: 0.94, y: -6 }}
+          animate={{ opacity: 1, scale: 1, y: 0 }}
+          exit={{ opacity: 0, scale: 0.96, y: -4, transition: { duration: 0.12 } }}
+          transition={POP}
         >
           {entries.map((entry) => (
             <label
@@ -108,8 +115,9 @@ export function ColumnsMenu<Row>({
               </span>
             </label>
           ))}
-        </div>
+        </motion.div>
       )}
+      </AnimatePresence>
     </div>
   )
 }

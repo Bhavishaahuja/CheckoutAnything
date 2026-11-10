@@ -4,8 +4,10 @@
 
 import { useGridCellEditor, type CustomCellEditorProps } from "ag-grid-react"
 import { animate } from "motion"
+import { AnimatePresence, motion } from "motion/react"
 import { useCallback, useEffect, useId, useRef, useState } from "react"
 
+import { POP } from "@/components/grid/motion"
 import { normalizePrice, priceError } from "@/lib/price"
 
 export function PriceEditor({ value, onValueChange, eventKey }: CustomCellEditorProps<unknown, string>) {
@@ -54,7 +56,7 @@ export function PriceEditor({ value, onValueChange, eventKey }: CustomCellEditor
   }
 
   return (
-    <div ref={box} className="w-44 rounded-lg bg-card p-1.5">
+    <motion.div ref={box} className="w-44 origin-top rounded-lg bg-card p-1.5" initial={{ opacity: 0, scale: 0.94 }} animate={{ opacity: 1, scale: 1 }} transition={POP}>
       <label className="flex h-8 items-center gap-1 rounded-md border px-2 font-mono text-[13px] tabular-nums"
         style={{ borderColor: error ? "var(--bad)" : "var(--primary)" }}>
         <span className="text-muted-foreground" aria-hidden>
@@ -72,9 +74,15 @@ export function PriceEditor({ value, onValueChange, eventKey }: CustomCellEditor
           className="w-full min-w-0 bg-transparent outline-none"
         />
       </label>
-      <p id={errorId} role="alert" className="min-h-4 px-1 pt-1 text-[11px] leading-4 text-bad">
-        {error}
+      <p id={errorId} role="alert" className="min-h-4 overflow-hidden px-1 pt-1 text-[11px] leading-4 text-bad">
+        <AnimatePresence mode="wait" initial={false}>
+          {error && (
+            <motion.span key={error} className="block" initial={{ opacity: 0, y: -4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} transition={{ duration: 0.14 }}>
+              {error}
+            </motion.span>
+          )}
+        </AnimatePresence>
       </p>
-    </div>
+    </motion.div>
   )
 }

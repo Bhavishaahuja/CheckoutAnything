@@ -4,7 +4,8 @@
 // does: click to sort, the sort arrow, and the filter button.
 
 import type { CustomHeaderProps } from "ag-grid-react"
-import { ArrowDown, ArrowUp, Link, ListFilter, Pencil } from "lucide-react"
+import { ArrowUp, Link, ListFilter, Pencil } from "lucide-react"
+import { motion } from "motion/react"
 import { useEffect, useRef, useState } from "react"
 
 import { cn } from "@/lib/utils"
@@ -76,7 +77,10 @@ export function EditableHeader(props: CustomHeaderProps<unknown, HeaderContext>)
 
   if (editing) {
     return (
-      <input
+      <motion.input
+        initial={{ opacity: 0, scale: 0.96 }}
+        animate={{ opacity: 1, scale: 1 }}
+        transition={{ duration: 0.14 }}
         autoFocus
         value={draft}
         maxLength={40}
@@ -123,8 +127,12 @@ export function EditableHeader(props: CustomHeaderProps<unknown, HeaderContext>)
           <span className="sr-only">Sent to PayPal as {paypalField}</span>
         </span>
       )}
-      {sort === "asc" && <ArrowUp className="size-3.5 shrink-0 text-foreground" aria-hidden />}
-      {sort === "desc" && <ArrowDown className="size-3.5 shrink-0 text-foreground" aria-hidden />}
+      {sort && (
+        // one arrow that turns over, instead of two that swap
+        <motion.span className="flex shrink-0 text-foreground" initial={{ opacity: 0, scale: 0.4 }} animate={{ opacity: 1, scale: 1, rotate: sort === "desc" ? 180 : 0 }} aria-hidden>
+          <ArrowUp className="size-3.5" />
+        </motion.span>
+      )}
       <span className="ml-auto flex shrink-0 items-center">
         {canRename && (
           <button
