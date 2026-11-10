@@ -308,6 +308,45 @@ class FakeCheck:
             order["review_state"] = "rejected"
         order["approval"] = {"action": action, "decision_ms": decision_ms}
 
+    def human_accepts_fix(self, order_id, decision_ms, link=True, outcome="captured"):
+        # the confirm page's third button: the order is voided and Check places the suggested
+        # one itself. link=False is the moment in between, the void saved and the new order
+        # not linked yet. returns the new order's id
+        order = self.orders[order_id]
+        order["status"] = "voided"
+        order["review_state"] = "rejected"
+        order["approval"] = {"action": "accept_fix", "decision_ms": decision_ms}
+        if not link:
+            return None
+        return self.link_replacement(order_id, outcome)
+
+    def link_replacement(self, order_id, outcome="captured"):
+        order = self.orders[order_id]
+        new_id = max(self.orders) + 1
+        number = str(new_id).zfill(10)
+        captured = outcome == "captured"
+        self.orders[new_id] = {
+            "id": new_id,
+            "mandate_id": order["mandate_id"],
+            "status": "captured" if captured else "authorized",
+            "review_state": "auto_approved" if captured else "needs_review",
+            "items": [{"name": "Sourdough Loaf", "size": "Half loaf", "quantity": 1,
+                       "unit_price": "5.00"}],
+            "total": "11.00",
+            "currency": "USD",
+            "paypal_order_id": "CHECKORDER" + number,
+            "authorization_id": "AUTH" + number,
+            "capture_id": "CHECKCAPTURE" + number if captured else None,
+            "merchant": order["merchant"],
+            "intent_check": {"verdict": "match", "risk_score": 4,
+                             "reason": "Matches the mandate."},
+            "approval": None,
+            "replaces_order_id": order_id,
+            "replaced_by_order_id": None,
+        }
+        order["replaced_by_order_id"] = new_id
+        return new_id
+
     def get_order(self, order_id):
         if order_id not in self.orders:
             raise CheckError("Order " + str(order_id) + " not found", 404)

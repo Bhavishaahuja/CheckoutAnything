@@ -4,7 +4,7 @@ Vite + React + TypeScript. Three screens:
 
 - `/dashboard`: the merchant's view of agent orders (Fernwood Supply Co).
 - `/place-order`: the demo's stand-in for the shopping agent. Pick a mandate and a scenario, and see where the order lands.
-- `/confirm/:token`: the human's mobile page for a flagged order, designed for a 390px wide phone. It opens from a one-time review link: click a flagged order on the dashboard (or the result on `/place-order`) and use **Get review link**. Approve captures the money, reject releases the hold.
+- `/confirm/:token`: the human's mobile page for a flagged order, designed for a 390px wide phone. It opens from a one-time review link: click a flagged order on the dashboard (or the result on `/place-order`) and use **Get review link**. Approve captures the money, reject releases the hold. When Check found a fix in the catalog (`suggested_fix` on the review), its sentence and an **Accept fix** button sit above those two: it voids the order, places the suggested one, and shows how the new order turned out. No suggested fix, no button. In mock mode, order 102 has one. Shown inside the Checkout Anything review drawer, the page posts a `review-decided` message to `VITE_CONNECT_URL`'s origin after any of the three.
 
 ## Run it
 

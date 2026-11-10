@@ -1,15 +1,16 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { useParams } from 'react-router'
-import { ApiError, approveReview, getReview, markReviewOpened, rejectReview } from '../api'
+import { ApiError, acceptFix, approveReview, getReview, markReviewOpened, rejectReview } from '../api'
 import { BrandMark } from '../components/BrandMark'
 import { describeItem, formatDuration, formatMoney } from '../lib/format'
 import { tellParentReviewDecided } from '../lib/parentMessage'
 import { useAsync } from '../lib/useAsync'
-import type { ApprovalAction, ReviewView } from '../types'
+import type { AcceptFixResult, ApprovalAction, ReviewView } from '../types'
 
 // The human's mobile page, opened from a one-time review link on their phone. Shows what the
 // agent ordered next to what they asked for, and two big buttons: approve captures the money,
-// reject releases the hold. Designed at 390px wide.
+// reject releases the hold. When Check found a fix in the catalog there is a third, Accept fix,
+// which swaps the order for the right one. Designed at 390px wide.
 export function ConfirmPage() {
   const { token } = useParams()
 
@@ -53,8 +54,11 @@ function ConfirmReview({ token }: { token: string }) {
 type Phase =
   | { kind: 'deciding' }
   | { kind: 'sending'; action: ApprovalAction }
-  | { kind: 'done'; action: ApprovalAction; order: ReviewView; decisionMs: number }
-  | { kind: 'failed'; action: ApprovalAction; title: string; message: string; canRetry: boolean }
+  | { kind: 'done'; action: 'approve' | 'reject'; order: ReviewView; decisionMs: number }
+  // the fix was accepted: the original is voided and the replacement has been placed and checked
+  | { kind: 'fixed'; result: AcceptFixResult; decisionMs: number }
+  // fixGone: the fix can't be placed anymore but nothing moved, so approve and reject still work
+  | { kind: 'failed'; action: ApprovalAction; title: string; message: string; canRetry: boolean; fixGone?: boolean }
 
 function Decide({ token, order }: { token: string; order: ReviewView }) {
   const [phase, setPhase] = useState<Phase>({ kind: 'deciding' })
@@ -82,6 +86,13 @@ function Decide({ token, order }: { token: string; order: ReviewView }) {
     const decisionMs = shownAt.current === null ? 0 : performance.now() - shownAt.current
     setPhase({ kind: 'sending', action })
     try {
+      if (action === 'accept_fix') {
+        const result = await acceptFix(token, decisionMs)
+        // show how the new order turned out first, then tell the parent, same as approve and reject
+        setPhase({ kind: 'fixed', result, decisionMs })
+        tellParentReviewDecided(action, result.order.status, result.order.review_state)
+        return
+      }
       const send = action === 'approve' ? approveReview : rejectReview
       const updated = await send(token, decisionMs)
       setPhase({ kind: 'done', action, order: updated, decisionMs })
@@ -89,8 +100,16 @@ function Decide({ token, order }: { token: string; order: ReviewView }) {
       // phone there is no parent and nothing is sent
       tellParentReviewDecided(action, updated.status, updated.review_state)
     } catch (error) {
-      setPhase({ kind: 'failed', action, ...describeDecideError(error) })
+      setPhase({ kind: 'failed', action, ...describeDecideError(error, action) })
     }
+  }
+
+  if (phase.kind === 'fixed') {
+    return (
+      <ConfirmFrame>
+        <Fixed result={phase.result} decisionMs={phase.decisionMs} />
+      </ConfirmFrame>
+    )
   }
 
   if (phase.kind === 'done') {
@@ -104,6 +123,8 @@ function Decide({ token, order }: { token: string; order: ReviewView }) {
   const sending = phase.kind === 'sending' ? phase.action : null
   const total = formatMoney(order.total, order.currency)
   const check = order.intent_check
+  // no suggested fix from Check, no button. it also goes once the server says the fix is gone
+  const fix = phase.kind === 'failed' && phase.fixGone ? null : (check?.suggested_fix ?? null)
 
   return (
     <ConfirmFrame
@@ -112,6 +133,19 @@ function Decide({ token, order }: { token: string; order: ReviewView }) {
           {phase.kind === 'failed' && (
             <div className="decide-bar__error" role="alert">
               <strong>{phase.title}</strong> {phase.message}
+            </div>
+          )}
+          {!(phase.kind === 'failed' && !phase.canRetry) && fix && (
+            <div className="decide-bar__fix">
+              <p className="decide-bar__fix-text">{fix.sentence}</p>
+              <button
+                type="button"
+                className="decide-button decide-button--fix"
+                onClick={() => decide('accept_fix')}
+                disabled={sending !== null}
+              >
+                {sending === 'accept_fix' ? 'Swapping the order...' : 'Accept fix'}
+              </button>
             </div>
           )}
           {!(phase.kind === 'failed' && !phase.canRetry) && (
@@ -165,6 +199,7 @@ function Decide({ token, order }: { token: string; order: ReviewView }) {
 
       <p className="confirm__hint">
         Approve pays for the order. Reject cancels it and you won't be charged.
+        {fix && ' Accept fix cancels this order and places the suggested one instead.'}
       </p>
     </ConfirmFrame>
   )
@@ -200,26 +235,116 @@ function Done({ action, order, decisionMs }: { action: ApprovalAction; order: Re
   )
 }
 
-function readDetail(error: ApiError): { message: string | null; status: string | null } {
+// what the replacement order's two state fields mean for the human, in their words
+function replacementOutcome(replacement: AcceptFixResult['replacement']): { label: string; tone: string; text: string } {
+  const total = formatMoney(replacement.total, replacement.currency)
+  if (replacement.status === 'captured') {
+    return {
+      label: 'Auto-captured',
+      tone: 'captured',
+      text: 'It matches what you asked for, so it went through on its own. You paid ' + total + '.',
+    }
+  }
+  if (replacement.review_state === 'needs_review') {
+    return {
+      label: 'Needs review',
+      tone: 'review',
+      text: "Something about the new order still needs a look, so it is on hold. You won't be charged " + total + ' unless it is approved.',
+    }
+  }
+  return {
+    label: 'On hold',
+    tone: 'authorized',
+    text: total + " is on hold for it. You haven't been charged yet.",
+  }
+}
+
+function Fixed({ result, decisionMs }: { result: AcceptFixResult; decisionMs: number }) {
+  const replacement = result.replacement
+  const outcome = replacementOutcome(replacement)
+  return (
+    <div className="done" role="status">
+      <span className="done__icon done__icon--fixed" aria-hidden="true">
+        <svg width="28" height="28" viewBox="0 0 28 28">
+          <path
+            d="M8 11h11l-3.5-3.5M20 17H9l3.5 3.5"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2.4"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
+      </span>
+      <h1 className="done__title">Fix accepted</h1>
+      <p className="done__text">The first order is cancelled and its hold is released.</p>
+      <div className={'done__outcome done__outcome--' + outcome.tone}>
+        <p className="done__outcome-label">New order: {outcome.label}</p>
+        <ul className="done__outcome-items">
+          {replacement.items.map((item, index) => (
+            <li key={index}>
+              {item.quantity > 1 && <span className="mono">{item.quantity} x </span>}
+              {describeItem(item)}
+            </li>
+          ))}
+        </ul>
+        <p>{outcome.text}</p>
+      </div>
+      <p className="done__time">You decided in {formatDuration(Math.round(decisionMs))}.</p>
+      <p className="muted">You can close this page.</p>
+    </div>
+  )
+}
+
+interface ErrorDetail {
+  message: string | null
+  status: string | null
+  // only on a failed accept-fix: the original was voided before the replacement failed
+  voidedOrderId: number | null
+}
+
+function readDetail(error: ApiError): ErrorDetail {
   // review errors carry {"detail": {"message": ..., "status": ..., "review_state": ...}}
   const detail = error.detail
   if (detail && typeof detail === 'object') {
-    const fields = detail as { message?: unknown; status?: unknown }
+    const fields = detail as { message?: unknown; status?: unknown; voided_order_id?: unknown }
     return {
       message: typeof fields.message === 'string' ? fields.message : null,
       status: typeof fields.status === 'string' ? fields.status : null,
+      voidedOrderId: typeof fields.voided_order_id === 'number' ? fields.voided_order_id : null,
     }
   }
-  return { message: typeof detail === 'string' ? detail : null, status: null }
+  return { message: typeof detail === 'string' ? detail : null, status: null, voidedOrderId: null }
 }
 
-function describeDecideError(error: unknown): { title: string; message: string; canRetry: boolean } {
+function describeDecideError(
+  error: unknown,
+  action: ApprovalAction,
+): { title: string; message: string; canRetry: boolean; fixGone?: boolean } {
   if (!(error instanceof ApiError)) {
     // fetch itself failed: no signal, or the server is waking up. nothing changed, so it's safe to go again
     return { title: "Couldn't reach the store.", message: 'Check your connection and try again.', canRetry: true }
   }
 
-  const { message, status } = readDetail(error)
+  const { message, status, voidedOrderId } = readDetail(error)
+  if (action === 'accept_fix' && error.status === 409 && status === null) {
+    // the fix can't be placed (sold out, price changed). nothing moved and the link still works,
+    // so the two plain buttons stay
+    return {
+      title: "That fix isn't available anymore.",
+      message: (message ?? 'The suggested item changed.') + ' You can still approve or reject this order.',
+      canRetry: true,
+      fixGone: true,
+    }
+  }
+  if (voidedOrderId !== null) {
+    // the swap got half way: the original is cancelled, the new order failed. the link is used up
+    return {
+      title: 'The first order is cancelled, but the new one failed.',
+      message: 'Nothing was charged for either. Ask your agent to order again.',
+      canRetry: false,
+    }
+  }
   if (error.status === 404) {
     return {
       title: "This link isn't valid anymore.",

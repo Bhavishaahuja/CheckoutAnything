@@ -197,6 +197,8 @@ CHECK_SIZE_LENGTH = 100
 CHECK_CURRENCY = "USD"
 # an order in one of these is finished, Check won't change it again
 CHECK_FINAL_STATUSES = ("captured", "voided", "failed")
+# the confirm page's third button, as Check records it on the approval
+ACCEPT_FIX = "accept_fix"
 
 
 def check_items(quote):
@@ -226,8 +228,64 @@ def apply_check_order(order, check_order):
         order.check_verdict = intent_check.get("verdict")
         order.check_reason = intent_check.get("reason")
     approval = check_order.get("approval")
-    if isinstance(approval, dict) and approval.get("decision_ms") is not None:
-        order.decision_ms = approval["decision_ms"]
+    if isinstance(approval, dict):
+        if approval.get("decision_ms") is not None:
+            order.decision_ms = approval["decision_ms"]
+        if approval.get("action"):
+            order.review_action = approval["action"]
+    if check_order.get("replaced_by_order_id") is not None:
+        order.check_replaced_by_id = check_order["replaced_by_order_id"]
+    if check_order.get("replaces_order_id") is not None:
+        order.check_replaces_id = check_order["replaces_order_id"]
+
+
+def waiting_for_replacement(order):
+    # the human accepted the fix and Check voided this order, but we haven't seen which order
+    # replaced it yet. Check writes that link last, after the new order's own hold and check,
+    # so a read can land in between
+    return order.review_action == ACCEPT_FIX and order.check_replaced_by_id is None
+
+
+def replacement_description(check_order, fallback):
+    # the line for the grid, in the same shape as ours: "Trail runner (Size 8)"
+    items = check_order.get("items")
+    if not isinstance(items, list) or not items or not isinstance(items[0], dict):
+        return fallback
+    first = items[0]
+    description = str(first.get("name") or fallback)
+    if first.get("size"):
+        description += " (" + str(first["size"]) + ")"
+    return description[:MAX_NAME_LENGTH]
+
+
+def adopt_replacement(session, original, check_order):
+    # the order Check placed when the human accepted the fix. it never came through our buy
+    # endpoint, so there is no row for it yet: make one, at the same store and for the same
+    # mandate as the order it replaces. the item and price are the Check catalog's, not ours
+    items = check_order.get("items")
+    quantity = original.quantity
+    if isinstance(items, list) and items and isinstance(items[0], dict):
+        if isinstance(items[0].get("quantity"), int):
+            quantity = items[0]["quantity"]
+    replacement = Order(
+        store_id=original.store_id,
+        # the nearest thing we have: the fix is another version of the item that was asked for
+        item_id=original.item_id,
+        variant_id=None,
+        add_on_ids="",
+        description=replacement_description(check_order, original.description),
+        quantity=quantity,
+        total=str(check_order.get("total") or original.total),
+        currency=str(check_order.get("currency") or original.currency),
+        status="failed",
+        created_by=original.created_by,
+        check_mandate_id=original.check_mandate_id,
+        check_order_id=check_order.get("id"),
+        check_replaces_id=original.check_order_id,
+    )
+    apply_check_order(replacement, check_order)
+    session.add(replacement)
+    return replacement
 
 
 def place_order_through_check(session, check, mandate_for, vault_id, store, quote,
@@ -312,6 +370,8 @@ def refresh_check_orders(session, check, orders):
             continue
         if order.status not in CHECK_FINAL_STATUSES or order.check_verdict is None:
             stale.append(order)
+        elif waiting_for_replacement(order):
+            stale.append(order)
     if not stale:
         return
     try:
@@ -331,6 +391,27 @@ def refresh_check_orders(session, check, orders):
             except CheckError:
                 continue
         apply_check_order(order, check_order)
+
+    # an accepted fix leaves a new order at Check that we have no row for. give it one, so the
+    # grid can show the old row as fixed and point at the new one
+    known = set()
+    for order in orders:
+        if order.check_order_id is not None:
+            known.add(order.check_order_id)
+    for order in stale:
+        replacement_id = order.check_replaced_by_id
+        if replacement_id is None or replacement_id in known:
+            continue
+        check_order = by_id.get(replacement_id)
+        if check_order is None:
+            try:
+                check_order = check.get_order(replacement_id)
+            except CheckError:
+                # the link is saved, so this is tried again on the next read
+                order.check_replaced_by_id = None
+                continue
+        orders.append(adopt_replacement(session, order, check_order))
+        known.add(replacement_id)
     session.commit()
 
 
@@ -359,4 +440,9 @@ def order_to_dict(order, store_name=None):
         "check_verdict": order.check_verdict,
         "check_reason": order.check_reason,
         "decision_ms": order.decision_ms,
+        "review_action": order.review_action,
+        # our own order ids for the two ends of an accepted fix. list_orders fills them in,
+        # since it takes the whole list to turn Check's ids into ours
+        "replaced_by_order_id": None,
+        "replaces_order_id": None,
     }

@@ -262,6 +262,96 @@ def test_the_browser_may_send_the_login_header(world):
         assert "authorization" in response.headers["access-control-allow-headers"].lower()
 
 
+def test_an_accepted_fix_shows_the_old_order_fixed_and_a_row_for_the_new_one(world, check):
+    with TestClient(world.app) as client:
+        held = held_order(world, check, client)
+        new_check_id = check.human_accepts_fix(41, 6100)
+
+        orders = client.get("/orders").json()["orders"]
+        # the replacement never came through our buy endpoint. it gets a row all the same
+        assert len(orders) == 2
+        new, old = orders
+        assert old["id"] == held["id"]
+        assert old["status"] == "voided"
+        assert old["review_action"] == "accept_fix"
+        assert old["decision_ms"] == 6100
+        assert old["replaced_by_order_id"] == new["id"]
+        assert old["replaces_order_id"] is None
+
+        assert new["check_order_id"] == new_check_id
+        assert new["replaces_order_id"] == old["id"]
+        assert new["replaced_by_order_id"] is None
+        assert new["status"] == "captured"
+        assert new["review_state"] == "auto_approved"
+        assert new["check_verdict"] == "match"
+        assert new["capture_id"] == "CHECKCAPTURE0000000042"
+        # what Check ordered, at the store and under the mandate of the order it replaces
+        assert new["description"] == "Sourdough Loaf (Half loaf)"
+        assert new["total"] == "11.00"
+        assert new["store_id"] == old["store_id"]
+        assert new["store_name"] == "Hollowbrook Bakery"
+        assert new["check_mandate_id"] == old["check_mandate_id"]
+        assert new["created_by"] == "agent"
+
+        # both ends are finished: no more questions for Check, and no second row
+        calls = check.list_calls
+        assert len(client.get("/orders").json()["orders"]) == 2
+        assert check.list_calls == calls
+
+
+def test_a_fix_read_before_check_links_the_new_order_is_picked_up_later(world, check):
+    with TestClient(world.app) as client:
+        held_order(world, check, client)
+        # the void is saved first. Check links the new order a few seconds later
+        check.human_accepts_fix(41, 3000, link=False)
+
+        orders = client.get("/orders").json()["orders"]
+        assert len(orders) == 1
+        assert orders[0]["status"] == "voided"
+        assert orders[0]["review_action"] == "accept_fix"
+        assert orders[0]["replaced_by_order_id"] is None
+
+        # voided is normally final, but this one is still owed its link, so it's asked about
+        check.link_replacement(41)
+        new, old = client.get("/orders").json()["orders"]
+        assert old["replaced_by_order_id"] == new["id"]
+        assert new["replaces_order_id"] == old["id"]
+
+
+def test_a_fix_that_needs_review_itself_can_be_reviewed(world, check):
+    with TestClient(world.app) as client:
+        held_order(world, check, client)
+        check.human_accepts_fix(41, 3000, outcome="needs_review")
+
+        new, old = client.get("/orders").json()["orders"]
+        assert new["status"] == "authorized"
+        assert new["review_state"] == "needs_review"
+        link = client.post("/orders/" + str(new["id"]) + "/review-link", headers=log_in(client))
+        assert link.status_code == 201, link.text
+        assert link.json()["url"].startswith("https://check-app.example/confirm/token-42-")
+        # the old one is finished, there is nothing to review on it
+        gone = client.post("/orders/" + str(old["id"]) + "/review-link", headers=log_in(client))
+        assert gone.status_code == 409
+
+        check.human_decides(42, "approve", 5000)
+        new, old = client.get("/orders").json()["orders"]
+        assert new["status"] == "captured"
+        assert old["replaced_by_order_id"] == new["id"]
+
+
+def test_a_plain_reject_is_not_a_fix(world, check):
+    with TestClient(world.app) as client:
+        held_order(world, check, client)
+        check.human_decides(41, "reject", 9000)
+        orders = client.get("/orders").json()["orders"]
+        assert len(orders) == 1
+        assert orders[0]["review_action"] == "reject"
+        assert orders[0]["replaced_by_order_id"] is None
+        calls = check.list_calls
+        client.get("/orders")
+        assert check.list_calls == calls
+
+
 def test_a_rejected_order_ends_up_voided(world, check):
     check.decide = ("authorized", "needs_review", MISMATCH)
     with TestClient(world.app) as client:

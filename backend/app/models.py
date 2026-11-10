@@ -101,3 +101,10 @@ class Order(Base):
     check_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     # how long the human took to decide, on Check's clock. None when nobody had to
     decision_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # what the human tapped on the confirm page: approve, reject or accept_fix
+    review_action: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    # accept_fix voids the order and Check places the suggested one instead. these are Check's
+    # ids for the two ends of that: on the voided order, the one that replaced it. on the
+    # replacement, the one it replaced
+    check_replaced_by_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    check_replaces_id: Mapped[int | None] = mapped_column(Integer, nullable=True)

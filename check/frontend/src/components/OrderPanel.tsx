@@ -13,9 +13,11 @@ import { StatusChip } from './StatusChip'
 interface OrderPanelProps {
   order: Order
   onClose: () => void
+  // jump to another order, for the link between a fixed order and its replacement
+  onGoToOrder: (orderId: number) => void
 }
 
-export function OrderPanel({ order, onClose }: OrderPanelProps) {
+export function OrderPanel({ order, onClose, onGoToOrder }: OrderPanelProps) {
   const closeButton = useRef<HTMLButtonElement>(null)
 
   useEffect(() => {
@@ -56,6 +58,24 @@ export function OrderPanel({ order, onClose }: OrderPanelProps) {
             <StatusChip status={displayStatus(order)} />
             <span className={'decision decision--' + decisionKind(order)}>{DECISION_LABELS[decisionKind(order)]}</span>
           </div>
+          {order.replaced_by_order_id !== null && (
+            <p className="panel__fix-link">
+              The human accepted the suggested fix, so this order was voided and replaced by{' '}
+              <button type="button" className="row-link" onClick={() => onGoToOrder(order.replaced_by_order_id as number)}>
+                order #{order.replaced_by_order_id}
+              </button>
+              .
+            </p>
+          )}
+          {order.replaces_order_id !== null && (
+            <p className="panel__fix-link">
+              Placed when the human accepted the suggested fix for{' '}
+              <button type="button" className="row-link" onClick={() => onGoToOrder(order.replaces_order_id as number)}>
+                order #{order.replaces_order_id}
+              </button>
+              .
+            </p>
+          )}
 
           <section className="panel__section">
             <h3 className="eyebrow">They asked for</h3>

@@ -2,7 +2,7 @@
 
 import type { ColDef, GetRowIdParams } from "ag-grid-community"
 import { AgGridReact, type CustomCellRendererProps } from "ag-grid-react"
-import { Bot, Check, Hand, Hourglass, Search, ShieldCheck, ShieldQuestion, Undo2, X } from "lucide-react"
+import { ArrowRight, Bot, Check, Hand, Hourglass, Search, ShieldCheck, ShieldQuestion, Undo2, X } from "lucide-react"
 import { AnimatePresence } from "motion/react"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 
@@ -54,8 +54,28 @@ function ByCell({ value }: CustomCellRendererProps<OrderRow>) {
   )
 }
 
-function StatusCell({ data }: CustomCellRendererProps<OrderRow>) {
+function StatusCell({ data, context }: CustomCellRendererProps<OrderRow, unknown, GridContext>) {
   if (!data) return null
+  // the human accepted Check's suggested fix: this order was voided and a new one placed.
+  // the old row says so and points at the new one
+  if (data.status === "voided" && data.replaced_by_order_id !== null) {
+    const newId = data.replaced_by_order_id
+    return (
+      <span className="flex min-w-0 items-center gap-2">
+        <Pill tone="muted">
+          <Undo2 className="size-3.5" /> Fixed
+        </Pill>
+        <button
+          type="button"
+          onClick={() => context.goToOrder(newId)}
+          aria-label={"Go to the new order, number " + newId}
+          className="inline-flex h-11 items-center gap-1 text-xs font-medium whitespace-nowrap text-primary hover:underline"
+        >
+          New order {newId} <ArrowRight className="size-3" />
+        </button>
+      </span>
+    )
+  }
   if (data.status === "captured") {
     return (
       <Pill tone="ok">
@@ -119,6 +139,18 @@ function VerdictCell({ data }: CustomCellRendererProps<OrderRow>) {
   return <span className="text-xs text-muted-foreground">Not checked</span>
 }
 
+// "the fix for order 3" under the item of an order Check placed for an accepted fix
+function ItemCell({ data }: CustomCellRendererProps<OrderRow>) {
+  if (!data) return null
+  if (data.replaces_order_id === null) return <span className="truncate">{data.description}</span>
+  return (
+    <span className="flex min-w-0 flex-col justify-center leading-tight">
+      <span className="truncate">{data.description}</span>
+      <span className="truncate text-xs text-muted-foreground">The fix for order {data.replaces_order_id}</span>
+    </span>
+  )
+}
+
 const REVIEW_LABELS: Record<string, string> = {
   auto_approved: "Auto-captured",
   approved: "Approved",
@@ -127,6 +159,7 @@ const REVIEW_LABELS: Record<string, string> = {
 
 function ReviewCell({ data, context }: CustomCellRendererProps<OrderRow, unknown, GridContext>) {
   if (!data || !data.review_state) return <span className="text-muted-foreground/60">-</span>
+  if (data.review_action === "accept_fix") return <Pill tone="muted">Fix accepted</Pill>
   if (data.review_state !== "needs_review") {
     const tone = data.review_state === "rejected" ? "muted" : "ok"
     return <Pill tone={tone}>{REVIEW_LABELS[data.review_state] || data.review_state}</Pill>
@@ -153,6 +186,8 @@ function ReviewCell({ data, context }: CustomCellRendererProps<OrderRow, unknown
 interface GridContext {
   reviewLinks: boolean
   openReview: (orderId: number) => void
+  // scroll to another order's row and light it up
+  goToOrder: (orderId: number) => void
 }
 
 export function OrdersPage({
@@ -198,7 +233,9 @@ export function OrdersPage({
               old.capture_id === order.capture_id &&
               old.review_state === order.review_state &&
               old.check_verdict === order.check_verdict &&
-              old.decision_ms === order.decision_ms
+              old.decision_ms === order.decision_ms &&
+              old.review_action === order.review_action &&
+              old.replaced_by_order_id === order.replaced_by_order_id
             )
               return old
             changed = true
@@ -255,7 +292,7 @@ export function OrdersPage({
         flex: 1.2,
         minWidth: 170,
       },
-      { headerName: "Item", field: "description", flex: 2, minWidth: 200 },
+      { headerName: "Item", field: "description", cellRenderer: ItemCell, flex: 2, minWidth: 200 },
       { headerName: "Qty", field: "quantity", width: 72, type: "rightAligned", cellClass: "tabular-nums" },
       {
         headerName: "Total",
@@ -279,7 +316,7 @@ export function OrdersPage({
         cellRenderer: (params: CustomCellRendererProps<OrderRow>) => <CopyId value={params.value} />,
       },
       { headerName: "Bought by", field: "created_by", width: 122, cellRenderer: ByCell },
-      { headerName: "Status", field: "status", cellRenderer: StatusCell, flex: 1, minWidth: 130 },
+      { headerName: "Status", field: "status", cellRenderer: StatusCell, flex: 1, minWidth: checkOn ? 210 : 130 },
       // the Check columns, only when agent orders go through Check
       { headerName: "Check", field: "check_verdict", cellRenderer: VerdictCell, width: 124, hide: !checkOn },
       {
@@ -319,7 +356,22 @@ export function OrdersPage({
   // the confirm page in the drawer finished a decision: read the row again now
   const reviewDecided = useCallback(() => setNudge((count) => count + 1), [])
 
-  const gridContext = useMemo<GridContext>(() => ({ reviewLinks, openReview }), [reviewLinks, openReview])
+  // from a fixed order to the order that replaced it
+  const goToOrder = useCallback(
+    (orderId: number) => {
+      if (!gridApi || gridApi.isDestroyed()) return
+      const node = gridApi.getRowNode(String(orderId))
+      if (!node) return
+      gridApi.ensureNodeVisible(node, "middle")
+      flashGridRow(gridApi, wrapper.current, String(orderId), "new")
+    },
+    [gridApi]
+  )
+
+  const gridContext = useMemo<GridContext>(
+    () => ({ reviewLinks, openReview, goToOrder }),
+    [reviewLinks, openReview, goToOrder]
+  )
 
   const reviewOrder = reviewId === null ? null : rows.find((row) => row.id === reviewId) || null
 

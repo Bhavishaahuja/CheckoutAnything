@@ -427,6 +427,9 @@ function placeOrder(target: MockStore, item_id: string, variant_id: string | nul
     check_verdict: null,
     check_reason: null,
     decision_ms: null,
+    review_action: null,
+    replaced_by_order_id: null,
+    replaces_order_id: null,
   }
   orders.unshift(order)
   return order

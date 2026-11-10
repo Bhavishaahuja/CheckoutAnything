@@ -26,13 +26,15 @@ import {
   DecisionCell,
   HeldRateCell,
   OrderCell,
+  ROW_LINK_ATTRIBUTE,
   ReasonCell,
   RiskCell,
   StatusCell,
   TotalCell,
+  type OrderGridContext,
 } from '../components/orderCells'
 import { buyerName, formatTime, summarizeItems } from '../lib/format'
-import { DECISION_LABELS, decisionKind, decisionMs, displayStatus, heldRateAgg, wasHeld } from '../lib/orderState'
+import { DECISION_LABELS, decisionKind, decisionMs, displayStatus, heldRateAgg, heldRateValue } from '../lib/orderState'
 import { usePolling } from '../lib/usePolling'
 import type { Order } from '../types'
 
@@ -113,7 +115,7 @@ function matchesFilter(order: Order, filter: Filter): boolean {
 }
 
 // how urgent a status is, so sorting the Status column puts work-to-do on top
-const STATUS_ORDER = ['needs_review', 'created', 'authorized', 'failed', 'voided', 'captured']
+const STATUS_ORDER = ['needs_review', 'created', 'authorized', 'failed', 'fixed', 'voided', 'captured']
 
 // below this the grid only has room for about three columns, so it keeps the ones a merchant on a
 // phone actually needs: what was ordered, whether money is held, and how much
@@ -193,8 +195,9 @@ export function DashboardPage() {
       valueGetter: (params) => (params.data ? displayStatus(params.data) : ''),
       comparator: (a: string, b: string) => STATUS_ORDER.indexOf(a) - STATUS_ORDER.indexOf(b),
       cellRenderer: StatusCell,
-      // wide enough for the longest chip, "Waiting on buyer"
-      width: narrow ? 150 : 160,
+      // wide enough for the longest chip, "Waiting on buyer", or "Fixed" with its link to the
+      // new order
+      width: narrow ? 150 : 215,
     }
 
     // on a phone, status comes right after the order so you can see what's held without scrolling
@@ -219,7 +222,8 @@ export function DashboardPage() {
     const heldColumn: ColDef<Order> = {
       headerName: 'Held by Check',
       colId: 'held',
-      valueGetter: (params) => (params.data ? (wasHeld(params.data) ? 1 : 0) : null),
+      // null for a fix's replacement order, which heldRateAgg then leaves out
+      valueGetter: (params) => (params.data ? heldRateValue(params.data) : null),
       aggFunc: heldRateAgg,
       cellRenderer: HeldRateCell,
       hide: !groupByAgent,
@@ -300,10 +304,27 @@ export function DashboardPage() {
   }, [filter])
 
   const openOrder = useCallback((event: RowClickedEvent<Order>) => {
+    // a click on the "New order #12" link inside a row is for that link, not for this row
+    const target = event.event?.target
+    if (target instanceof Element && target.closest('[' + ROW_LINK_ATTRIBUTE + ']')) {
+      return
+    }
     if (event.data) {
       setSelectedId(event.data.id)
     }
   }, [])
+
+  // from a fixed order to the order that replaced it: scroll to the row, select it, open it
+  const goToOrder = useCallback((orderId: number) => {
+    const api = gridRef.current?.api
+    const node = api?.getRowNode(String(orderId))
+    if (api && node) {
+      api.ensureNodeVisible(node, 'middle')
+      node.setSelected(true)
+    }
+    setSelectedId(orderId)
+  }, [])
+  const gridContext = useMemo<OrderGridContext>(() => ({ goToOrder }), [goToOrder])
 
   useEffect(() => {
     // after a reset from the top bar, don't make the merchant wait for the next poll
@@ -452,6 +473,7 @@ export function DashboardPage() {
                 columnDefs={columnDefs}
                 defaultColDef={defaultColDef}
                 getRowId={(params) => String(params.data.id)}
+                context={gridContext}
                 autoGroupColumnDef={autoGroupColumnDef}
                 groupDefaultExpanded={-1}
                 suppressAggFuncInHeader
@@ -481,7 +503,7 @@ export function DashboardPage() {
         )}
       </div>
 
-      {selectedOrder && <OrderPanel order={selectedOrder} onClose={closePanel} />}
+      {selectedOrder && <OrderPanel order={selectedOrder} onClose={closePanel} onGoToOrder={goToOrder} />}
     </section>
   )
 }

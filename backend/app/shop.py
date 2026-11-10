@@ -186,9 +186,19 @@ def list_orders(session, check=None):
     rows = list(session.execute(select(Order).order_by(Order.id.desc())).scalars())
     # orders held at Check get their newest state first. a no-op without Check
     refresh_check_orders(session, check, rows)
+    # newest first, including a fix's replacement order that the refresh just made a row for
+    rows.sort(key=lambda order: -order.id)
+    # Check's order id to ours, to link a fixed order and its replacement by the ids the grid has
+    ours = {}
+    for order in rows:
+        if order.check_order_id is not None:
+            ours[order.check_order_id] = order.id
     orders = []
     for order in rows:
-        orders.append(order_to_dict(order, names.get(order.store_id)))
+        listed = order_to_dict(order, names.get(order.store_id))
+        listed["replaced_by_order_id"] = ours.get(order.check_replaced_by_id)
+        listed["replaces_order_id"] = ours.get(order.check_replaces_id)
+        orders.append(listed)
     return orders
 
 

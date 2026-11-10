@@ -550,6 +550,7 @@ p {
   --flash-color: var(--captured-bg);
 }
 
+.grid-wrap .row--flash-fixed,
 .grid-wrap .row--flash-voided {
   --flash-color: var(--voided-bg);
 }
@@ -802,7 +803,8 @@ p {
   color: var(--captured-ink);
 }
 
-.decision--rejected {
+.decision--rejected,
+.decision--fixed {
   color: var(--voided-ink);
 }
 
@@ -1206,6 +1208,49 @@ p {
 
 .chip--voided .chip__dot {
   background: var(--voided);
+}
+
+/* a fixed order is a voided one, so it wears the voided gray */
+.chip--fixed {
+  color: var(--voided-ink);
+  border-color: var(--voided);
+  background: var(--surface);
+}
+
+.chip--fixed .chip__dot {
+  background: var(--voided);
+}
+
+.status-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* a text link that jumps to another order's row */
+.row-link {
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--link);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.row-link:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.panel__fix-link {
+  margin-top: 10px;
+  color: var(--ink-muted);
+  font-size: 14px;
 }
 
 .chip--failed {
@@ -1641,6 +1686,34 @@ p {
   touch-action: manipulation;
 }
 
+/* the suggested fix: its sentence, then its own full-width button, above approve and reject.
+   the buttons keep the 56px height, well over the 44px a thumb needs at 390px wide */
+.decide-bar__fix {
+  display: grid;
+  gap: 8px;
+  padding: 10px 12px 12px;
+  border: 1px solid var(--fix-line);
+  border-radius: var(--radius-lg);
+  background: var(--fix-bg);
+}
+
+.decide-bar__fix-text {
+  color: var(--ink);
+  font-size: 15px;
+  font-weight: 550;
+}
+
+.decide-button--fix {
+  width: 100%;
+  border: 0;
+  background: var(--fix);
+  color: var(--surface);
+}
+
+.decide-button--fix:active:not(:disabled) {
+  background: var(--fix-ink);
+}
+
 .decide-button--approve {
   border: 0;
   background: var(--primary);
@@ -1696,6 +1769,49 @@ p {
 .done__icon--rejected {
   background: var(--voided-bg);
   color: var(--voided-ink);
+}
+
+.done__icon--fixed {
+  background: var(--fix-bg);
+  color: var(--fix-ink);
+}
+
+/* how the replacement order turned out, after Accept fix */
+.done__outcome {
+  display: grid;
+  gap: 6px;
+  width: 100%;
+  max-width: 34ch;
+  margin: 8px 0;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  text-align: left;
+  font-size: 15px;
+}
+
+.done__outcome-label {
+  font-weight: 650;
+}
+
+.done__outcome--captured .done__outcome-label {
+  color: var(--captured-ink);
+}
+
+.done__outcome--review .done__outcome-label {
+  color: var(--review-ink);
+}
+
+.done__outcome--authorized .done__outcome-label {
+  color: var(--authorized-ink);
+}
+
+.done__outcome-items {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  color: var(--ink-muted);
 }
 
 .done__title {

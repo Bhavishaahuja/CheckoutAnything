@@ -150,6 +150,12 @@ export interface Order {
   check_reason: string | null
   // how long the human took to decide, in milliseconds
   decision_ms: number | null
+  // what the human tapped on the confirm page
+  review_action: "approve" | "reject" | "accept_fix" | null
+  // an accepted fix voids the order and Check places the suggested one instead. these are the
+  // ids of the two rows in this grid: on the voided order, the new one. on the new one, the old
+  replaced_by_order_id: number | null
+  replaces_order_id: number | null
 }
 
 export type ReviewState = "needs_review" | "auto_approved" | "approved" | "rejected"

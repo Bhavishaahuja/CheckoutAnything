@@ -10,11 +10,39 @@ import { StatusChip } from './StatusChip'
 
 type CellProps = CustomCellRendererProps<Order>
 
-export function StatusCell({ data }: CellProps) {
+// what the dashboard hands the grid as its context, so a cell can jump to another row
+export interface OrderGridContext {
+  goToOrder: (orderId: number) => void
+}
+
+// the grid's row click ignores anything inside one of these, so the link doesn't also open the row
+// it sits in
+export const ROW_LINK_ATTRIBUTE = 'data-row-link'
+
+export function StatusCell({ data, context }: CustomCellRendererProps<Order, unknown, OrderGridContext>) {
   if (!data) {
     return null
   }
-  return <StatusChip status={displayStatus(data)} />
+  const status = displayStatus(data)
+  const replacementId = data.replaced_by_order_id
+  if (status !== 'fixed' || replacementId === null) {
+    return <StatusChip status={status} />
+  }
+  // the old order is voided, and says where the fix went
+  return (
+    <span className="status-cell">
+      <StatusChip status="fixed" />
+      <button
+        type="button"
+        className="row-link"
+        {...{ [ROW_LINK_ATTRIBUTE]: '' }}
+        onClick={() => context?.goToOrder(replacementId)}
+        aria-label={'Go to the new order, number ' + replacementId}
+      >
+        New order #{replacementId}
+      </button>
+    </span>
+  )
 }
 
 export function RiskCell({ data }: CellProps) {
@@ -62,6 +90,11 @@ export function OrderCell({ data }: CellProps) {
       <span className="order-cell__item">{summarizeItems(data.items)}</span>
       <span className="order-cell__buyer">
         <span className="mono">#{data.id}</span> for {buyerName(data.mandate.buyer_label)}
+        {data.replaces_order_id !== null && (
+          <>
+            , the fix for <span className="mono">#{data.replaces_order_id}</span>
+          </>
+        )}
       </span>
     </span>
   )
