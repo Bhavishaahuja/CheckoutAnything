@@ -128,7 +128,7 @@ A connected store's catalog is also where the merchant checks the agent's work.
 
 ## How we use AG Grid
 
-AG Grid Community 36 only. Two grids share one theme, one saved-layout hook and one overlay component. Find and header editing are Enterprise modules in 36.2 (`FindModule`, `ColumnHeaderEditModule`), so both are built here on Community APIs.
+The Checkout Anything app's two grids (catalog and orders, the 20 features below) use AG Grid Community 36 only. The Check dashboard is the one place Enterprise is used, see [AG Grid licensing](#ag-grid-licensing). The two app grids share one theme, one saved-layout hook and one overlay component. Find and header editing are Enterprise modules in 36.2 (`FindModule`, `ColumnHeaderEditModule`), so both are built here on Community APIs.
 
 **Catalog grid** (`frontend/src/components/CatalogGrid.tsx`): the agent's import and the merchant's review.
 
@@ -164,6 +164,8 @@ AG Grid Community 36 only. Two grids share one theme, one saved-layout hook and 
 | 18 | Custom theme (Theming API) | Built from the app's own colour tokens and Geist fonts (`frontend/src/lib/gridTheme.ts`), so the grids match the cards around them in light and dark mode. |
 | 19 | Grid state save and restore | Column widths, order, pinning, hidden columns, sort, filters and page size survive a refresh, with a Reset layout button (`frontend/src/lib/gridState.ts`). |
 | 20 | Custom overlays | "Agent is reading the store..." with a progress bar, "No orders yet. Run a demo order" with a button, and a way out when a filter hides everything. |
+
+**Check dashboard** (`check/frontend/src/pages/DashboardPage.tsx`, not one of the 20): AG Grid Enterprise row grouping groups orders by agent, and a custom `aggFunc` on the "Held by Check" column gives each agent's held rate on its group row.
 
 Extras that come with the grid and are switched on: column pinning, column resizing and moving, keyboard navigation (Shift+Enter confirms the focused amber cell), ARIA roles, and row and column virtualisation.
 
@@ -301,7 +303,7 @@ Event types: `fetch.started`, `fetch.done`, `extract.started`, `extract.done`, `
 - **PayPal Orders v2, capture**: the one-time wallet setup order. Vault-paid orders capture inside the create call.
 - **PayPal Vault (payment tokens, saved PayPal wallet)**: the agent pays with `payment_source.paypal.vault_id`, so no buyer popup is needed.
 - **PayPal Agent Toolkit (Python)**: the shopping agent's `check_payment` tool reads the order back through the Toolkit's `get_order_details`.
-- **AG Grid Community**: the catalog review grid and the orders grids, see [How we use AG Grid](#how-we-use-ag-grid).
+- **AG Grid**: Community for the catalog review grid and the orders grids, Enterprise row grouping for the Check dashboard, see [How we use AG Grid](#how-we-use-ag-grid).
 - **FastAPI, SQLAlchemy, Postgres, React, Vite, Render.**
 
 ### Why the agent does not pay through the Agent Toolkit
@@ -310,7 +312,9 @@ The PayPal Agent Toolkit has no vault or payment token support. Its `create_orde
 
 ### AG Grid licensing
 
-Only AG Grid Community is used, so there is no watermark and no license key. Grouping purchases by store is done with cell spanning, Find and header renaming are our own components, and the strip above the orders grid is plain HTML rather than the Enterprise status bar.
+The Checkout Anything app's two grids (catalog and orders, the 20 numbered features) use only AG Grid Community, so they have no watermark and need no license key. Grouping purchases by store is done with cell spanning, Find and header renaming are our own components, and the strip above the orders grid is plain HTML rather than the Enterprise status bar.
+
+The Check dashboard (`check/frontend/src/pages/DashboardPage.tsx`) uses AG Grid Enterprise (`ag-grid-enterprise` in `check/frontend/package.json`) for row grouping and aggregation: orders grouped by agent, with each agent's held rate as an `aggFunc`. It runs on a 30-day trial license key read from `VITE_AG_GRID_LICENSE_KEY`, which is set on Render and never committed to git. The trial runs to about December 10. After that the grid keeps working, but shows an AG Grid watermark and console message until a full license key is set.
 
 ## Known limitations
 
