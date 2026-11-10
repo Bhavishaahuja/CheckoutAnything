@@ -220,6 +220,9 @@ export interface ConnectResponse {
   store_id: number
   mode: Mode
   events_url: string
+  // true when that page was already connected: store_id is the existing store
+  already_connected: boolean
+  message: string | null
 }
 
 export interface AgentStep {
@@ -238,6 +241,8 @@ export interface AgentReply {
 export interface ChatMessage {
   role: "user" | "assistant"
   content: string
+  // on an assistant message: the orders that turn placed. the API reads them back itself
+  order_ids?: number[]
 }
 
 export interface OrderRequest {

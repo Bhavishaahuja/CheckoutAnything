@@ -7,12 +7,13 @@ import time
 import pytest
 from fastapi.testclient import TestClient
 
-from backend.app import connect, shop
+from backend.app import connect, models, shop
 from backend.app.config import Settings
 from backend.app.db import create_tables, new_session
 from backend.app.events import bus
 from backend.app.fetcher import FetchError
 from backend.app.main import create_app
+from backend.app.models import Store
 from backend.tests.fakes import (
     FERNWOOD_SPEC,
     HOLLOWBROOK_SPEC,
@@ -412,6 +413,99 @@ def test_the_agent_is_told_when_a_purchase_fails(world):
         sent_back = world.agent_claude.requests[-1]["messages"][-1]["content"][0]
         assert sent_back["is_error"] is True
         assert answer["orders"] == []
+
+
+def test_the_agent_remembers_what_it_bought_in_an_earlier_turn(world):
+    with TestClient(world.app) as client:
+        store_id, _store = connect_store(client)
+
+        # turn 1: buy the loaf
+        world.agent_claude.replies = [
+            Reply([tool_block("buy_item", {
+                "store_id": store_id, "item_id": "sourdough-loaf", "variant_id": "half",
+                "add_on_ids": ["sliced"], "quantity": 1,
+            })], "tool_use"),
+            Reply([text_block("Bought it.")]),
+        ]
+        first_question = "Buy a half sourdough loaf, sliced, from Hollowbrook Bakery."
+        first = client.post("/agent/chat", json={"messages": [{
+            "role": "user", "content": first_question,
+        }]}).json()
+        order = first["orders"][0]
+        assert order["status"] == "captured"
+
+        # turn 2: the client sends the text back with the ids of the orders turn 1 placed
+        world.agent_claude.replies = [Reply([text_block("Yes, that went through.")])]
+        world.agent_claude.requests = []
+        second = client.post("/agent/chat", json={"messages": [
+            {"role": "user", "content": first_question},
+            {"role": "assistant", "content": first["reply"], "order_ids": [order["id"]]},
+            {"role": "user", "content": "Did that really go through?"},
+        ]})
+        assert second.status_code == 200, second.text
+
+        sent = world.agent_claude.requests[0]["messages"]
+        remembered = sent[1]["content"]
+        assert remembered.startswith("Bought it.")
+        assert "[Earlier in this chat you called buy_item: " + order["description"] in remembered
+        assert "$" + order["total"] in remembered
+        assert "status captured" in remembered
+        assert "PayPal order " + order["paypal_order_id"] in remembered
+        assert "capture " + order["capture_id"] in remembered
+        assert "trust them" in world.agent_claude.requests[0]["system"]
+
+
+def test_an_order_id_the_agent_didnt_place_adds_no_note(world):
+    with TestClient(world.app) as client:
+        store_id, _store = connect_store(client)
+        # bought by hand on the store page, not by the agent
+        bought = client.post("/stores/" + str(store_id) + "/orders", json={
+            "item_id": "sourdough-loaf", "variant_id": "half",
+        })
+        assert bought.status_code == 201, bought.text
+        manual = bought.json()
+        assert manual["created_by"] == "manual"
+
+        world.agent_claude.replies = [Reply([text_block("Okay.")])]
+        client.post("/agent/chat", json={"messages": [
+            {"role": "user", "content": "Buy some bread"},
+            {"role": "assistant", "content": "Done.", "order_ids": [manual["id"], 999999]},
+            {"role": "user", "content": "Thanks"},
+        ]})
+        sent = world.agent_claude.requests[0]["messages"]
+        assert sent[1]["content"] == "Done."
+
+
+def test_connecting_a_url_that_is_already_connected_returns_that_store(world):
+    with TestClient(world.app) as client:
+        store_id, _store = connect_store(client)
+
+        # same page, different spelling: no trailing slash and an upper case host
+        again = client.post("/stores/connect",
+                            json={"url": "https://STORES.example/hollowbrook-bakery"})
+        assert again.status_code == 202, again.text
+        body = again.json()
+        assert body["store_id"] == store_id
+        assert body["already_connected"] is True
+        assert "already connected" in body["message"]
+
+        stores = client.get("/stores").json()["stores"]
+        assert [store["id"] for store in stores] == [store_id]
+
+
+def test_a_failed_store_can_be_connected_again(world):
+    with TestClient(world.app) as client:
+        session = new_session()
+        failed = Store(source_url=BAKERY_URL, status=models.FAILED, mode="live",
+                       error="It broke")
+        session.add(failed)
+        session.commit()
+        failed_id = failed.id
+        session.close()
+
+        new_id, store = connect_store(client)
+        assert new_id != failed_id
+        assert store["status"] == "live"
 
 
 def test_config_says_what_is_set_without_leaking_it(world):

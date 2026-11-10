@@ -178,12 +178,15 @@ export function AgentPage({
     if (!cleaned || busy) return
     setDraft("")
 
-    // the API wants the whole conversation, as plain user and assistant text
+    // the API wants the whole conversation as user and assistant text, plus the ids of the
+    // orders each answer placed so the agent remembers what it really bought
     const history: ChatMessage[] = []
     for (const turn of turns) {
       if (!turn.answer || !turn.answer.reply) continue
+      const orderIds: number[] = []
+      for (const order of turn.answer.orders) orderIds.push(order.id)
       history.push({ role: "user", content: turn.question })
-      history.push({ role: "assistant", content: turn.answer.reply })
+      history.push({ role: "assistant", content: turn.answer.reply, order_ids: orderIds })
     }
     history.push({ role: "user", content: cleaned })
 

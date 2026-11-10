@@ -24,6 +24,7 @@ import json
 import logging
 from contextlib import asynccontextmanager
 from typing import Annotated, Literal
+from urllib.parse import urlsplit, urlunsplit
 
 from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -104,6 +105,9 @@ class ChatMessage(BaseModel):
     model_config = ConfigDict(extra="forbid")
     role: Literal["user", "assistant"]
     content: str = Field(min_length=1, max_length=4000)
+    # on an assistant message: the orders that turn placed, the ids /agent/chat sent back.
+    # only ids, the agent reads the orders themselves from the database
+    order_ids: list[int] = Field(default_factory=list, max_length=10)
 
 
 class ChatRequest(BaseModel):
@@ -119,6 +123,13 @@ class LoginRequest(BaseModel):
 class ResetRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     mode: Literal["live", "replay"] | None = None
+
+
+def same_page_key(url):
+    # two URLs for the same store page: the host's case and a trailing slash don't matter
+    parts = urlsplit(url.strip())
+    path = parts.path.rstrip("/")
+    return urlunsplit((parts.scheme.lower(), parts.netloc.lower(), path, parts.query, ""))
 
 
 # ---- app ----
@@ -178,6 +189,18 @@ def create_app(settings=None, paypal=None, ai_factory=None, fetch=None, agent_cl
         )
         return store
 
+    def find_connected_store(session, url):
+        # a store for the same page that is connecting or connected. a failed one doesn't
+        # count, connecting again is how you retry it
+        wanted = same_page_key(url)
+        stores = session.execute(select(Store).order_by(Store.id)).scalars()
+        for store in stores:
+            if store.status == models.FAILED:
+                continue
+            if same_page_key(store.source_url) == wanted:
+                return store
+        return None
+
     def demo_store_urls():
         base = settings.demo_stores_base_url.rstrip("/")
         return [base + "/" + slug + "/" for slug in DEMO_STORE_SLUGS]
@@ -222,9 +245,20 @@ def create_app(settings=None, paypal=None, ai_factory=None, fetch=None, agent_cl
         except FetchError as error:
             raise HTTPException(status_code=400, detail=str(error)) from error
 
+        # the same page pasted twice is one store, not two the agent has to pick between
+        existing = find_connected_store(session, url)
+        if existing is not None:
+            return {
+                "store_id": existing.id,
+                "mode": existing.mode,
+                "events_url": "/stores/" + str(existing.id) + "/events",
+                "already_connected": True,
+                "message": "This store is already connected, showing it instead",
+            }
+
         store = begin_connect(session, url, mode)
         return {"store_id": store.id, "mode": mode, "events_url": "/stores/" + str(store.id)
-                + "/events"}
+                + "/events", "already_connected": False, "message": None}
 
     @app.get("/stores/{store_id}/events")
     def store_events(store_id: int, session: DbSession,
