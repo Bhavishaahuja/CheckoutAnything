@@ -135,7 +135,7 @@ dev.cmd
 
 That installs everything and opens three windows: the API on 8000, the app on 5173, the demo stores on 5174. Open http://localhost:5173.
 
-It also starts the Check API on 8001 once `check/.env` is filled in (the first run creates it from `check/.env.example`). The Check service needs a Postgres database, see [`check/README.md`](check/README.md).
+It also starts the Check API on 8001 and the Check app on 5175 once `check/.env` is filled in (the first run creates it from `check/.env.example`). The Check service needs a Postgres database, see [`check/README.md`](check/README.md). The first run writes `check/frontend/.env.local` so the Check app talks to the local Check API and knows where the main app is.
 
 ### Keys
 
@@ -258,7 +258,7 @@ Only AG Grid Community is used. Grouping orders by store is done with full-width
 - The live log of a connect run is kept in memory, so the API runs as a single process and the log of a finished run is gone after a restart. The verified result is in the database either way.
 - The hosted demo has no login for most things. Anyone with the link can connect a URL or reset the demo, and with `CHECK_URL` set, file dispute evidence, which the Check service's own dashboard keeps behind a login. The one exception is reviewing an order on hold: the Review button in the Orders grid asks for the merchant password (the Check dashboard's, `DEMO_MERCHANT_PASSWORD`), and the API only makes a review link for a session Check itself accepts. Fine for a sandbox demo, not for real money.
 - Only the shopping agent's orders go through Check. A manual test buy has no human request to check against, so it is paid and captured directly.
-- Check is US dollars only, and its dispute summary and evidence PDF still name the original demo store (Fernwood Supply Co) as the merchant, whichever connected store the order was at.
+- Check is US dollars only. Its dispute summary and evidence PDF name the store the order was placed at.
 
 ## Credits
 

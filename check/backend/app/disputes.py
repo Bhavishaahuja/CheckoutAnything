@@ -309,8 +309,10 @@ def build_evidence_packet(dispute):
 
 def packet_lines(packet):
     # the PDF's text. plain "label: value" lines, in the same order as the summary
+    # the store the order was really placed at, which is the merchant PayPal's reviewer is
+    # hearing from. only an order with no store on it is our own demo store's
     lines = [
-        "Checkout Anything proof of intent: " + STORE_NAME,
+        "Checkout Anything proof of intent: " + str(packet["order"]["store"] or STORE_NAME),
         "Dispute " + str(packet["dispute"]["paypal_dispute_id"]) + ", reason "
         + str(packet["dispute"]["reason"]),
         "",

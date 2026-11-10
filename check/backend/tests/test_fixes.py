@@ -249,6 +249,43 @@ def test_no_fix_from_another_store(session):
     assert fixes.find_fix(session, mandate, order, ["size"]) is None
 
 
+def test_a_fix_never_comes_from_a_different_stores_shelf(session):
+    # our own size 9 is sold out, and another store has the very same shoe in stock, in the
+    # right size and under the cap. it fits everything except where the order was placed, so
+    # it must not be offered: accepting it would buy from a store the shopper never chose
+    mandate, order = order_for("sneakers", DemoScenario.wrong_size)
+    wanted = None
+    for row in session.query(CatalogItem).filter_by(category="sneakers", in_stock=True):
+        if fixes.row_fits(row, mandate, order, mandate.rules):
+            wanted = row
+            break
+    assert wanted is not None
+    session.add(CatalogItem(
+        sku="RIDGE-" + wanted.sku, name=wanted.name, category=wanted.category,
+        size=wanted.size, color=wanted.color, model=wanted.model,
+        event_date=wanted.event_date, quantity_unit=wanted.quantity_unit, price=wanted.price,
+        in_stock=True, merchant="Ridgeline Outdoors",
+    ))
+    wanted.in_stock = False
+    session.commit()
+
+    assert fixes.find_fix(session, mandate, order, ["size"]) is None
+
+    # with both in stock the fix is ours, never the other store's
+    wanted.in_stock = True
+    session.commit()
+    fix = fixes.find_fix(session, mandate, order, ["size"])
+    assert fix is not None
+    assert fix["sku"] == wanted.sku
+
+    # and for an order placed at the other store, our shelf has nothing to say either way:
+    # its own row is the only one that can fix it
+    order.merchant = "Ridgeline Outdoors"
+    fix = fixes.find_fix(session, mandate, order, ["size"])
+    assert fix is not None
+    assert fix["sku"] == "RIDGE-" + wanted.sku
+
+
 @pytest.mark.parametrize(
     "fields",
     [[], ["merchant"], ["expiry"], ["instructions_in_order"], ["warranty"], None],
