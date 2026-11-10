@@ -16,11 +16,12 @@ const LABELS: Record<DisplayStatus, string> = {
   fixed: 'Fixed',
 }
 
-export function StatusChip({ status }: { status: DisplayStatus }) {
+// label replaces the stock text, for a held order's "Held: wrong size"
+export function StatusChip({ status, label }: { status: DisplayStatus; label?: string }) {
   return (
     <span className={'chip chip--' + status}>
       <span className="chip__dot" aria-hidden="true" />
-      {LABELS[status]}
+      {label ?? LABELS[status]}
     </span>
   )
 }

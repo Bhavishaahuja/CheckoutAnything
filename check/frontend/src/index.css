@@ -531,32 +531,48 @@ p {
   box-shadow: inset 3px 0 0 var(--review);
 }
 
-/* a row that just changed status flashes its new color, then fades back. FLASH_MS in
+/* a row wears the color of where its money is: amber on hold for a human, green captured, gray
+   voided. the same meanings as the Checkout Anything Orders grid, from this app's own tokens */
+.grid-wrap .ag-row.row--held {
+  background-color: var(--authorized-bg);
+}
+
+.grid-wrap .ag-row.row--captured {
+  background-color: var(--captured-bg);
+}
+
+.grid-wrap .ag-row.row--voided {
+  background-color: var(--voided-bg);
+  color: var(--voided-ink);
+}
+
+/* a row that just changed status flashes its new color, then fades back to its resting tint.
+   stronger than the tint, or the flash wouldn't show on a row that is already colored. FLASH_MS in
    DashboardPage.tsx matches the animation length */
 .grid-wrap .row--flash {
   animation: row-flash 2.4s ease-out;
 }
 
 .grid-wrap .row--flash-needs_review {
-  --flash-color: var(--review-bg);
+  --flash-color: color-mix(in srgb, var(--authorized) 32%, var(--surface));
 }
 
 .grid-wrap .row--flash-authorized,
 .grid-wrap .row--flash-created {
-  --flash-color: var(--authorized-bg);
+  --flash-color: color-mix(in srgb, var(--authorized) 32%, var(--surface));
 }
 
 .grid-wrap .row--flash-captured {
-  --flash-color: var(--captured-bg);
+  --flash-color: color-mix(in srgb, var(--captured) 32%, var(--surface));
 }
 
 .grid-wrap .row--flash-fixed,
 .grid-wrap .row--flash-voided {
-  --flash-color: var(--voided-bg);
+  --flash-color: color-mix(in srgb, var(--voided) 32%, var(--surface));
 }
 
 .grid-wrap .row--flash-failed {
-  --flash-color: var(--failed-bg);
+  --flash-color: color-mix(in srgb, var(--failed) 32%, var(--surface));
 }
 
 @keyframes row-flash {
@@ -1190,14 +1206,16 @@ p {
   background: var(--authorized);
 }
 
+/* "Held: wrong size". amber like the held row, and like the same chip in the Checkout Anything
+   Orders grid */
 .chip--needs_review {
-  color: var(--review-ink);
-  border-color: var(--review);
+  color: var(--authorized-ink);
+  border-color: var(--authorized);
   background: var(--surface);
 }
 
 .chip--needs_review .chip__dot {
-  background: var(--review);
+  background: var(--authorized);
 }
 
 .chip--voided {

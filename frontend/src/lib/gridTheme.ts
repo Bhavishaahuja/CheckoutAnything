@@ -17,6 +17,8 @@ export const calmTheme = themeQuartz.withParams({
   rowHoverColor: "var(--muted)",
   selectedRowBackgroundColor: "var(--info-soft)",
   accentColor: "var(--primary)",
+  // the wash on a cell whose value just changed (enableCellChangeFlash)
+  valueChangeValueHighlightBackgroundColor: "color-mix(in srgb, var(--primary) 24%, transparent)",
   wrapperBorder: false,
   wrapperBorderRadius: 0,
   columnBorder: false,

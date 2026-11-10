@@ -3,6 +3,7 @@
 
 import type { DisplayStatus } from '../components/StatusChip'
 import type { Order } from '../types'
+import { heldLabel } from './shortReason'
 
 // approvals faster than this look like a rubber stamp, not a real look at the order
 export const RUBBER_STAMP_MS = 2000
@@ -15,6 +16,15 @@ export function displayStatus(order: Order): DisplayStatus {
     return 'fixed'
   }
   return order.status
+}
+
+// what the status chip says. an order held for a human says why in two or three words, from the
+// fields the check flagged: "Held: wrong size". undefined means the chip's own stock label
+export function statusLabel(order: Order): string | undefined {
+  if (displayStatus(order) !== 'needs_review') {
+    return undefined
+  }
+  return heldLabel(order.intent_check?.mismatched_fields, order.intent_check?.verdict)
 }
 
 // the human took the suggested fix: this order was voided and a new one placed instead

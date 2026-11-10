@@ -148,6 +148,8 @@ export interface Order {
   review_state: ReviewState | null
   check_verdict: "match" | "mismatch" | "unsure" | null
   check_reason: string | null
+  // the fields Check flagged, like ["size"]. the chip's short reason comes from these
+  check_mismatched_fields: string[]
   // how long the human took to decide, in milliseconds
   decision_ms: number | null
   // what the human tapped on the confirm page

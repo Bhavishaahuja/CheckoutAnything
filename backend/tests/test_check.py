@@ -18,7 +18,7 @@ from backend.tests.test_api import World, connect_store
 REQUEST = "Get me a half sourdough loaf, sliced, from Hollowbrook Bakery. No more than $15."
 CHECK = "https://check.example"
 MISMATCH = {"verdict": "mismatch", "risk_score": 85,
-            "reason": "Ordered a whole loaf, mandate says half"}
+            "reason": "Ordered a whole loaf, mandate says half", "mismatched_fields": ["size"]}
 
 
 def fresh(check, **options):
@@ -109,6 +109,7 @@ def test_an_agent_order_goes_to_check_and_comes_back_captured(world, check):
         assert order["review_state"] == "auto_approved"
         assert order["check_verdict"] == "match"
         assert order["check_reason"] == "Matches the mandate."
+        assert order["check_mismatched_fields"] == []
         assert order["decision_ms"] is None
         assert order["paypal_order_id"] == "CHECKORDER0000000041"
         assert order["capture_id"] == "CHECKCAPTURE0000000041"
@@ -132,6 +133,8 @@ def test_an_order_check_holds_waits_for_the_human_then_updates(world, check):
         assert order["review_state"] == "needs_review"
         assert order["check_verdict"] == "mismatch"
         assert order["check_reason"] == "Ordered a whole loaf, mandate says half"
+        # which fields Check flagged, for the chip's short reason ("Held: wrong size")
+        assert order["check_mismatched_fields"] == ["size"]
         assert order["capture_id"] is None
 
         link = client.post("/orders/" + str(order["id"]) + "/review-link", headers=log_in(client))

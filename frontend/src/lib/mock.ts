@@ -426,6 +426,7 @@ function placeOrder(target: MockStore, item_id: string, variant_id: string | nul
     review_state: null,
     check_verdict: null,
     check_reason: null,
+    check_mismatched_fields: [],
     decision_ms: null,
     review_action: null,
     replaced_by_order_id: null,

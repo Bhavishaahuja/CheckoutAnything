@@ -99,6 +99,9 @@ class Order(Base):
     check_verdict: Mapped[str | None] = mapped_column(String(20), nullable=True)
     # the one line Check wrote for the human
     check_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # which fields Check flagged, comma separated: "size" or "price,merchant". the grid turns
+    # these into the short reason on the chip, "Held: wrong size"
+    check_fields: Mapped[str | None] = mapped_column(String(300), nullable=True)
     # how long the human took to decide, on Check's clock. None when nobody had to
     decision_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # what the human tapped on the confirm page: approve, reject or accept_fix

@@ -58,6 +58,7 @@ CHECK_COLUMNS = {
     "check_verdict": "VARCHAR(20)",
     "check_reason": "TEXT",
     "decision_ms": "INTEGER",
+    "check_fields": "VARCHAR(300)",
     "review_action": "VARCHAR(20)",
     "check_replaced_by_id": "INTEGER",
     "check_replaces_id": "INTEGER",

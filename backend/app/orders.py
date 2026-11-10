@@ -197,6 +197,8 @@ CHECK_SIZE_LENGTH = 100
 CHECK_CURRENCY = "USD"
 # an order in one of these is finished, Check won't change it again
 CHECK_FINAL_STATUSES = ("captured", "voided", "failed")
+# fits Order.check_fields
+CHECK_FIELDS_LENGTH = 300
 # the confirm page's third button, as Check records it on the approval
 ACCEPT_FIX = "accept_fix"
 
@@ -227,6 +229,7 @@ def apply_check_order(order, check_order):
     if isinstance(intent_check, dict):
         order.check_verdict = intent_check.get("verdict")
         order.check_reason = intent_check.get("reason")
+        order.check_fields = join_fields(intent_check.get("mismatched_fields"))
     approval = check_order.get("approval")
     if isinstance(approval, dict):
         if approval.get("decision_ms") is not None:
@@ -237,6 +240,17 @@ def apply_check_order(order, check_order):
         order.check_replaced_by_id = check_order["replaced_by_order_id"]
     if check_order.get("replaces_order_id") is not None:
         order.check_replaces_id = check_order["replaces_order_id"]
+
+
+def join_fields(fields):
+    # Check's mismatched_fields list as one short string for our column. field names are plain
+    # words like "size", anything else is left out
+    kept = []
+    if isinstance(fields, list):
+        for field in fields:
+            if isinstance(field, str) and field and "," not in field:
+                kept.append(field.strip())
+    return ",".join(kept)[:CHECK_FIELDS_LENGTH]
 
 
 def waiting_for_replacement(order):
@@ -439,6 +453,7 @@ def order_to_dict(order, store_name=None):
         "review_state": order.review_state,
         "check_verdict": order.check_verdict,
         "check_reason": order.check_reason,
+        "check_mismatched_fields": [part for part in (order.check_fields or "").split(",") if part],
         "decision_ms": order.decision_ms,
         "review_action": order.review_action,
         # our own order ids for the two ends of an accepted fix. list_orders fills them in,

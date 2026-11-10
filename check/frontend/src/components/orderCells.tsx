@@ -3,7 +3,7 @@
 
 import type { CustomCellRendererProps } from 'ag-grid-react'
 import { buyerName, formatDuration, formatMoney, summarizeItems } from '../lib/format'
-import { DECISION_LABELS, decisionKind, decisionMs, displayStatus, isRubberStamp, type HeldRate } from '../lib/orderState'
+import { DECISION_LABELS, decisionKind, decisionMs, displayStatus, isRubberStamp, statusLabel, type HeldRate } from '../lib/orderState'
 import type { Order } from '../types'
 import { RiskBar } from './RiskBar'
 import { StatusChip } from './StatusChip'
@@ -26,7 +26,7 @@ export function StatusCell({ data, context }: CustomCellRendererProps<Order, unk
   const status = displayStatus(data)
   const replacementId = data.replaced_by_order_id
   if (status !== 'fixed' || replacementId === null) {
-    return <StatusChip status={status} />
+    return <StatusChip status={status} label={statusLabel(data)} />
   }
   // the old order is voided, and says where the fix went
   return (

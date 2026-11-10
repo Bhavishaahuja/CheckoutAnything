@@ -1,6 +1,6 @@
 // Screen 4: every purchase made through connected stores, live.
 
-import type { ColDef, GetRowIdParams } from "ag-grid-community"
+import type { ColDef, GetRowIdParams, RowClassRules } from "ag-grid-community"
 import { AgGridReact, type CustomCellRendererProps } from "ag-grid-react"
 import { ArrowRight, Bot, Check, Hand, Hourglass, Search, ShieldCheck, ShieldQuestion, Undo2, X } from "lucide-react"
 import { AnimatePresence } from "motion/react"
@@ -13,6 +13,7 @@ import { api } from "@/lib/api"
 import { clockTime, decisionTime, money } from "@/lib/format"
 import { flashGridRow } from "@/lib/gridFlash"
 import { calmTheme } from "@/lib/gridTheme"
+import { heldLabel } from "@/lib/shortReason"
 import type { Order } from "@/lib/types"
 import { useGridRows } from "@/lib/useGridRows"
 
@@ -24,6 +25,34 @@ interface OrderRow extends Order {
 
 // the grid starts empty (never "loading"), rows then arrive as transactions
 const NO_ROWS: OrderRow[] = []
+
+// on hold at PayPal, waiting for a human to decide
+function isHeld(row: OrderRow) {
+  return row.status === "authorized" && row.review_state === "needs_review" && !row.error
+}
+
+// paid and captured here, without going through Check (a manual test buy, or Check is off)
+function isPaidDirectly(row: OrderRow) {
+  return row.check_order_id === null && row.status === "captured"
+}
+
+// the row's color says where the money is: amber held, green captured, gray voided, and no
+// tint for an order that was paid directly. the classes are in index.css
+const ROW_CLASS_RULES: RowClassRules<OrderRow> = {
+  "row-held": (params) => !!params.data && isHeld(params.data),
+  "row-captured": (params) => !!params.data && params.data.status === "captured" && !isPaidDirectly(params.data),
+  "row-voided": (params) => params.data?.status === "voided",
+  "row-direct": (params) => !!params.data && isPaidDirectly(params.data),
+}
+
+// polling replaces a changed row through a transaction. any cell whose value is different
+// afterwards flashes, so the eye lands on what changed
+const DEFAULT_COL_DEF: ColDef<OrderRow> = {
+  sortable: true,
+  resizable: true,
+  suppressMovable: true,
+  enableCellChangeFlash: true,
+}
 
 function Tile({ label, children }: { label: string; children: React.ReactNode }) {
   return (
@@ -76,6 +105,14 @@ function StatusCell({ data, context }: CustomCellRendererProps<OrderRow, unknown
       </span>
     )
   }
+  if (isPaidDirectly(data) && context.checkOn) {
+    // neutral on purpose: nothing was held or checked, it was simply paid
+    return (
+      <Pill tone="muted">
+        <Check className="size-3.5" strokeWidth={3} /> Paid directly
+      </Pill>
+    )
+  }
   if (data.status === "captured") {
     return (
       <Pill tone="ok">
@@ -84,6 +121,14 @@ function StatusCell({ data, context }: CustomCellRendererProps<OrderRow, unknown
     )
   }
   // the two states only an order that went through Check can be in
+  if (isHeld(data)) {
+    // why, in two or three words: "Held: wrong size". the full sentence is in the Reason column
+    return (
+      <Pill tone="warn">
+        <Hourglass className="size-3.5" /> {heldLabel(data.check_mismatched_fields, data.check_verdict)}
+      </Pill>
+    )
+  }
   if (data.status === "authorized" && !data.error) {
     return (
       <Pill tone="warn">
@@ -184,6 +229,8 @@ function ReviewCell({ data, context }: CustomCellRendererProps<OrderRow, unknown
 }
 
 interface GridContext {
+  // agent orders go through Check, so "paid directly" means something
+  checkOn: boolean
   reviewLinks: boolean
   openReview: (orderId: number) => void
   // scroll to another order's row and light it up
@@ -235,6 +282,7 @@ export function OrdersPage({
               old.check_verdict === order.check_verdict &&
               old.decision_ms === order.decision_ms &&
               old.review_action === order.review_action &&
+              old.check_mismatched_fields.join() === order.check_mismatched_fields.join() &&
               old.replaced_by_order_id === order.replaced_by_order_id
             )
               return old
@@ -369,8 +417,8 @@ export function OrdersPage({
   )
 
   const gridContext = useMemo<GridContext>(
-    () => ({ reviewLinks, openReview, goToOrder }),
-    [reviewLinks, openReview, goToOrder]
+    () => ({ checkOn, reviewLinks, openReview, goToOrder }),
+    [checkOn, reviewLinks, openReview, goToOrder]
   )
 
   const reviewOrder = reviewId === null ? null : rows.find((row) => row.id === reviewId) || null
@@ -452,7 +500,8 @@ export function OrdersPage({
             theme={calmTheme}
             rowData={NO_ROWS}
             columnDefs={columnDefs}
-            defaultColDef={{ sortable: true, resizable: true, suppressMovable: true }}
+            defaultColDef={DEFAULT_COL_DEF}
+            rowClassRules={ROW_CLASS_RULES}
             getRowId={(params: GetRowIdParams<OrderRow>) => String(params.data.id)}
             // taller than the theme's 44 so the 44px Review button has air around it
             rowHeight={52}

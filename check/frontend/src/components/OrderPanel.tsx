@@ -4,7 +4,7 @@
 import { useEffect, useRef } from 'react'
 import { compareMandate } from '../lib/compare'
 import { buyerName, describeItem, formatDateTime, formatDuration, formatMoney } from '../lib/format'
-import { DECISION_LABELS, RUBBER_STAMP_MS, decisionKind, displayStatus, isRubberStamp } from '../lib/orderState'
+import { DECISION_LABELS, RUBBER_STAMP_MS, decisionKind, displayStatus, isRubberStamp, statusLabel } from '../lib/orderState'
 import type { Order } from '../types'
 import { ReviewLinkBox } from './ReviewLinkBox'
 import { RiskBar } from './RiskBar'
@@ -55,7 +55,7 @@ export function OrderPanel({ order, onClose, onGoToOrder }: OrderPanelProps) {
 
         <div className="panel__body">
           <div className="panel__status">
-            <StatusChip status={displayStatus(order)} />
+            <StatusChip status={displayStatus(order)} label={statusLabel(order)} />
             <span className={'decision decision--' + decisionKind(order)}>{DECISION_LABELS[decisionKind(order)]}</span>
           </div>
           {order.replaced_by_order_id !== null && (

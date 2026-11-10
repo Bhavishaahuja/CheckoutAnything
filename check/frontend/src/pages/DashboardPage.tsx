@@ -2,6 +2,7 @@ import {
   CellStyleModule,
   ClientSideRowModelModule,
   ExternalFilterModule,
+  HighlightChangesModule,
   ModuleRegistry,
   QuickFilterModule,
   RowApiModule,
@@ -12,6 +13,7 @@ import {
   type ColDef,
   type IRowNode,
   type RowClassParams,
+  type RowClassRules,
   type RowClickedEvent,
   type RowDataUpdatedEvent,
 } from 'ag-grid-community'
@@ -34,7 +36,7 @@ import {
   type OrderGridContext,
 } from '../components/orderCells'
 import { buyerName, formatTime, summarizeItems } from '../lib/format'
-import { DECISION_LABELS, decisionKind, decisionMs, displayStatus, heldRateAgg, heldRateValue } from '../lib/orderState'
+import { DECISION_LABELS, decisionKind, decisionMs, displayStatus, heldRateAgg, heldRateValue, statusLabel } from '../lib/orderState'
 import { usePolling } from '../lib/usePolling'
 import type { Order } from '../types'
 
@@ -49,6 +51,8 @@ const gridModules = [
   RowSelectionModule,
   RowStyleModule,
   CellStyleModule,
+  // the flash on a cell whose value changed between two polls
+  HighlightChangesModule,
   // Enterprise: group by agent, and the per-agent held rate
   RowGroupingModule,
 ]
@@ -84,6 +88,8 @@ const gridTheme = themeQuartz.withParams({
   // hover is drawn as an outline in index.css, not a fill
   rowHoverColor: 'transparent',
   selectedRowBackgroundColor: 'var(--primary-soft)',
+  // the wash on a cell whose value just changed (enableCellChangeFlash)
+  valueChangeValueHighlightBackgroundColor: 'var(--highlight)',
   accentColor: 'var(--focus)',
   wrapperBorder: false,
   wrapperBorderRadius: 0,
@@ -91,6 +97,17 @@ const gridTheme = themeQuartz.withParams({
   columnBorder: false,
   spacing: 7,
 })
+
+// the row's color says where the money is, the same four meanings as the Checkout Anything
+// Orders grid: amber on hold for a human, green captured, gray voided (a fixed order is a voided
+// one). everything here went through Check, so there is no "paid directly" row to leave plain.
+// the classes are in index.css
+const ROW_CLASS_RULES: RowClassRules<Order> = {
+  'row--needs-review': (params) => params.data?.review_state === 'needs_review',
+  'row--held': (params) => params.data?.status === 'authorized' && params.data?.review_state === 'needs_review',
+  'row--captured': (params) => params.data?.status === 'captured',
+  'row--voided': (params) => params.data?.status === 'voided',
+}
 
 type Filter = 'all' | 'needs_review' | 'auto' | 'human'
 
@@ -193,11 +210,13 @@ export function DashboardPage() {
       headerName: 'Status',
       colId: 'status',
       valueGetter: (params) => (params.data ? displayStatus(params.data) : ''),
+      // quick search finds "wrong size" too
+      getQuickFilterText: (params) => (params.data ? (statusLabel(params.data) ?? String(params.value)) : ''),
       comparator: (a: string, b: string) => STATUS_ORDER.indexOf(a) - STATUS_ORDER.indexOf(b),
       cellRenderer: StatusCell,
       // wide enough for the longest chip, "Waiting on buyer", or "Fixed" with its link to the
       // new order
-      width: narrow ? 150 : 215,
+      width: narrow ? 170 : 215,
     }
 
     // on a phone, status comes right after the order so you can see what's held without scrolling
@@ -287,6 +306,8 @@ export function DashboardPage() {
       sortable: true,
       resizable: true,
       suppressMovable: true,
+      // a poll hands the grid fresh rows. any cell whose value is different now flashes
+      enableCellChangeFlash: true,
     }),
     [],
   )
@@ -484,7 +505,8 @@ export function DashboardPage() {
                 isExternalFilterPresent={isExternalFilterPresent}
                 doesExternalFilterPass={doesExternalFilterPass}
                 rowSelection={{ mode: 'singleRow', checkboxes: false, enableClickSelection: true }}
-                rowClassRules={{ 'row--needs-review': (params) => params.data?.review_state === 'needs_review' }}
+                rowClassRules={ROW_CLASS_RULES}
+                animateRows
                 getRowClass={getRowClass}
                 onRowDataUpdated={onRowDataUpdated}
                 onRowClicked={openOrder}
