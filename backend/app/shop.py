@@ -7,7 +7,14 @@ from sqlalchemy import delete, select
 
 from backend.app import models
 from backend.app.models import Order, Store, StoreSpecRow, VerificationRun
-from backend.app.orders import OrderError, order_to_dict, place_order, price_order
+from backend.app.orders import (
+    OrderError,
+    order_to_dict,
+    place_order,
+    place_order_through_check,
+    price_order,
+    refresh_check_orders,
+)
 from backend.app.spec import parse_spec, spec_to_json
 
 
@@ -144,8 +151,11 @@ def get_catalog(session, store):
 
 
 def buy(session, paypal, vault_id, store_id, item_id, variant_id=None, add_on_ids=None,
-        quantity=1, created_by="manual"):
-    # prices from the verified spec and pays. raises OrderError when it can't even be tried
+        quantity=1, created_by="manual", check=None, mandate_for=None):
+    # prices from the verified spec and pays. raises OrderError when it can't even be tried.
+    # with check (a CheckClient) and mandate_for, the priced order goes to Check instead of
+    # being paid here. mandate_for(store) returns the mandate id, and is only called once the
+    # order has been priced, so a request that can't be bought never makes a mandate
     store = get_store(session, store_id)
     if store is None:
         raise OrderError("There is no store " + str(store_id), 404)
@@ -160,18 +170,30 @@ def buy(session, paypal, vault_id, store_id, item_id, variant_id=None, add_on_id
     quote = price_order(
         spec, verified_item_ids(session, store.id), item_id, variant_id, add_on_ids, quantity
     )
-    order = place_order(session, paypal, vault_id, store, quote, created_by)
+    if check is not None and mandate_for is not None:
+        order = place_order_through_check(
+            session, check, mandate_for, vault_id, store, quote, created_by
+        )
+    else:
+        order = place_order(session, paypal, vault_id, store, quote, created_by)
     return order_to_dict(order, store.merchant_name), quote
 
 
-def list_orders(session):
+def list_orders(session, check=None):
     names = {}
     for store in session.execute(select(Store)).scalars():
         names[store.id] = store.merchant_name
+    rows = list(session.execute(select(Order).order_by(Order.id.desc())).scalars())
+    # orders held at Check get their newest state first. a no-op without Check
+    refresh_check_orders(session, check, rows)
     orders = []
-    for order in session.execute(select(Order).order_by(Order.id.desc())).scalars():
+    for order in rows:
         orders.append(order_to_dict(order, names.get(order.store_id)))
     return orders
+
+
+def get_order(session, order_id):
+    return session.get(Order, order_id)
 
 
 def wipe_everything(session):

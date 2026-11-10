@@ -4,6 +4,7 @@
 import copy
 from pathlib import Path
 
+from backend.app.check_client import CheckError
 from backend.app.fetcher import FetchedPage, html_to_text
 from backend.app.paypal_client import PayPalError
 from backend.app.spec import parse_item, parse_spec
@@ -226,3 +227,118 @@ class FakeClaude:
         if callable(reply):
             reply = reply(request)
         return reply
+
+
+# ---- a stand-in for the Check service ----
+
+
+class FakeCheck:
+    # answers the way check/docs/api.md says the real service does. the agent side gets the
+    # four-field status object, the merchant side gets the full order
+    def __init__(self, can_read=True):
+        self.can_read = can_read
+        self.mandates = []
+        self.orders = {}
+        self.sent_orders = []
+        self.review_links = []
+        self.list_calls = 0
+        # what the check decides for the next order: (status, review_state, intent_check)
+        self.decide = (
+            "captured", "auto_approved",
+            {"verdict": "match", "risk_score": 5, "reason": "Matches the mandate."},
+        )
+        self.fail_mandate = None
+        self.fail_order = None
+        self.held_total = None
+
+    def create_mandate(self, request_text, merchant, buyer_label):
+        if self.fail_mandate is not None:
+            raise self.fail_mandate
+        mandate = {
+            "id": len(self.mandates) + 1, "raw_request": request_text, "merchant": merchant,
+            "buyer_label": buyer_label,
+        }
+        self.mandates.append(mandate)
+        return copy.deepcopy(mandate)
+
+    def create_order(self, mandate_id, items, shipping, vault_id, merchant):
+        if self.fail_order is not None:
+            raise self.fail_order
+        sent = {
+            "mandate_id": mandate_id, "items": copy.deepcopy(items), "shipping": shipping,
+            "vault_id": vault_id, "merchant": merchant,
+        }
+        self.sent_orders.append(sent)
+        total = 0
+        for item in items:
+            total += round(float(item["unit_price"]) * item["quantity"] * 100)
+        total += round(float(shipping) * 100)
+        status, review_state, intent_check = self.decide
+        order_id = len(self.orders) + 41
+        number = str(order_id).zfill(10)
+        order = {
+            "id": order_id,
+            "mandate_id": mandate_id,
+            "status": status,
+            "review_state": review_state,
+            "total": self.held_total or "%d.%02d" % (total // 100, total % 100),
+            "paypal_order_id": "CHECKORDER" + number,
+            "authorization_id": "AUTH" + number,
+            "capture_id": "CHECKCAPTURE" + number if status == "captured" else None,
+            "merchant": merchant,
+            "intent_check": copy.deepcopy(intent_check),
+            "approval": None,
+        }
+        self.orders[order_id] = order
+        return {"id": order_id, "status": status, "review_state": review_state,
+                "total": order["total"]}
+
+    def human_decides(self, order_id, action, decision_ms):
+        # what the confirm page does: approve captures, reject voids
+        order = self.orders[order_id]
+        if action == "approve":
+            order["status"] = "captured"
+            order["review_state"] = "approved"
+            order["capture_id"] = "CHECKCAPTURE" + str(order_id).zfill(10)
+        else:
+            order["status"] = "voided"
+            order["review_state"] = "rejected"
+        order["approval"] = {"action": action, "decision_ms": decision_ms}
+
+    def get_order(self, order_id):
+        if order_id not in self.orders:
+            raise CheckError("Order " + str(order_id) + " not found", 404)
+        return copy.deepcopy(self.orders[order_id])
+
+    def list_orders(self, limit=200):
+        self.list_calls += 1
+        newest_first = sorted(self.orders.values(), key=lambda order: -order["id"])
+        return copy.deepcopy(newest_first[:limit])
+
+    def create_review_link(self, order_id):
+        order = self.get_order(order_id)
+        if order["review_state"] != "needs_review":
+            raise CheckError("This order isn't waiting for review", 409)
+        token = "token-" + str(order_id) + "-" + str(len(self.review_links) + 1)
+        self.review_links.append(token)
+        return {"review_token": token, "expires_at": "2026-12-03T01:56:55Z"}
+
+    def list_disputes(self, limit=200):
+        return [{"id": 3, "paypal_dispute_id": "PP-R-ABC-10001234", "order_id": 41,
+                 "reason": "UNAUTHORISED", "status": "WAITING_FOR_SELLER_RESPONSE",
+                 "evidence_submitted": False, "has_summary": False}]
+
+    def sync_disputes(self):
+        return {"orders_checked": 1, "disputes_found": 1, "created": 1, "updated": 0,
+                "errors": []}
+
+    def dispute_evidence(self, dispute_id):
+        if dispute_id != 3:
+            raise CheckError("Dispute " + str(dispute_id) + " not found", 404)
+        return {"dispute": self.list_disputes()[0], "packet": {}, "summary": "The buyer asked."}
+
+    def redraft_dispute(self, dispute_id):
+        return self.dispute_evidence(dispute_id)
+
+    def submit_dispute_evidence(self, dispute_id):
+        raise CheckError("Evidence was already submitted", 409)
