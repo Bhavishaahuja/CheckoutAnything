@@ -6,8 +6,12 @@ import type { Api, EventSubscription } from "@/lib/api"
 import type {
   AgentReply,
   AgentStep,
+  FlagField,
+  ItemPatch,
   Mode,
   Order,
+  ReviewFlag,
+  ReviewResponse,
   SpecItem,
   SpecResponse,
   SpecVersion,
@@ -147,8 +151,8 @@ const SCRIPTS: Script[] = [
       ],
       shipping: { type: "flat", amount: "6.00", notes: "Local delivery only" },
       extraction_notes: [
-        "Croissant is marked SOLD OUT, set available=false",
-        "Rye was $8 crossed out, now $7, used $7",
+        "Butter Croissant is marked SOLD OUT, set available=false",
+        "Seeded Rye was $8 crossed out, now $7, used $7",
         "Cinnamon Knot price comes from the footnote (*all knots $3.50)",
       ],
     },
@@ -186,6 +190,33 @@ interface MockStore {
   runs: VerificationRun[]
   verified: Set<string>
   done: boolean
+  // the merchant's side, made when the run ends
+  reviews: Map<string, MockReview>
+  labels: Record<string, string>
+}
+
+interface MockReview {
+  position: number
+  category: string | null
+  stock: number | null
+  published: boolean
+  // flagged field -> how it was settled, same shape as the API keeps
+  resolved: Partial<Record<FlagField, { by: "confirm" | "edit"; was?: string }>>
+}
+
+const CATEGORIES = ["Apparel", "Accessories", "Home", "Stationery", "Food and drink", "Art and prints", "Services", "Other"]
+
+// field -> [default label, where it goes in the PayPal order]
+const COLUMNS: Record<string, [string, string | null]> = {
+  name: ["Item", "purchase_units[0].items[0].name"],
+  category: ["Category", null],
+  description: ["Description", null],
+  unit_price: ["Price", "purchase_units[0].items[0].unit_amount.value"],
+  stock: ["Stock", null],
+  published: ["Live on PayPal", null],
+  checked_at: ["Checked", null],
+  paypal_order_id: ["PayPal order", "id"],
+  status: ["Status", null],
 }
 
 let stores: MockStore[] = []
@@ -320,6 +351,7 @@ async function playRun(target: MockStore) {
 
   const counts = target.store.counts
   target.store.status = counts.verified > 0 ? "live" : "failed"
+  ensureReviews(target)
   target.done = true
   emit(
     target,
@@ -354,6 +386,8 @@ function startStore(url: string, mode: Mode): MockStore {
     runs: [],
     verified: new Set(),
     done: false,
+    reviews: new Map(),
+    labels: {},
   }
   stores.push(target)
   void playRun(target)
@@ -372,6 +406,224 @@ function latestSpec(target: MockStore): StoreSpec | null {
   return target.versions[target.versions.length - 1].spec
 }
 
+// ---- the merchant's review, the same rules as backend/app/review.py ----
+
+function dollars(amount: string) {
+  return "$" + Number(amount).toFixed(2)
+}
+
+function noteField(note: string): FlagField {
+  const lowered = note.toLowerCase()
+  if (/sold out|unavailable|not for sale|available/.test(lowered)) return "available"
+  if (/\$\s?\d|price|cost|footnote|crossed/.test(lowered)) return "unit_price"
+  return "name"
+}
+
+function flagsFor(target: MockStore, current: SpecItem): Partial<Record<FlagField, string[]>> {
+  const flags: Partial<Record<FlagField, string[]>> = {}
+  const add = (field: FlagField, reason: string) => {
+    const reasons = flags[field] || (flags[field] = [])
+    if (!reasons.includes(reason)) reasons.push(reason)
+  }
+  const runs = target.runs.filter((run) => run.item_id === current.id)
+  const repairs = Math.max(0, ...runs.map((run) => run.attempt))
+  if (repairs > 0) {
+    const failure = runs.find((run) => !run.ok && run.reason)
+    const why = failure ? " after a check failed: " + failure.reason : ""
+    const first = target.versions[0].spec.items.find((entry) => entry.id === current.id)
+    let repaired = first
+    for (const version of target.versions) {
+      if ((version.note || "").startsWith("Merchant edit")) continue
+      repaired = version.spec.items.find((entry) => entry.id === current.id) || repaired
+    }
+    if (first && repaired && first.unit_price !== repaired.unit_price) {
+      add("unit_price", "Claude first read " + dollars(first.unit_price) + ", then repaired it to " + dollars(repaired.unit_price) + why + ".")
+    } else {
+      add("unit_price", "It took " + (repairs === 1 ? "1 repair" : repairs + " repairs") + " to pass the checks" + why + ".")
+    }
+  }
+  const spec = latestSpec(target)
+  for (const note of spec ? spec.extraction_notes : []) {
+    if (note.toLowerCase().includes(current.name.toLowerCase())) add(noteField(note), "Claude's note: " + note)
+  }
+  return flags
+}
+
+function ensureReviews(target: MockStore) {
+  const spec = latestSpec(target)
+  if (!spec) return
+  for (const current of spec.items) {
+    if (target.reviews.has(current.id)) continue
+    const flagged = Object.keys(flagsFor(target, current)).length > 0
+    target.reviews.set(current.id, {
+      position: target.reviews.size,
+      category: null,
+      stock: null,
+      published: current.available && target.verified.has(current.id) && !flagged,
+      resolved: {},
+    })
+  }
+}
+
+function blockedReason(target: MockStore, current: SpecItem): string | null {
+  if (!current.available) return current.name + " is not for sale on the page"
+  if (!target.verified.has(current.id)) return current.name + " hasn't passed verification"
+  const review = target.reviews.get(current.id)
+  const open = Object.keys(flagsFor(target, current)).filter((field) => !review?.resolved[field as FlagField])
+  if (open.length === 1) return current.name + " has 1 field that still needs a look"
+  if (open.length > 1) return current.name + " has " + open.length + " fields that still need a look"
+  return null
+}
+
+function reviewOf(target: MockStore): ReviewResponse {
+  const spec = latestSpec(target)
+  if (!spec) throw new Error("This store has no spec yet")
+  if (target.done) ensureReviews(target)
+  let needs_look = 0
+  const items = spec.items.map((current, index) => {
+    const review = target.reviews.get(current.id)
+    const found = flagsFor(target, current)
+    const flags: ReviewFlag[] = []
+    for (const field of ["name", "unit_price", "available"] as FlagField[]) {
+      const reasons = found[field]
+      if (!reasons) continue
+      const resolved = Boolean(review?.resolved[field])
+      if (!resolved) needs_look += 1
+      flags.push({ field, reasons, resolved })
+    }
+    const runs = target.runs.filter((run) => run.item_id === current.id)
+    return {
+      item_id: current.id,
+      position: review ? review.position : index,
+      category: review ? review.category : null,
+      stock: review ? review.stock : null,
+      published: review ? review.published : false,
+      blocked_reason: blockedReason(target, current),
+      flags,
+      checked_at: runs.length > 0 ? runs[runs.length - 1].created_at : null,
+    }
+  })
+  items.sort((a, b) => a.position - b.position)
+  return copy({
+    store_id: target.store.id,
+    editable: target.done,
+    categories: CATEGORIES,
+    columns: Object.entries(COLUMNS).map(([field, [default_label, paypal_field]]) => ({
+      field,
+      label: target.labels[field] || default_label,
+      default_label,
+      paypal_field,
+    })),
+    needs_look,
+    items,
+  })
+}
+
+function cleanPrice(raw: string): string {
+  const text = String(raw).trim().replace(/^\$/, "").replace(/,/g, "").trim()
+  if (!text) throw new Error("A price can't be blank")
+  if (!/^-?\d*\.?\d+$/.test(text)) throw new Error('"' + String(raw).trim() + '" is not a price')
+  const value = Number(text)
+  if (value <= 0) throw new Error("A price has to be above 0.00")
+  if (Math.abs(value * 100 - Math.round(value * 100)) > 1e-6) throw new Error("A price can have 2 decimals at most")
+  return value.toFixed(2)
+}
+
+function editItem(target: MockStore, itemId: string, body: ItemPatch) {
+  if (!target.done) throw new Error("This store is still connecting, wait for it to finish")
+  const spec = latestSpec(target)
+  const current = spec?.items.find((entry) => entry.id === itemId)
+  const review = target.reviews.get(itemId)
+  if (!spec || !current || !review) throw new Error("This store has no item " + itemId)
+
+  const updates: Partial<SpecItem> = {}
+  if (body.name !== undefined) {
+    const name = body.name.trim()
+    if (!name) throw new Error("An item needs a name")
+    if (name.length > 127) throw new Error("name: String should have at most 127 characters")
+    if (name !== current.name) updates.name = name
+  }
+  if (body.description !== undefined) {
+    const description = body.description.trim()
+    if (description.length > 300) throw new Error("description: String should have at most 300 characters")
+    if (description !== (current.description || "")) updates.description = description
+  }
+  if (body.unit_price !== undefined) {
+    const price = cleanPrice(body.unit_price)
+    if (price !== current.unit_price) updates.unit_price = price
+  }
+  if (body.category !== undefined && body.category !== null && !CATEGORIES.includes(body.category)) {
+    throw new Error(body.category + " is not one of the categories")
+  }
+  if (body.stock !== undefined && body.stock !== null && (!Number.isInteger(body.stock) || body.stock < 0 || body.stock > 1_000_000)) {
+    throw new Error("Stock has to be a whole number from 0 to 1000000")
+  }
+
+  if (Object.keys(updates).length > 0) {
+    const version = target.versions[target.versions.length - 1].version
+    const nextSpec = copy(spec)
+    const index = nextSpec.items.findIndex((entry) => entry.id === itemId)
+    const before = nextSpec.items[index]
+    nextSpec.items[index] = { ...before, ...updates }
+    target.versions.push({
+      version: version + 1,
+      note: "Merchant edit of " + current.name,
+      created_at: now(),
+      spec: nextSpec,
+    })
+    if (current.available && (updates.name !== undefined || updates.unit_price !== undefined)) {
+      // the price the page check last passed at
+      let backed: string | null = null
+      for (const run of target.runs) {
+        if (run.item_id !== itemId || !run.page_check_ok) continue
+        const then = target.versions.find((entry) => entry.version === run.spec_version)
+        const found = then?.spec.items.find((entry) => entry.id === itemId)
+        if (found) backed = found.unit_price
+      }
+      const onPage = backed === nextSpec.items[index].unit_price
+      const runs = target.runs.filter((run) => run.item_id === itemId)
+      if (!target.verified.has(itemId)) {
+        target.verified.add(itemId)
+        target.store.counts.verified += 1
+        target.store.counts.failed = Math.max(0, target.store.counts.failed - 1)
+        target.store.status = "live"
+      }
+      target.runs.push({
+        item_id: itemId,
+        attempt: Math.max(0, ...runs.map((run) => run.attempt)),
+        spec_version: version + 1,
+        page_check_ok: onPage,
+        paypal_check_ok: true,
+        paypal_order_id: fakeId(17),
+        ok: true,
+        reason: onPage ? null : "Price set by the merchant" + (backed ? ", the page check last passed at " + dollars(backed) : ""),
+        created_at: now(),
+      })
+    }
+    for (const field of ["name", "unit_price"] as const) {
+      const next = updates[field]
+      if (next === undefined) continue
+      const settled = review.resolved[field]
+      if (!settled) review.resolved[field] = { by: "edit", was: current[field] }
+      else if (settled.by === "edit" && settled.was === next) delete review.resolved[field]
+    }
+  }
+  if (body.category !== undefined) review.category = body.category
+  if (body.stock !== undefined) review.stock = body.stock
+  for (const field of body.resolve || []) review.resolved[field] = { by: "confirm" }
+
+  const after = (latestSpec(target) as StoreSpec).items.find((entry) => entry.id === itemId) as SpecItem
+  const blocked = blockedReason(target, after)
+  if (body.published === true) {
+    if (blocked) throw new Error(blocked + ", so it can't go live yet")
+    review.published = true
+  } else if (body.published === false) {
+    review.published = false
+  } else if (blocked && review.published) {
+    review.published = false
+  }
+}
+
 function priceOrder(target: MockStore, item_id: string, variant_id: string | null, add_on_ids: string[], quantity: number) {
   const spec = latestSpec(target)
   if (!spec) throw new Error("This store has no spec yet")
@@ -380,6 +632,11 @@ function priceOrder(target: MockStore, item_id: string, variant_id: string | nul
     if (candidate.id === item_id) found = candidate
   }
   if (!found || !target.verified.has(item_id)) throw new Error("That item isn't verified, so it can't be bought")
+  const review = target.reviews.get(item_id)
+  if (!review || !review.published) throw new Error(found.name + " isn't live on PayPal yet, the merchant hasn't published it")
+  if (review.stock !== null && quantity > review.stock) {
+    throw new Error(review.stock === 0 ? found.name + " is out of stock" : "Only " + review.stock + " of " + found.name + " left")
+  }
 
   let unit = Number(found.unit_price)
   let description = found.name
@@ -423,6 +680,8 @@ function placeOrder(target: MockStore, item_id: string, variant_id: string | nul
     created_at: now(),
   }
   orders.unshift(order)
+  const review = target.reviews.get(item_id)
+  if (review && review.stock !== null) review.stock = Math.max(0, review.stock - quantity)
   return order
 }
 
@@ -455,7 +714,13 @@ function runAgent(text: string): AgentReply {
     if (lowered.includes(firstWord)) target = candidate
   }
   const spec = latestSpec(target) as StoreSpec
-  const sellable = spec.items.filter((candidate) => target.verified.has(candidate.id))
+  // what an agent can buy: verified, published, in the merchant's order
+  const sellable = spec.items
+    .filter((candidate) => target.verified.has(candidate.id) && target.reviews.get(candidate.id)?.published)
+    .sort((a, b) => (target.reviews.get(a.id)?.position || 0) - (target.reviews.get(b.id)?.position || 0))
+  if (sellable.length === 0) {
+    return { reply: target.store.merchant_name + " has nothing published yet. Publish an item on the Connect tab first.", steps, orders: [] }
+  }
 
   let picked = sellable[0]
   for (const candidate of sellable) {
@@ -576,6 +841,62 @@ export const mockApi: Api = {
       runs: target.runs,
       verified_item_ids: [...target.verified].sort(),
     })
+  },
+
+  async getReview(storeId) {
+    return reviewOf(findStore(storeId))
+  },
+
+  async patchItem(storeId, itemId, body) {
+    await sleep(350)
+    const target = findStore(storeId)
+    editItem(target, itemId, body)
+    return reviewOf(target)
+  },
+
+  async publishItems(storeId, itemIds, published) {
+    await sleep(500)
+    const target = findStore(storeId)
+    const spec = latestSpec(target) as StoreSpec
+    if (published) {
+      const blocked = []
+      for (const itemId of itemIds) {
+        const current = spec.items.find((entry) => entry.id === itemId)
+        const reason = current ? blockedReason(target, current) : "This store has no item " + itemId
+        if (reason) blocked.push(reason)
+      }
+      if (blocked.length > 0) {
+        throw new Error(blocked.length + (blocked.length === 1 ? " item" : " items") + " can't be published: " + blocked.join("; "))
+      }
+    }
+    for (const itemId of itemIds) {
+      const review = target.reviews.get(itemId)
+      if (review) review.published = published
+    }
+    return reviewOf(target)
+  },
+
+  async reorderItems(storeId, itemIds) {
+    await sleep(200)
+    const target = findStore(storeId)
+    if (itemIds.length !== target.reviews.size) throw new Error("The new order has to list every item of the store exactly once")
+    itemIds.forEach((itemId, position) => {
+      const review = target.reviews.get(itemId)
+      if (!review) throw new Error("The new order has to list every item of the store exactly once")
+      review.position = position
+    })
+    return reviewOf(target)
+  },
+
+  async renameColumn(storeId, field, label) {
+    await sleep(200)
+    const target = findStore(storeId)
+    if (!COLUMNS[field]) throw new Error(field + " is not a catalog column")
+    const cleaned = label.trim().replace(/\s+/g, " ")
+    if (cleaned.length > 40) throw new Error("A column name can be 40 characters at most")
+    if (!cleaned || cleaned === COLUMNS[field][0]) delete target.labels[field]
+    else target.labels[field] = cleaned
+    return reviewOf(target)
   },
 
   async createOrder(storeId, body) {

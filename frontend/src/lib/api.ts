@@ -8,10 +8,12 @@ import {
   type AppConfig,
   type ChatMessage,
   type ConnectResponse,
+  type ItemPatch,
   type Mode,
   type Order,
   type OrderRequest,
   type ResetResponse,
+  type ReviewResponse,
   type SpecResponse,
   type Store,
   type StoreEvent,
@@ -72,6 +74,12 @@ export interface Api {
   // onLost fires when the stream can't be opened or drops before a final event
   subscribe(storeId: number, onEvent: (event: StoreEvent) => void, onLost: () => void): EventSubscription
   getSpec(storeId: number): Promise<SpecResponse>
+  // the merchant's review. every change answers with the review as it is afterwards
+  getReview(storeId: number): Promise<ReviewResponse>
+  patchItem(storeId: number, itemId: string, body: ItemPatch): Promise<ReviewResponse>
+  publishItems(storeId: number, itemIds: string[], published: boolean): Promise<ReviewResponse>
+  reorderItems(storeId: number, itemIds: string[]): Promise<ReviewResponse>
+  renameColumn(storeId: number, field: string, label: string): Promise<ReviewResponse>
   createOrder(storeId: number, body: OrderRequest): Promise<Order>
   listOrders(): Promise<Order[]>
   agentChat(messages: ChatMessage[]): Promise<AgentReply>
@@ -128,6 +136,32 @@ const realApi: Api = {
   },
 
   getSpec: (storeId) => request<SpecResponse>("/stores/" + storeId + "/spec"),
+
+  getReview: (storeId) => request<ReviewResponse>("/stores/" + storeId + "/review"),
+
+  patchItem: (storeId, itemId, body) =>
+    request<ReviewResponse>("/stores/" + storeId + "/items/" + encodeURIComponent(itemId), {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    }),
+
+  publishItems: (storeId, itemIds, published) =>
+    request<ReviewResponse>("/stores/" + storeId + "/publish", {
+      method: "POST",
+      body: JSON.stringify({ item_ids: itemIds, published }),
+    }),
+
+  reorderItems: (storeId, itemIds) =>
+    request<ReviewResponse>("/stores/" + storeId + "/order", {
+      method: "PUT",
+      body: JSON.stringify({ item_ids: itemIds }),
+    }),
+
+  renameColumn: (storeId, field, label) =>
+    request<ReviewResponse>("/stores/" + storeId + "/columns/" + encodeURIComponent(field), {
+      method: "PUT",
+      body: JSON.stringify({ label }),
+    }),
 
   createOrder: (storeId, body) =>
     request<Order>("/stores/" + storeId + "/orders", { method: "POST", body: JSON.stringify(body) }),

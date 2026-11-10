@@ -18,3 +18,35 @@ export function hostAndPath(url: string) {
     return url
   }
 }
+
+// "Nov 10, 2:14 PM", for a date column
+export function shortDateTime(iso: string) {
+  const date = new Date(iso)
+  if (Number.isNaN(date.getTime())) return ""
+  return date.toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })
+}
+
+// "2026-11-10" in local time, for file names
+export function dayStamp(date: Date) {
+  const pad = (value: number) => String(value).padStart(2, "0")
+  return date.getFullYear() + "-" + pad(date.getMonth() + 1) + "-" + pad(date.getDate())
+}
+
+// "Fernwood & Thistle Goods" -> "fernwood-thistle-goods"
+export function slugify(text: string) {
+  return (
+    text
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "") || "store"
+  )
+}
+
+// "1.4s", "12s", "3m 05s": how long a person took
+export function duration(ms: number) {
+  if (ms < 10_000) return (ms / 1000).toFixed(1) + "s"
+  if (ms < 60_000) return Math.round(ms / 1000) + "s"
+  const minutes = Math.floor(ms / 60_000)
+  const seconds = Math.round((ms % 60_000) / 1000)
+  return minutes + "m " + String(seconds).padStart(2, "0") + "s"
+}

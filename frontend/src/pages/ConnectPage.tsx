@@ -2,7 +2,7 @@
 
 import { ArrowRight, ExternalLink, Link2, Store as StoreIcon } from "lucide-react"
 import { AnimatePresence } from "motion/react"
-import { useState, type FormEvent } from "react"
+import { useMemo, useState, type FormEvent } from "react"
 
 import { Card, ErrorNote, Pill, StoreStatusPill } from "@/components/bits"
 import { CatalogGrid } from "@/components/CatalogGrid"
@@ -97,6 +97,25 @@ export function ConnectPage({
     event.preventDefault()
     void connect(url)
   }
+
+  // what the grid's loading overlay says before the first item shows up
+  const lastEvent = run.events.length > 0 ? run.events[run.events.length - 1].type : null
+  const loadingStep = useMemo(() => {
+    if (lastEvent === "fetch.started") return { label: "Step 1 of 3: fetching the page", progress: 0.15 }
+    if (lastEvent === "fetch.done") return { label: "Step 1 of 3: the page is in", progress: 0.35 }
+    if (lastEvent === "extract.started") return { label: "Step 2 of 3: Claude is writing the store spec", progress: 0.6 }
+    if (lastEvent === "extract.done") return { label: "Step 3 of 3: checking each item against the page and PayPal", progress: 0.9 }
+    return { label: "Starting the run", progress: 0.05 }
+  }, [lastEvent])
+
+  const firstDemoUrl = config && config.demo_store_urls.length > 0 ? config.demo_store_urls[0] : null
+  const connectDemo = () => {
+    if (!firstDemoUrl) return
+    setUrl(firstDemoUrl)
+    void connect(firstDemoUrl)
+  }
+
+  const liveCount = run.review ? run.rows.filter((row) => row.published).length : run.counts.verified
 
   const activeStore = stores.find((store) => store.id === activeStoreId) || null
   const sourceUrl = run.detail?.store.source_url || activeStore?.source_url || ""
@@ -231,7 +250,7 @@ export function ConnectPage({
 
         {/* log + catalog */}
         <div className="grid gap-5 lg:grid-cols-[340px_minmax(0,1fr)]">
-          <Card className="flex h-[300px] flex-col overflow-hidden lg:h-[560px]">
+          <Card className="flex h-[300px] flex-col overflow-hidden lg:h-[640px]">
             <div className="flex h-12 shrink-0 items-center justify-between border-b border-border px-4">
               <h2 className="text-sm font-semibold">Live steps</h2>
               {run.events.length > 0 && <span className="text-xs text-muted-foreground tabular-nums">{run.events.length} events</span>}
@@ -241,7 +260,7 @@ export function ConnectPage({
             </div>
           </Card>
 
-          <Card className="flex h-[560px] flex-col overflow-hidden">
+          <Card className="flex h-[640px] flex-col overflow-hidden">
             <div className="flex min-h-12 shrink-0 flex-wrap items-center justify-between gap-x-6 gap-y-2 border-b border-border px-4 py-2">
               <div className="flex min-w-0 items-center gap-2.5">
                 <StoreIcon className="size-4 shrink-0 text-muted-foreground" />
@@ -271,14 +290,26 @@ export function ConnectPage({
               </div>
             </div>
 
-            {run.error && (
+            {run.error && run.rows.length > 0 && (
               <div className="px-4 pt-3">
                 <ErrorNote>{run.error}</ErrorNote>
               </div>
             )}
 
             <div className="min-h-0 flex-1">
-              <CatalogGrid rows={run.rows} selectedItemId={openItemId} onPickItem={setOpenItemId} />
+              <CatalogGrid
+                storeId={activeStoreId}
+                rows={run.rows}
+                review={run.review}
+                merchantName={run.merchantName || (sourceUrl ? prettyName(sourceUrl) : "")}
+                status={run.status}
+                loadingStep={loadingStep}
+                storeError={run.error}
+                selectedItemId={openItemId}
+                onPickItem={setOpenItemId}
+                reload={run.reload}
+                onConnectDemo={firstDemoUrl && !starting ? connectDemo : undefined}
+              />
             </div>
 
             {run.status === "live" && (
@@ -286,8 +317,9 @@ export function ConnectPage({
                 <span>
                   <span className="font-medium">{run.merchantName} is live.</span>{" "}
                   <span className="text-muted-foreground">
-                    A shopping agent can buy its {run.counts.verified} verified {run.counts.verified === 1 ? "item" : "items"} through
-                    PayPal right now.
+                    {liveCount === run.counts.verified
+                      ? "A shopping agent can buy its " + liveCount + " verified " + (liveCount === 1 ? "item" : "items") + " through PayPal right now."
+                      : liveCount + " of its " + run.counts.verified + " verified items are live on PayPal. The rest wait for you to confirm the amber cells and publish."}
                   </span>
                 </span>
                 <button type="button" onClick={onGoToAgent} className="flex items-center gap-1 font-medium text-primary hover:underline">
