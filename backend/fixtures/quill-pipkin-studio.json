@@ -1,0 +1,93 @@
+{
+  "label": "FIXTURE",
+  "slug": "quill-pipkin-studio",
+  "recorded_at": "2026-11-10T23:41:29Z",
+  "recorded_from": "http://localhost:5174/quill-pipkin-studio/",
+  "page": {
+    "title": "Quill & Pipkin Studio | Commissions",
+    "text": "Quill & Pipkin Studio\nCharacter illustration by June. Commissions open\nHello!\nI draw original characters, pets, and tabletop party portraits in a soft painterly style. Everything is digital and you get a high resolution file when it's done, usually within two weeks.\nWhat it costs\nHeadshots are $40, half body $65, full body $90. Add $15 for a background. Extra character +50%.\nPrices are for personal use. If you want to use the art commercially, write to me first and we'll work something out.\nHow to order\nSend me a message with your references and which kind of piece you want. I'll send you an invoice, and I start once it's paid. There's nothing to ship, files are delivered by email.\nWhat I won't draw\nMecha, real people, and anything you'd be embarrassed to show your grandmother.\nQuill & Pipkin Studio is a fictional studio made for a demo."
+  },
+  "spec": {
+    "spec_version": 1,
+    "source_url": "http://localhost:5174/quill-pipkin-studio/",
+    "merchant": {
+      "name": "Quill & Pipkin Studio",
+      "currency": "USD"
+    },
+    "items": [
+      {
+        "id": "character-illustration",
+        "name": "Character illustration",
+        "description": "Original characters, pets, and tabletop party portraits in a soft painterly style.",
+        "unit_price": "40.00",
+        "available": true,
+        "variants": [
+          {
+            "id": "half-body",
+            "label": "Half body",
+            "unit_price": "65.00"
+          },
+          {
+            "id": "full-body",
+            "label": "Full body",
+            "unit_price": "90.00"
+          }
+        ],
+        "add_ons": [
+          {
+            "id": "background",
+            "label": "Background",
+            "price": "15.00"
+          }
+        ],
+        "source_quote": "Headshots are $40, half body $65, full body $90."
+      }
+    ],
+    "shipping": {
+      "type": "none",
+      "amount": "0.00",
+      "notes": "Nothing to ship; files are delivered by email."
+    },
+    "extraction_notes": [
+      "Headshot ($40) is the base option; half body ($65) and full body ($90) are variants of one item, all from the same line.",
+      "The $15 background is a fixed amount, so it is an add-on.",
+      "The 'Extra character +50%' charge is a percentage and can't be represented, so it was left out.",
+      "Commercial use pricing isn't stated, so it was left out.",
+      "No shipping fee since files are delivered by email."
+    ]
+  },
+  "repairs": [
+    {
+      "item_id": "character-illustration",
+      "reason": "The quote has more than one price in it (40.00, 65.00, 90.00), so it doesn't pin down 40.00",
+      "item": {
+        "id": "character-illustration",
+        "name": "Character illustration",
+        "description": "Original characters, pets, and tabletop party portraits in a soft painterly style.",
+        "unit_price": "40.00",
+        "available": true,
+        "variants": [
+          {
+            "id": "half-body",
+            "label": "Half body",
+            "unit_price": "65.00"
+          },
+          {
+            "id": "full-body",
+            "label": "Full body",
+            "unit_price": "90.00"
+          }
+        ],
+        "add_ons": [
+          {
+            "id": "background",
+            "label": "Background",
+            "price": "15.00"
+          }
+        ],
+        "source_quote": "Headshots are $40"
+      },
+      "note": "Shortened the source quote to \"Headshots are $40\" so it contains only the base price of 40.00; the other fields were already correct."
+    }
+  ]
+}

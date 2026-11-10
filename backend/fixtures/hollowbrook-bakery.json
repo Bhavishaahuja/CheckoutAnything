@@ -1,0 +1,96 @@
+{
+  "label": "FIXTURE",
+  "slug": "hollowbrook-bakery",
+  "recorded_at": "2026-11-10T23:41:39Z",
+  "recorded_from": "http://localhost:5174/hollowbrook-bakery/",
+  "page": {
+    "title": "Hollowbrook Bakery - This Week's Menu",
+    "text": "Hollowbrook Bakery\nbaked every morning, gone by noon\n| Sourdough Loaf 48 hour ferment, crackly crust | $9\n| Half loaf $5 |\n| Want it sliced? +$1 |\n| Seeded Rye caraway, sunflower, a little honey | ~~$8~~ $7\n| Butter Croissant laminated by hand | $4 SOLD OUT\n| Cinnamon Morning Bun orange zest, lots of sugar | $4.50\n| Olive Focaccia* by the slab, serves four | ask\n* Olive Focaccia is $11 a slab this season.\nLocal delivery only, flat $6 per order. Order by text before 8pm for the next morning and we'll send an invoice.\nHollowbrook Bakery is a fictional bakery made for a demo."
+  },
+  "spec": {
+    "spec_version": 1,
+    "source_url": "http://localhost:5174/hollowbrook-bakery/",
+    "merchant": {
+      "name": "Hollowbrook Bakery",
+      "currency": "USD"
+    },
+    "items": [
+      {
+        "id": "sourdough-loaf",
+        "name": "Sourdough Loaf",
+        "description": "48 hour ferment, crackly crust",
+        "unit_price": "9.00",
+        "available": true,
+        "variants": [
+          {
+            "id": "half-loaf",
+            "label": "Half loaf",
+            "unit_price": "5.00"
+          }
+        ],
+        "add_ons": [
+          {
+            "id": "sliced",
+            "label": "Sliced",
+            "price": "1.00"
+          }
+        ],
+        "source_quote": "Sourdough Loaf 48 hour ferment, crackly crust | $9"
+      },
+      {
+        "id": "seeded-rye",
+        "name": "Seeded Rye",
+        "description": "Caraway, sunflower, a little honey",
+        "unit_price": "7.00",
+        "available": true,
+        "variants": [],
+        "add_ons": [],
+        "source_quote": "~~$8~~ $7"
+      },
+      {
+        "id": "butter-croissant",
+        "name": "Butter Croissant",
+        "description": "Laminated by hand",
+        "unit_price": "4.00",
+        "available": false,
+        "variants": [],
+        "add_ons": [],
+        "source_quote": "$4 SOLD OUT"
+      },
+      {
+        "id": "cinnamon-morning-bun",
+        "name": "Cinnamon Morning Bun",
+        "description": "Orange zest, lots of sugar",
+        "unit_price": "4.50",
+        "available": true,
+        "variants": [],
+        "add_ons": [],
+        "source_quote": "$4.50"
+      },
+      {
+        "id": "olive-focaccia",
+        "name": "Olive Focaccia",
+        "description": "By the slab, serves four",
+        "unit_price": "11.00",
+        "available": true,
+        "variants": [],
+        "add_ons": [],
+        "source_quote": "* Olive Focaccia is $11 a slab this season."
+      }
+    ],
+    "shipping": {
+      "type": "flat",
+      "amount": "6.00",
+      "notes": "Local delivery only, flat $6 per order."
+    },
+    "extraction_notes": [
+      "Seeded Rye has a crossed-out $8 price, so the current price $7 was used.",
+      "Butter Croissant is marked SOLD OUT, so it is kept with available set to false.",
+      "Olive Focaccia is listed as 'ask' in the menu, but a footnote gives $11 a slab, so that price was used.",
+      "Half loaf ($5) is a variant of Sourdough Loaf, and the base $9 is the whole loaf price.",
+      "Slicing (+$1) is listed under Sourdough Loaf, so it was added only as an add-on to that item.",
+      "Orders are by text with an invoice sent; this does not change the prices or shipping."
+    ]
+  },
+  "repairs": []
+}
