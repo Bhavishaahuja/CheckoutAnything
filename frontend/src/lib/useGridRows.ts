@@ -96,7 +96,6 @@ export function useGridRows<Row extends object>(rows: Row[], getId: (row: Row) =
   }, [gridApi, rows])
 
   const onGridReady = useCallback((event: { api: GridApi<Row> }) => {
-    ;(window as unknown as { __grids: unknown[] }).__grids = [...((window as unknown as { __grids?: unknown[] }).__grids || []), event.api] // DEBUG
     shown.current = new Map()
     sources.current = new Map()
     setGridApi(event.api)

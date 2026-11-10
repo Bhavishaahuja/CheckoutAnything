@@ -59,3 +59,26 @@ export function flashGridRow<Row>(api: GridApi<Row>, container: HTMLElement | nu
     }
   })
 }
+
+// Flashes single cells of a row (the status cell when an order moves), tinted the same way.
+export function flashGridCells<Row>(api: GridApi<Row>, container: HTMLElement | null, rowId: string, columns: string[], tone: FlashTone) {
+  if (api.isDestroyed()) return
+  requestAnimationFrame(() => {
+    if (api.isDestroyed()) return
+    let node = api.getRowNode(rowId)
+    for (let index = 0; !node && index < api.getPinnedTopRowCount(); index++) {
+      const pinned = api.getPinnedTopRow(index)
+      if (pinned && pinned.id === rowId) node = pinned
+    }
+    if (!node) return
+    if (container) {
+      for (const rowElement of findRowElements(container, rowId)) {
+        rowElement.style.setProperty(
+          "--ag-value-change-value-highlight-background-color",
+          "color-mix(in srgb, var(" + TONE_VARIABLE[tone] + ") 38%, transparent)"
+        )
+      }
+    }
+    api.flashCells({ rowNodes: [node], columns, flashDuration: 700, fadeDuration: 1400 })
+  })
+}

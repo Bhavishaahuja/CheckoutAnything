@@ -67,6 +67,10 @@ services:
       # not a secret, it ends up in the public JS anyway
       - key: VITE_API_URL
         sync: false
+      # the leash-api service below, for the Intent review grid on the Orders screen. this
+      # app's own URL also has to be in leash-api's FRONTEND_ORIGINS
+      - key: VITE_LEASH_API_URL
+        sync: false
 
   # the three fictional demo stores, plain HTML with no build step
   - type: web

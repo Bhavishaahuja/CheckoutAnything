@@ -13,7 +13,7 @@ copy .env.example .env.local
 npm run dev
 ```
 
-`VITE_API_URL` points at the FastAPI backend (default `http://127.0.0.1:8000`).
+`VITE_API_URL` points at the FastAPI backend (default `http://127.0.0.1:8000`). `VITE_LEASH_API_URL` points at the Leash API (default `http://127.0.0.1:8001`).
 
 No backend running? Set `VITE_USE_MOCK=true` in `.env.local`. The UI then plays scripted connect runs for the three demo stores and shows a "Mock data, no backend" badge. Nothing in mock mode talks to PayPal or Claude.
 
@@ -24,18 +24,15 @@ No backend running? Set `VITE_USE_MOCK=true` in `.env.local`. The UI then plays 
 | Connect | `src/pages/ConnectPage.tsx` | URL input, the pipeline, the live step log (SSE), and the catalog grid that fills row by row |
 | Spec drawer | `src/components/SpecDrawer.tsx` | Click a catalog row: source quote, every check, the spec JSON, version history, extraction notes, a test buy |
 | Agent | `src/pages/AgentPage.tsx` | Chat with the shopping agent, tool calls shown inline, receipt when a payment is captured |
-| Orders | `src/pages/OrdersPage.tsx` | All orders, polled every 3 seconds, grouped by store |
+| Orders | `src/pages/OrdersPage.tsx` | Intent review (Leash orders next to their mandates, decided in the row) and Purchases (everything bought through a connected store) |
 
 The header has the Replay mode switch and the Reset demo button (inline confirm).
 
 ## How the pieces are used
 
 **AG Grid (Community only, no Enterprise features)**
-- Live rows through `applyTransaction` (`src/lib/useGridRows.ts`), never by replacing `rowData`
-- `getRowId`, React cell renderers for checks, repairs, ids and status
-- `flashCells` for row feedback, with the flash colour set per row
-- Orders are grouped by store with cell spanning (`enableCellSpan` + `spanRows`), since row grouping is an Enterprise feature
-- Quick filter on the orders grid, theme built with the Theming API from the app's CSS variables (follows dark mode)
+
+All 20 features and why each is there are in the root README, under [How we use AG Grid](../README.md#how-we-use-ag-grid). The shared pieces are `src/lib/gridTheme.ts`, `src/lib/gridState.ts`, `src/lib/gridFind.tsx`, `src/lib/useGridRows.ts` and `src/components/grid/`.
 
 **Motion + AG Grid** (`src/lib/gridFlash.ts`)
 - When an item verifies: AG Grid flashes the row green, and Motion runs a staggered lift across its cells

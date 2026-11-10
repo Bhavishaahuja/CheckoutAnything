@@ -1,18 +1,28 @@
-// Screen 4: every purchase made through connected stores, live.
+// Screen 4: orders. Two views of the same question, "did the agent buy the right thing?":
+//   Intent review  Leash's held orders, each next to its mandate, decided in the row
+//   Purchases      everything bought through a connected store's buy endpoint
 
 import type { ColDef, GetRowIdParams } from "ag-grid-community"
 import { AgGridReact, type CustomCellRendererProps } from "ag-grid-react"
-import { Bot, Check, Hand, Search, X } from "lucide-react"
+import { Bot, Check, Hand, ReceiptText, RotateCcw, Search, X } from "lucide-react"
 import { useEffect, useMemo, useRef, useState } from "react"
 
 import { Card, CopyId, ErrorNote, Pill, Switch } from "@/components/bits"
+import { ColumnsMenu } from "@/components/grid/ColumnsMenu"
+import { createOverlayStore, GridOverlay } from "@/components/grid/GridOverlay"
+import { LeashOrdersGrid } from "@/components/LeashOrdersGrid"
 import { NumberTicker } from "@/components/magicui/number-ticker"
+import { Button } from "@/components/ui/button"
 import { api } from "@/lib/api"
 import { clockTime, money } from "@/lib/format"
 import { flashGridRow } from "@/lib/gridFlash"
+import { useGridLayout } from "@/lib/gridState"
 import { calmTheme } from "@/lib/gridTheme"
 import type { Order } from "@/lib/types"
 import { useGridRows } from "@/lib/useGridRows"
+import { cn } from "@/lib/utils"
+
+type View = "review" | "purchases"
 
 const POLL_MS = 3000
 
@@ -20,8 +30,9 @@ interface OrderRow extends Order {
   seen_at: number
 }
 
-// the grid starts empty (never "loading"), rows then arrive as transactions
+// the grid starts empty, rows then arrive as transactions
 const NO_ROWS: OrderRow[] = []
+const defaultColDef = { sortable: true, resizable: true }
 
 function Tile({ label, children }: { label: string; children: React.ReactNode }) {
   return (
@@ -75,7 +86,10 @@ function StatusCell({ data }: CustomCellRendererProps<OrderRow>) {
   )
 }
 
-export function OrdersPage({ active, refreshKey }: { active: boolean; refreshKey: number }) {
+export function OrdersPage({ active, refreshKey, onGoToAgent }: { active: boolean; refreshKey: number; onGoToAgent: () => void }) {
+  const [view, setView] = useState<View>("review")
+  const [loaded, setLoaded] = useState(false)
+  const layout = useGridLayout("purchases")
   const [rows, setRows] = useState<OrderRow[]>([])
   const [error, setError] = useState<string | null>(null)
   const [grouped, setGrouped] = useState(true)
@@ -92,6 +106,7 @@ export function OrdersPage({ active, refreshKey }: { active: boolean; refreshKey
         const orders = await api.listOrders()
         if (cancelled) return
         setError(null)
+        setLoaded(true)
         setRows((previous) => {
           const before = new Map(previous.map((row) => [row.id, row]))
           let changed = orders.length !== previous.length
@@ -106,7 +121,10 @@ export function OrdersPage({ active, refreshKey }: { active: boolean; refreshKey
           return changed ? next : previous
         })
       } catch (problem) {
-        if (!cancelled) setError(problem instanceof Error ? problem.message : "Couldn't load orders")
+        if (!cancelled) {
+          setError(problem instanceof Error ? problem.message : "Couldn't load orders")
+          setLoaded(true)
+        }
       }
     }
 
@@ -137,6 +155,30 @@ export function OrdersPage({ active, refreshKey }: { active: boolean; refreshKey
   useEffect(() => {
     if (gridApi && !gridApi.isDestroyed()) gridApi.setGridOption("quickFilterText", search)
   }, [gridApi, search])
+
+  const overlay = useMemo(
+    () =>
+      createOverlayStore({
+        loading: { title: "Loading purchases..." },
+        empty: { title: "No purchases yet" },
+        noMatch: { title: "No purchase matches that filter", actionLabel: "Clear the filter", onAction: () => {} },
+      }),
+    []
+  )
+  const context = useMemo(() => ({ overlay }), [overlay])
+  useEffect(() => {
+    overlay.set({
+      loading: { title: "Loading purchases..." },
+      empty: {
+        icon: <ReceiptText />,
+        title: "No purchases yet",
+        hint: "Ask the shopping agent to buy something from a connected store, or use Test buy on a verified item.",
+        actionLabel: "Send an agent shopping",
+        onAction: onGoToAgent,
+      },
+      noMatch: { title: "No purchase matches that filter", actionLabel: "Clear the filter", onAction: () => setSearch("") },
+    })
+  }, [overlay, onGoToAgent])
 
   const columnDefs = useMemo<ColDef<OrderRow>[]>(
     () => [
@@ -205,13 +247,39 @@ export function OrdersPage({ active, refreshKey }: { active: boolean; refreshKey
 
   return (
     <div className="mx-auto flex max-w-[1400px] flex-col gap-5 px-4 py-6">
-      <div>
-        <h1 className="text-xl font-semibold tracking-tight">Orders</h1>
-        <p className="mt-1 text-sm text-muted-foreground">
-          Every purchase from a connected store. Prices are computed by the API from the verified spec, then paid with
-          the saved sandbox buyer and captured.
-        </p>
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <h1 className="text-xl font-semibold tracking-tight">Orders</h1>
+          <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
+            {view === "review"
+              ? "Leash holds each agent order at PayPal while Claude checks it against what the shopper asked for. Clean matches capture on their own. The rest wait here for you."
+              : "Every purchase from a connected store. Prices are computed by the API from the verified spec, then paid with the saved sandbox buyer and captured."}
+          </p>
+        </div>
+        <div className="flex items-center gap-0.5 rounded-lg bg-muted p-0.5" role="group" aria-label="Which orders">
+          {(["review", "purchases"] as View[]).map((entry) => (
+            <button
+              key={entry}
+              type="button"
+              aria-pressed={view === entry}
+              onClick={() => setView(entry)}
+              className={cn(
+                "h-8 rounded-md px-3 text-[13px] font-medium transition-colors",
+                view === entry ? "bg-card shadow-sm" : "text-muted-foreground hover:text-foreground"
+              )}
+            >
+              {entry === "review" ? "Intent review (Leash)" : "Purchases"}
+            </button>
+          ))}
+        </div>
       </div>
+
+      {/* both stay mounted, so each keeps its scroll position and its live updates */}
+      <Card className={cn("h-[640px] overflow-hidden", view !== "review" && "hidden")}>
+        <LeashOrdersGrid active={active && view === "review"} />
+      </Card>
+
+      <div className={cn("flex flex-col gap-5", view !== "purchases" && "hidden")}>
 
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
         <Tile label="orders">
@@ -244,28 +312,37 @@ export function OrdersPage({ active, refreshKey }: { active: boolean; refreshKey
               className="w-full min-w-0 bg-transparent text-[13px] outline-none placeholder:text-muted-foreground/70"
             />
           </label>
-          <div className="flex items-center gap-4">
+          <div className="flex items-center gap-3">
             <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
               <span className="size-1.5 animate-pulse rounded-full bg-ok" /> updates every 3s
             </span>
             <Switch checked={grouped} onChange={setGrouped} label="Group by store" />
+            <ColumnsMenu gridApi={gridApi} />
+            <Button size="sm" variant="ghost" onClick={layout.resetLayout} disabled={!layout.hasSaved} title="Put the columns, sort and filters back to the defaults">
+              <RotateCcw /> <span className="hidden sm:inline">Reset layout</span>
+            </Button>
           </div>
         </div>
         <div ref={wrapper} className="min-h-0 flex-1">
           <AgGridReact<OrderRow>
+            key={layout.layoutVersion}
             theme={calmTheme}
             rowData={NO_ROWS}
             columnDefs={columnDefs}
-            defaultColDef={{ sortable: true, resizable: true, suppressMovable: true }}
+            defaultColDef={defaultColDef}
+            context={context}
             getRowId={(params: GetRowIdParams<OrderRow>) => String(params.data.id)}
             enableCellSpan
+            initialState={layout.initialState}
+            onStateUpdated={layout.onStateUpdated}
+            loading={!loaded}
+            overlayComponent={GridOverlay}
             onGridReady={onGridReady}
             animateRows
-            suppressCellFocus
-            overlayNoRowsTemplate='<span style="color: var(--muted-foreground); font-size: 13px">No orders yet. Ask the agent to buy something, or use Test buy on a verified item.</span>'
           />
         </div>
       </Card>
+      </div>
     </div>
   )
 }
