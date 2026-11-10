@@ -1,6 +1,7 @@
 # Agent orders through Check (CHECK_URL set), with the Check service faked. The tests in
 # test_api.py are the other path, the flag unset, and none of them changed.
 
+import copy
 import json
 
 import pytest
@@ -8,11 +9,13 @@ import responses
 from fastapi.testclient import TestClient
 
 from backend.app import check_client, shop
+from backend.app.agent import next_variant_over
 from backend.app.check_client import CheckClient, CheckError
 from backend.app.config import Settings
 from backend.app.db import add_missing_order_columns, create_tables, make_engine, new_session
 from backend.app.events import bus
-from backend.tests.fakes import FakeCheck, Reply, text_block, tool_block
+from backend.app.spec import parse_spec
+from backend.tests.fakes import FERNWOOD_SPEC, FakeCheck, Reply, text_block, tool_block
 from backend.tests.test_api import World, connect_store
 
 REQUEST = "Get me a half sourdough loaf, sliced, from Hollowbrook Bakery. No more than $15."
@@ -625,3 +628,98 @@ def test_an_old_orders_table_gets_the_new_columns():
             "SELECT status, check_order_id, review_state, decision_ms FROM orders"
         ).one()
     assert tuple(row) == ("captured", None, None, None)
+
+
+# ---- the demo's sloppy agent: buys the next size over so Check has a wrong order to hold ----
+
+FERNWOOD_URL = "https://stores.example/fernwood-thistle-goods/"
+BLANKET_REQUEST = "Get me the Medium wool camp blanket from Fernwood & Thistle Goods."
+
+
+def connect_fernwood(client):
+    store_id, _store = connect_store(client, FERNWOOD_URL)
+    # the fake spec's extraction note flags the blanket, so the merchant confirms and
+    # publishes it first, like on the hosted demo
+    path = "/stores/" + str(store_id) + "/items/wool-camp-blanket"
+    published = client.patch(path, json={"resolve": ["name"], "published": True})
+    assert published.status_code == 200, published.text
+    return store_id
+
+
+def sloppy_buy(world, client, store_id, item_id, variant_id=None, request=BLANKET_REQUEST):
+    buy = {"store_id": store_id, "item_id": item_id, "quantity": 1}
+    if variant_id:
+        buy["variant_id"] = variant_id
+    world.agent_claude.replies = [
+        Reply([tool_block("buy_item", buy, "c1")], "tool_use"),
+        Reply([text_block("Placed it.")]),
+    ]
+    response = client.post("/agent/chat", json={
+        "messages": [{"role": "user", "content": request}], "sloppy": True,
+    })
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def test_the_sloppy_agent_buys_the_next_size_over(world, check):
+    check.decide = ("authorized", "needs_review", {
+        "verdict": "mismatch", "risk_score": 80, "reason": "Large, mandate says Medium",
+        "mismatched_fields": ["size"],
+    })
+    with TestClient(world.app) as client:
+        store_id = connect_fernwood(client)
+        answer = sloppy_buy(world, client, store_id, "wool-camp-blanket", "medium")
+
+        bought = answer["steps"][0]["output"]
+        # Medium was asked for, Large was bought, at Large's price from the verified spec
+        assert answer["orders"][0]["variant_id"] == "large"
+        assert bought["asked_for"] == "Wool Camp Blanket (Medium)"
+        assert bought["bought"] == "Wool Camp Blanket (Large)"
+        assert "Large" in bought["note"]
+        assert bought["unit_price"] == "160.00"
+        assert bought["total"] == "166.00"
+        assert bought["status"] == "authorized"
+        assert bought["review_state"] == "needs_review"
+
+        # Check got the human's words untouched, and the order as it really is
+        assert check.mandates[0]["raw_request"] == BLANKET_REQUEST
+        assert check.sent_orders[0]["items"][0]["unit_price"] == "160.00"
+
+        # and the agent was told it might not get the size it picked
+        assert "what was actually bought" in world.agent_claude.requests[0]["system"]
+
+
+def test_the_sloppy_agent_turns_the_base_item_into_the_first_variant(world, check):
+    with TestClient(world.app) as client:
+        store_id = connect_fernwood(client)
+        answer = sloppy_buy(world, client, store_id, "wool-camp-blanket",
+                            request="Get me the Small wool camp blanket")
+        assert answer["orders"][0]["variant_id"] == "medium"
+        assert answer["steps"][0]["output"]["bought"] == "Wool Camp Blanket (Medium)"
+        assert answer["steps"][0]["output"]["asked_for"] == "Wool Camp Blanket"
+
+
+def test_the_sloppy_agent_buys_items_without_variants_as_asked(world, check):
+    with TestClient(world.app) as client:
+        store_id = connect_fernwood(client)
+        answer = sloppy_buy(world, client, store_id, "brass-key-hook",
+                            request="Buy a brass key hook")
+        order = answer["orders"][0]
+        assert order["item_id"] == "brass-key-hook"
+        assert order["variant_id"] is None
+        assert "asked_for" not in answer["steps"][0]["output"]
+
+
+def test_next_variant_over_wraps_around():
+    spec = parse_spec(copy.deepcopy(FERNWOOD_SPEC))
+    blanket = None
+    hook = None
+    for item in spec.items:
+        if item.id == "wool-camp-blanket":
+            blanket = item
+        if item.id == "brass-key-hook":
+            hook = item
+    assert next_variant_over(blanket, "medium") == "large"
+    assert next_variant_over(blanket, "large") == "medium"
+    assert next_variant_over(blanket, None) == "medium"
+    assert next_variant_over(hook, None) is None

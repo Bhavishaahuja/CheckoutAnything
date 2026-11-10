@@ -508,6 +508,17 @@ def test_a_failed_store_can_be_connected_again(world):
         assert store["status"] == "live"
 
 
+def test_the_sloppy_agent_needs_check(world):
+    with TestClient(world.app) as client:
+        response = client.post("/agent/chat", json={
+            "messages": [{"role": "user", "content": "Buy the medium blanket"}], "sloppy": True,
+        })
+        assert response.status_code == 400
+        assert "CHECK_URL" in response.json()["detail"]
+        # refused before Claude was ever asked
+        assert world.agent_claude.requests == []
+
+
 def test_config_says_what_is_set_without_leaking_it(world):
     with TestClient(world.app) as client:
         config = client.get("/config").json()
