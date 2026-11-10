@@ -123,9 +123,55 @@ button:disabled {
   outline-offset: 2px;
 }
 
-/* ---- AG Grid row feedback ---- */
+/* ---- AG Grid: the bits the theme params don't reach ---- */
 
 .ag-row.row-dim { color: var(--muted-foreground); }
+/* the row whose spec drawer is open */
+.ag-row.row-open { box-shadow: inset 3px 0 0 var(--primary); }
+
+/* state colours ease in and out instead of snapping */
+.ag-cell { transition: background-color 0.35s ease, box-shadow 0.35s ease; }
+.ag-row { transition: background-color 0.35s ease, box-shadow 0.35s ease, color 0.35s ease; }
+
+/* a cell the agent was unsure about. the tint is backed by an icon in the cell */
+.ag-cell.cell-flag {
+  background: var(--warn-soft);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--warn) 35%, transparent);
+}
+
+/* a field of the order that Check flagged */
+.ag-cell.cell-mismatch {
+  background: var(--bad-soft);
+  box-shadow: inset 0 -2px 0 var(--bad);
+  font-weight: 600;
+}
+
+/* column group headers read as section labels */
+.ag-header-group-cell { font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; }
+.ag-header-group-cell.group-order { box-shadow: inset 0 -2px 0 var(--primary); }
+.ag-header-group-cell.group-check { box-shadow: inset 0 -2px 0 var(--warn); }
+.ag-header-group-cell.group-decision { box-shadow: inset 0 -2px 0 var(--ok); }
+.ag-header-group-cell.group-paypal { box-shadow: inset 0 -2px 0 var(--border); }
+
+/* find matches inside cells */
+mark.find-hit {
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--warn) 30%, transparent);
+  color: inherit;
+}
+mark.find-hit-active {
+  background: var(--warn);
+  color: var(--card);
+  outline: 2px solid var(--warn);
+}
+
+/* cells that hold our own flex layouts fill the row */
+.ag-cell > .ag-cell-wrapper { height: 100%; }
+.ag-cell-wrapper, .ag-cell-value { min-width: 0; }
+
+/* custom tooltips and popup editors bring their own card */
+.ag-tooltip-custom { z-index: 60; }
+.ag-popup-editor { border-radius: 10px; }
 
 /* Orders grid: a row wears the color of where its money is. All from the theme's variables, so
    dark mode follows. The Check dashboard uses the same four meanings (check/frontend). */

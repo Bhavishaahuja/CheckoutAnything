@@ -1,8 +1,8 @@
-# The four tables from the build brief.
+# The four tables from the build brief, plus the two the merchant's review of a catalog needs.
 
 from datetime import datetime, timezone
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from backend.app.db import Base
@@ -111,3 +111,39 @@ class Order(Base):
     # replacement, the one it replaced
     check_replaced_by_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     check_replaces_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+class ItemReview(Base):
+    # what the merchant decided about one item, kept apart from the spec (which only Claude and
+    # merchant edits write). one row per item, made when the connect run ends
+    __tablename__ = "item_reviews"
+    __table_args__ = (UniqueConstraint("store_id", "item_id"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    store_id: Mapped[int] = mapped_column(ForeignKey("stores.id"), index=True)
+    item_id: Mapped[str] = mapped_column(String(60))
+    # where the item sits in the catalog an agent reads, 0 first
+    position: Mapped[int] = mapped_column(Integer, default=0)
+    category: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    # None means stock isn't tracked. a number is how many are left
+    stock: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # only published items can be bought. clean verified items start published, items with a
+    # field the agent was unsure about wait for the merchant
+    published: Mapped[bool] = mapped_column(Boolean, default=False)
+    # JSON: flagged field -> how the merchant settled it. {"by": "confirm"}, or
+    # {"by": "edit", "was": "7.00"} with the value the agent had, so putting that value back
+    # (an undo) brings the flag back
+    resolved_fields: Mapped[str] = mapped_column(Text, default="{}")
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now
+    )
+
+
+class ColumnLabel(Base):
+    # a catalog column the merchant renamed, "Price" -> "Cost"
+    __tablename__ = "column_labels"
+    __table_args__ = (UniqueConstraint("store_id", "field"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    store_id: Mapped[int] = mapped_column(ForeignKey("stores.id"), index=True)
+    field: Mapped[str] = mapped_column(String(40))
+    label: Mapped[str] = mapped_column(String(40))

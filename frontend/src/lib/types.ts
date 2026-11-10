@@ -256,9 +256,70 @@ export interface ResetResponse {
 export type CheckState = "pending" | "running" | "ok" | "fail" | "skipped"
 export type RowStatus = "checking" | "repairing" | "verified" | "failed" | "unavailable"
 
+// ---- the merchant's review (backend/app/review.py) ----
+
+// the spec fields the agent can be unsure about
+export type FlagField = "name" | "unit_price" | "available"
+
+export interface ReviewFlag {
+  field: FlagField
+  // why the cell needs a look. never empty
+  reasons: string[]
+  resolved: boolean
+}
+
+export interface ReviewItem {
+  item_id: string
+  position: number
+  category: string | null
+  // null when stock isn't tracked
+  stock: number | null
+  published: boolean
+  // why it can't be published right now, or null when it can
+  blocked_reason: string | null
+  flags: ReviewFlag[]
+  checked_at: string | null
+}
+
+export interface ReviewColumn {
+  field: string
+  label: string
+  default_label: string
+  // where the value goes in the PayPal order, null when it stays on our side
+  paypal_field: string | null
+}
+
+export interface ReviewResponse {
+  store_id: number
+  editable: boolean
+  categories: string[]
+  columns: ReviewColumn[]
+  needs_look: number
+  items: ReviewItem[]
+}
+
+export interface ItemPatch {
+  name?: string
+  description?: string
+  unit_price?: string
+  category?: string | null
+  stock?: number | null
+  published?: boolean
+  resolve?: FlagField[]
+}
+
 export interface CatalogRow {
   item_id: string
   name: string
+  description: string
+  category: string | null
+  stock: number | null
+  published: boolean
+  blocked_reason: string | null
+  checked_at: string | null
+  position: number
+  // only the fields that have a flag
+  flags: Partial<Record<FlagField, { reasons: string[]; resolved: boolean }>>
   variant_count: number
   add_on_count: number
   unit_price: string

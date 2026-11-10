@@ -94,6 +94,7 @@ export default function App() {
       .catch((problem) => setBanner(problem instanceof Error ? problem.message : "Can't reach the API"))
   }, [])
 
+  const goToAgent = useCallback(() => goTo("agent"), [goTo])
   const bumpOrders = useCallback(() => setOrdersKey((key) => key + 1), [])
 
   useEffect(() => {
@@ -229,6 +230,7 @@ export default function App() {
             refreshKey={ordersKey}
             checkOn={checkOn}
             reviewLinks={config ? config.check_review_links : false}
+            onGoToAgent={goToAgent}
           />
         </div>
         {disputesOn && (

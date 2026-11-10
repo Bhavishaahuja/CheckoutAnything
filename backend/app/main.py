@@ -5,6 +5,11 @@
 #   GET  /stores                list stores + status
 #   GET  /stores/{id}/catalog   verified items
 #   GET  /stores/{id}/spec      full spec + extraction notes + version history + runs
+#   GET  /stores/{id}/review    the merchant's review: flags, publish state, order, labels
+#   PATCH /stores/{id}/items/{item_id}   edit, confirm or publish one item
+#   POST /stores/{id}/publish   publish or unpublish several items
+#   PUT  /stores/{id}/order     the order items appear in
+#   PUT  /stores/{id}/columns/{field}    rename a catalog column
 #   POST /stores/{id}/orders    buy (price computed server-side)
 #   POST /agent/chat            demo shopping agent
 #   GET  /orders                all orders
@@ -27,7 +32,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from backend.app import check_client, connect, models, shop
+from backend.app import check_client, connect, models, review, shop
 from backend.app.agent import ShoppingAgent
 from backend.app.check_client import CheckError
 from backend.app.config import DEMO_STORE_SLUGS, allowed_fetch_hosts, cors_origins, get_settings
@@ -63,6 +68,36 @@ class OrderRequest(BaseModel):
     variant_id: str | None = Field(default=None, max_length=60)
     add_on_ids: list[str] = Field(default_factory=list, max_length=20)
     quantity: int = Field(default=1, ge=1, le=100)
+
+
+class ItemPatch(BaseModel):
+    # only the fields that were sent are touched. unit_price is a string or number here, the
+    # API cleans it up and refuses what isn't a price
+    model_config = ConfigDict(extra="forbid")
+    name: str | None = Field(default=None, max_length=200)
+    description: str | None = Field(default=None, max_length=400)
+    unit_price: str | float | int | None = None
+    category: str | None = Field(default=None, max_length=40)
+    stock: int | None = None
+    published: bool | None = None
+    # flagged fields the merchant looked at and confirmed
+    resolve: list[str] = Field(default_factory=list, max_length=10)
+
+
+class PublishRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    item_ids: list[str] = Field(min_length=1, max_length=60)
+    published: bool = True
+
+
+class OrderOfItems(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    item_ids: list[str] = Field(min_length=1, max_length=60)
+
+
+class LabelRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    label: str = Field(max_length=200)
 
 
 class ChatMessage(BaseModel):
@@ -121,7 +156,7 @@ def create_app(settings=None, paypal=None, ai_factory=None, fetch=None, agent_cl
     app.add_middleware(
         CORSMiddleware,
         allow_origins=cors_origins(settings.frontend_origins),
-        allow_methods=["GET", "POST"],
+        allow_methods=["GET", "POST", "PATCH", "PUT"],
         # Authorization carries the merchant's session to the review-link route
         allow_headers=["Content-Type", "Last-Event-ID", "Authorization"],
     )
@@ -264,6 +299,74 @@ def create_app(settings=None, paypal=None, ai_factory=None, fetch=None, agent_cl
             "runs": runs,
             "verified_item_ids": sorted(shop.verified_item_ids(session, store_id)),
         }
+
+    # ---- the merchant's review ----
+
+    def store_and_spec(session, store_id):
+        store = shop.get_store(session, store_id)
+        if store is None:
+            raise HTTPException(status_code=404, detail="There is no store " + str(store_id))
+        found, version = shop.latest_spec(session, store_id)
+        if found is None:
+            raise HTTPException(status_code=409, detail="This store has no spec yet")
+        return store, found, version
+
+    def refuse(error):
+        detail = str(error)
+        if error.extra:
+            detail = {"message": str(error), **error.extra}
+        return HTTPException(status_code=error.status_code, detail=detail)
+
+    @app.get("/stores/{store_id}/review")
+    def store_review(store_id: int, session: DbSession):
+        store, found, _version = store_and_spec(session, store_id)
+        return review.review_payload(session, store, found)
+
+    @app.patch("/stores/{store_id}/items/{item_id}")
+    def patch_item(store_id: int, item_id: str, body: ItemPatch, session: DbSession):
+        store, found, version = store_and_spec(session, store_id)
+        changes = {}
+        for field in ("name", "description", "unit_price", "category", "stock", "published"):
+            if field in body.model_fields_set:
+                changes[field] = getattr(body, field)
+        try:
+            found = review.edit_item(
+                session, paypal, store, found, version, item_id, changes, body.resolve,
+            )
+        except review.ReviewError as error:
+            session.rollback()
+            raise refuse(error) from error
+        return review.review_payload(session, store, found)
+
+    @app.post("/stores/{store_id}/publish")
+    def publish_items(store_id: int, body: PublishRequest, session: DbSession):
+        store, found, _version = store_and_spec(session, store_id)
+        try:
+            review.set_published(session, store, found, body.item_ids, body.published)
+        except review.ReviewError as error:
+            session.rollback()
+            raise refuse(error) from error
+        return review.review_payload(session, store, found)
+
+    @app.put("/stores/{store_id}/order")
+    def order_items(store_id: int, body: OrderOfItems, session: DbSession):
+        store, found, _version = store_and_spec(session, store_id)
+        try:
+            review.reorder(session, store, found, body.item_ids)
+        except review.ReviewError as error:
+            session.rollback()
+            raise refuse(error) from error
+        return review.review_payload(session, store, found)
+
+    @app.put("/stores/{store_id}/columns/{field}")
+    def rename_column(store_id: int, field: str, body: LabelRequest, session: DbSession):
+        store, found, _version = store_and_spec(session, store_id)
+        try:
+            review.set_label(session, store, field, body.label)
+        except review.ReviewError as error:
+            session.rollback()
+            raise refuse(error) from error
+        return review.review_payload(session, store, found)
 
     # ---- buying ----
 

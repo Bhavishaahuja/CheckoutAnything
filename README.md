@@ -83,7 +83,7 @@ For each available item, one at a time:
 3. **Pass:** the row turns verified and shows the PayPal order id.
 4. **Fail:** the exact reason is shown, Claude gets the reason plus the page text and the item, returns a repaired item, and the checks run again. After 3 repairs the item stays failed with its reason. There is no template fallback and no fake success.
 
-A store is live once at least one item is verified. Only verified items can be bought.
+A store is live once at least one item is verified. Only verified items can be bought, and only once they are published (see [The merchant's review](#the-merchants-review)).
 
 **Verification orders are never captured.** They are created with no payment source, so nobody is charged and no money moves. PayPal's Orders v2 schema says the caller has 6 hours from creation (the default) to send a payer to approve an order, so these orders simply lapse. PayPal's docs do not say what an expired order looks like afterwards, and we never read them again.
 
@@ -116,6 +116,64 @@ A store is live once at least one item is verified. Only verified items can be b
 ```
 
 Prices are strings with 2 decimals, never floats. Unknown fields are rejected. The serialized spec is capped at 32 KB. Every version is kept, so the repair history is visible in the UI.
+
+## The merchant's review
+
+A connected store's catalog is also where the merchant checks the agent's work.
+
+- **Flags.** Fixed code (`backend/app/review.py`) marks the fields the agent had reason to doubt, each with the reason: a price Claude had to repair (with the check that failed), a crossed-out price next to the real one, or a note Claude wrote about the item. Claude is never asked how sure it is.
+- **Publish gate.** Only published items can be bought. A verified item with no flags goes live on its own, so a clean store is still agent-ready in a minute. A flagged item waits until the merchant confirms or corrects every flagged field. "Live on PayPal" means the item is in the catalog agents buy from and pay for through PayPal. No PayPal catalog call is made.
+- **Edits.** Name, description and price edits become a new spec version. A new name or price is first checked with a real PayPal order, the same fixed code as the connect run, and a refused edit changes nothing. A price the page does not back is allowed (it is the merchant's store) and shows the page check as not run, with the reason.
+- **Order, stock, labels.** The merchant's row order is the order of `GET /stores/{id}/catalog`, which is what an agent reads. There is no separate checkout page. Stock is optional: once set, the buy endpoint refuses more than is left and counts down on each captured order. Renamed columns are sent with the catalog as `field_labels`.
+
+## How we use AG Grid
+
+AG Grid Community 36 only. Two grids share one theme, one saved-layout hook and one overlay component. Find and header editing are Enterprise modules in 36.2 (`FindModule`, `ColumnHeaderEditModule`), so both are built here on Community APIs.
+
+**Catalog grid** (`frontend/src/components/CatalogGrid.tsx`): the agent's import and the merchant's review.
+
+| # | Feature | Why it is here |
+|---|---|---|
+| 1 | Cell data types and formatters | Prices read `$29.00`, stock is a number, Live on PayPal is a checkbox, dates are dates. Custom `money` and `timestamp` types in `dataTypeDefinitions`. |
+| 2 | Custom cell editors | A wrong price never reaches the API: the price editor shows the problem under the field and holds Enter and Tab until it is fixed. Category is a dropdown, description a large text popup. |
+| 3 | Undo and redo | A merchant correcting an import makes mistakes too. Ctrl+Z reverts the cell and saves the reverted value, 50 steps deep. |
+| 4 | Confidence highlighting (`cellClassRules`) | The cells the agent doubted are amber, with a counter above the grid that drops to 0 as each is fixed or confirmed. |
+| 5 | Tooltips | Every amber cell says why, from the recorded check or note that raised the doubt. |
+| 6 | Header editing | The merchant can rename a column (double-click, the pencil, or F2). It is saved per store and sent to agents with the catalog. The link icon shows which PayPal order field a column feeds. |
+| 7 | Row selection and bulk publish | "Publish 3 to PayPal" in one click, disabled with a reason while any selected row still has an amber cell. The API enforces the same rule. |
+| 8 | Row drag reorder | Sets the order agents see items in. Unmanaged drag with a drop indicator, because AG Grid turns managed drag off under pagination. |
+| 9 | Pagination | For large stores: page size picker, and an edit keeps you on the page you were on. |
+| 10 | CSV export | Downloads the cleaned catalog with the formatted values, as `hollowbrook-bakery-catalog-2026-11-10.csv`. |
+
+**Orders grid** (`frontend/src/components/OrdersGrid.tsx`): every purchase from a connected store, and what Check decided about it.
+
+| # | Feature | Why it is here |
+|---|---|---|
+| 11 | Transactions and cell flashing | When an order moves from held to captured or voided, its status cells flash. Updates go through `applyTransaction`, so the grid keeps its scroll position. Changes arrive by a 3 second poll. |
+| 12 | Status colours (`rowClassRules`) | Amber held, green captured, gray voided, no tint for an order paid directly. Each also has an icon and a label in its status chip. |
+| 13 | Custom cell renderers | The status chip ("Held: wrong size", "Fixed", "Paid directly"), Check's verdict, and the Review button. Review only opens the drawer with the real confirm page: nothing is approved or rejected in the row, and the review link is asked for when the drawer opens, never when a row is drawn. |
+| 14 | Row pinning | Orders on hold stay pinned at the top until decided, then travel down into the list. |
+| 15 | Column groups | Order, Check, Decision, PayPal, left to right. The field Check flagged is marked on the order's own cell (the total for a price problem, the item for a wrong size). |
+| 16 | Time to decide | How long the human took on the confirm page, on Check's own clock, with fast approvals flagged. The strip above the grid reads "Rubber-stamp risk: 4 approvals under 2s". |
+| 17 | Quick filter and Find | One search box filters the rows and highlights matches inside cells, with "2 of 5" and next and previous. |
+
+**Both grids**
+
+| # | Feature | Why it is here |
+|---|---|---|
+| 18 | Custom theme (Theming API) | Built from the app's own colour tokens and Geist fonts (`frontend/src/lib/gridTheme.ts`), so the grids match the cards around them in light and dark mode. |
+| 19 | Grid state save and restore | Column widths, order, pinning, hidden columns, sort, filters and page size survive a refresh, with a Reset layout button (`frontend/src/lib/gridState.ts`). |
+| 20 | Custom overlays | "Agent is reading the store..." with a progress bar, "No orders yet. Run a demo order" with a button, and a way out when a filter hides everything. |
+
+Extras that come with the grid and are switched on: column pinning, column resizing and moving, keyboard navigation (Shift+Enter confirms the focused amber cell), ARIA roles, and row and column virtualisation.
+
+| | |
+|---|---|
+| 4. Amber cells, the counter and the reason on hover | ![Confidence highlighting](docs/ag-grid/04-confidence-highlighting.png) |
+| 7. Publish is blocked while a selected row is amber | ![Bulk publish](docs/ag-grid/07-bulk-publish-blocked.png) |
+| 14, 15. Held orders pinned on top, column groups, the flagged field marked | ![Orders grid](docs/ag-grid/14-orders-pinned-groups.png) |
+| 16. Time to decide and the rubber-stamp strip | ![Time to decide](docs/ag-grid/16-time-to-decide.png) |
+| 18. The same theme in dark mode | ![Dark theme](docs/ag-grid/18-theme-dark.png) |
 
 ## Run it locally
 
@@ -213,8 +271,13 @@ The names were searched before use and are not real businesses as far as we coul
 | POST | `/stores/connect` | start connecting a URL (`{"url": "...", "mode": "live" or "replay"}`) |
 | GET | `/stores/{id}/events` | Server-Sent Events stream of the connect run |
 | GET | `/stores` | stores and their status |
-| GET | `/stores/{id}/catalog` | verified items only |
+| GET | `/stores/{id}/catalog` | verified and published items, in the merchant's order |
 | GET | `/stores/{id}/spec` | full spec, extraction notes, version history, verification attempts |
+| GET | `/stores/{id}/review` | the merchant's review: flags with reasons, publish state, order, column labels |
+| PATCH | `/stores/{id}/items/{item_id}` | edit, confirm or publish one item |
+| POST | `/stores/{id}/publish` | publish or unpublish several items, all or nothing |
+| PUT | `/stores/{id}/order` | the order items appear in |
+| PUT | `/stores/{id}/columns/{field}` | rename a catalog column |
 | POST | `/stores/{id}/orders` | buy (price computed server-side) |
 | POST | `/agent/chat` | the demo shopping agent |
 | GET | `/orders` | all orders, with the Check result on the ones that went through Check |
@@ -236,7 +299,7 @@ Event types: `fetch.started`, `fetch.done`, `extract.started`, `extract.done`, `
 - **PayPal Orders v2, capture**: the one-time wallet setup order. Vault-paid orders capture inside the create call.
 - **PayPal Vault (payment tokens, saved PayPal wallet)**: the agent pays with `payment_source.paypal.vault_id`, so no buyer popup is needed.
 - **PayPal Agent Toolkit (Python)**: the shopping agent's `check_payment` tool reads the order back through the Toolkit's `get_order_details`.
-- **AG Grid Community**: the live catalog grid (row transactions, cell renderers, row flashing) and the orders grid (full-width group rows per store, quick filter).
+- **AG Grid Community**: the catalog review grid and the orders grids, see [How we use AG Grid](#how-we-use-ag-grid).
 - **FastAPI, SQLAlchemy, Postgres, React, Vite, Render.**
 
 ### Why the agent does not pay through the Agent Toolkit
@@ -245,7 +308,7 @@ The PayPal Agent Toolkit has no vault or payment token support. Its `create_orde
 
 ### AG Grid licensing
 
-Only AG Grid Community is used. Grouping orders by store is done with full-width rows, a Community feature, instead of Enterprise row grouping.
+Only AG Grid Community is used, so there is no watermark and no license key. Grouping purchases by store is done with cell spanning, Find and header renaming are our own components, and the strip above the orders grid is plain HTML rather than the Enterprise status bar.
 
 ## Known limitations
 

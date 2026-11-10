@@ -170,7 +170,9 @@ def test_catalog_only_has_verified_items(world):
         store_id, _store = connect_store(client)
         catalog = client.get("/stores/" + str(store_id) + "/catalog").json()
         ids = [item["id"] for item in catalog["items"]]
-        assert ids == ["sourdough-loaf", "seeded-rye", "cinnamon-morning-bun", "olive-focaccia"]
+        # all four verified, but the rye (a crossed-out price) and the focaccia (price only
+        # in a footnote) have a field to look at, so they wait for the merchant
+        assert ids == ["sourdough-loaf", "cinnamon-morning-bun"]
         assert catalog["shipping"]["amount"] == "6.00"
         # the sold out croissant is in the spec but not for sale
         spec = client.get("/stores/" + str(store_id) + "/spec").json()
@@ -253,7 +255,7 @@ def test_a_capture_that_isnt_completed_is_not_a_success(world):
     with TestClient(world.app) as client:
         store_id, _store = connect_store(client)
         response = client.post("/stores/" + str(store_id) + "/orders",
-                               json={"item_id": "seeded-rye"})
+                               json={"item_id": "cinnamon-morning-bun"})
         assert response.status_code == 502
         listed = client.get("/orders").json()["orders"]
         assert listed[0]["status"] == "failed"
@@ -270,7 +272,7 @@ def test_no_vault_id_means_no_buying():
     with TestClient(world.app) as client:
         store_id, _store = connect_store(client)
         response = client.post("/stores/" + str(store_id) + "/orders",
-                               json={"item_id": "seeded-rye"})
+                               json={"item_id": "cinnamon-morning-bun"})
         assert response.status_code == 503
         assert "BUYER_VAULT_ID" in response.json()["detail"]
 

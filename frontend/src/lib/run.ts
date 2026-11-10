@@ -1,12 +1,13 @@
 // Turns the SSE events of one connect run into what the Connect screen draws:
 // the step log, the catalog rows, the counters and which stage the pipeline is at.
 
-import { useEffect, useReducer, useRef } from "react"
+import { useCallback, useEffect, useMemo, useReducer, useRef } from "react"
 
 import { api } from "@/lib/api"
 import type {
   CatalogRow,
   Counts,
+  ReviewResponse,
   SpecItem,
   SpecResponse,
   StoreEvent,
@@ -29,6 +30,8 @@ export interface RunState {
   error: string | null
   // the full answer of GET /spec, loaded when the run ends (or for a store from earlier)
   detail: SpecResponse | null
+  // the merchant's review (flags, publish state, order, column names), loaded with detail
+  review: ReviewResponse | null
 }
 
 export const EMPTY_RUN: RunState = {
@@ -42,18 +45,27 @@ export const EMPTY_RUN: RunState = {
   counts: { verified: 0, failed: 0, unavailable: 0 },
   error: null,
   detail: null,
+  review: null,
 }
 
 type Action =
   | { kind: "start"; storeId: number }
   | { kind: "event"; event: StoreEvent }
-  | { kind: "detail"; detail: SpecResponse }
+  | { kind: "detail"; detail: SpecResponse; review: ReviewResponse | null }
   | { kind: "clear" }
 
 function rowFromItem(item: SpecItem, currency: string): CatalogRow {
   return {
     item_id: item.id,
     name: item.name,
+    description: item.description || "",
+    category: null,
+    stock: null,
+    published: false,
+    blocked_reason: null,
+    checked_at: null,
+    position: 0,
+    flags: {},
     variant_count: item.variants.length,
     add_on_count: item.add_ons.length,
     unit_price: item.unit_price,
@@ -79,6 +91,30 @@ function countRows(rows: CatalogRow[]): Counts {
   return counts
 }
 
+// puts the merchant's side on the rows and sorts them the way the merchant ordered them
+export function withReview(rows: CatalogRow[], review: ReviewResponse | null): CatalogRow[] {
+  if (!review) return rows
+  const byId = new Map(review.items.map((entry) => [entry.item_id, entry]))
+  const merged = rows.map((row, index) => {
+    const entry = byId.get(row.item_id)
+    if (!entry) return { ...row, position: index }
+    const flags: CatalogRow["flags"] = {}
+    for (const flag of entry.flags) flags[flag.field] = { reasons: flag.reasons, resolved: flag.resolved }
+    return {
+      ...row,
+      position: entry.position,
+      category: entry.category,
+      stock: entry.stock,
+      published: entry.published,
+      blocked_reason: entry.blocked_reason,
+      checked_at: entry.checked_at,
+      flags,
+    }
+  })
+  merged.sort((a, b) => a.position - b.position)
+  return merged
+}
+
 // the rows as the database has them: every item of the latest spec plus its last check
 export function rowsFromDetail(detail: SpecResponse, previous: CatalogRow[]): CatalogRow[] {
   if (!detail.spec) return previous
@@ -102,7 +138,8 @@ export function rowsFromDetail(detail: SpecResponse, previous: CatalogRow[]): Ca
       row.reason = "Not for sale on the page"
     } else if (run) {
       row.repairs = run.attempt
-      row.page_check = run.page_check_ok ? "ok" : "fail"
+      // an ok run without the page check is a value the merchant set by hand
+      row.page_check = run.page_check_ok ? "ok" : run.ok ? "skipped" : "fail"
       row.paypal_check = run.paypal_check_ok === null ? "skipped" : run.paypal_check_ok ? "ok" : "fail"
       row.paypal_order_id = run.paypal_order_id
       row.status = run.ok ? "verified" : "failed"
@@ -164,6 +201,7 @@ function applyEvent(state: RunState, event: StoreEvent): RunState {
     if (data.item) {
       // a repair can change the name, the price or the variants
       row.name = data.item.name
+      row.description = data.item.description || ""
       row.unit_price = data.item.unit_price
       row.variant_count = data.item.variants.length
       row.add_on_count = data.item.add_ons.length
@@ -219,11 +257,13 @@ function reducer(state: RunState, action: Action): RunState {
   // detail
   const detail = action.detail
   if (detail.store.id !== state.storeId) return state
-  const rows = rowsFromDetail(detail, state.rows)
+  const review = action.review || state.review
+  const rows = withReview(rowsFromDetail(detail, state.rows), review)
   const finished = detail.store.status !== "connecting"
   return {
     ...state,
     detail,
+    review,
     rows,
     counts: finished ? detail.store.counts : countRows(rows),
     merchantName: detail.store.merchant_name || detail.spec?.merchant.name || state.merchantName,
@@ -236,8 +276,10 @@ function reducer(state: RunState, action: Action): RunState {
 
 // Follows one store: opens its event stream (the server replays the history first), and
 // loads GET /spec when the run ends or when the live log is gone.
-export function useRun(storeId: number | null, onFinished?: () => void): RunState {
+export function useRun(storeId: number | null, onFinished?: () => void): RunState & { reload: () => Promise<void> } {
   const [state, dispatch] = useReducer(reducer, EMPTY_RUN)
+  const reloadRef = useRef<() => Promise<void>>(() => Promise.resolve())
+  const reload = useCallback(() => reloadRef.current(), [])
   const finishedRef = useRef(onFinished)
   useEffect(() => {
     finishedRef.current = onFinished
@@ -251,12 +293,18 @@ export function useRun(storeId: number | null, onFinished?: () => void): RunStat
     let cancelled = false
     dispatch({ kind: "start", storeId })
 
+    // the spec with its runs, and the merchant's review of it. the review only exists once
+    // there is a spec, so a store that failed before that has none
+    const load = async () => {
+      const [detail, review] = await Promise.all([
+        api.getSpec(storeId),
+        api.getReview(storeId).catch(() => null),
+      ])
+      if (!cancelled) dispatch({ kind: "detail", detail, review })
+    }
+    reloadRef.current = load
     const loadDetail = () => {
-      api
-        .getSpec(storeId)
-        .then((detail) => {
-          if (!cancelled) dispatch({ kind: "detail", detail })
-        })
+      load()
         .catch(() => {})
         .finally(() => {
           if (!cancelled) finishedRef.current?.()
@@ -278,5 +326,5 @@ export function useRun(storeId: number | null, onFinished?: () => void): RunStat
     }
   }, [storeId])
 
-  return state
+  return useMemo(() => ({ ...state, reload }), [state, reload])
 }

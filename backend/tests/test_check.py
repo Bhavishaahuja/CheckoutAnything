@@ -377,13 +377,14 @@ def test_the_system_prompt_only_mentions_the_hold_when_check_is_on(world, check)
 def test_two_buys_at_one_store_in_one_chat_share_a_mandate(world, check):
     with TestClient(world.app) as client:
         store_id, _store = connect_store(client)
-        buy = {"store_id": store_id, "item_id": "seeded-rye", "quantity": 1}
+        # the bun, not the rye: the rye has a field to look at, so it is held back until published
+        buy = {"store_id": store_id, "item_id": "cinnamon-morning-bun", "quantity": 1}
         world.agent_claude.replies = [
             Reply([tool_block("buy_item", buy, "c1"), tool_block("buy_item", buy, "c2")],
                   "tool_use"),
             Reply([text_block("Done.")]),
         ]
-        client.post("/agent/chat", json={"messages": [{"role": "user", "content": "Two ryes"}]})
+        client.post("/agent/chat", json={"messages": [{"role": "user", "content": "Two buns"}]})
         assert len(check.mandates) == 1
         assert [sent["mandate_id"] for sent in check.sent_orders] == [1, 1]
 
@@ -443,7 +444,7 @@ def test_a_manual_test_buy_still_pays_here(world, check):
     with TestClient(world.app) as client:
         store_id, _store = connect_store(client)
         response = client.post("/stores/" + str(store_id) + "/orders", json={
-            "item_id": "seeded-rye", "quantity": 1,
+            "item_id": "cinnamon-morning-bun", "quantity": 1,
         })
         assert response.status_code == 201
         assert response.json()["status"] == "captured"
