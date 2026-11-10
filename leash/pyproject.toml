@@ -1,0 +1,18 @@
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+extend-exclude = ["frontend"]
+
+[tool.ruff.lint]
+# pycodestyle errors/warnings, pyflakes, bugbear
+select = ["E", "W", "F", "B"]
+
+[tool.pytest.ini_options]
+testpaths = ["backend/tests"]
+# so tests can import backend.app the same way uvicorn does
+pythonpath = ["."]
+# a plain pytest skips the slow ones. run them with: pytest -m real_server
+addopts = '-m "not real_server"'
+markers = [
+    "real_server: starts a real uvicorn process, so it's slow. CI runs these as their own step",
+]

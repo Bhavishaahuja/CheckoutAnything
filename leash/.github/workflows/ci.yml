@@ -1,0 +1,99 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+
+      - name: Ruff
+        run: ruff check .
+
+      - name: Pytest
+        run: pytest
+
+      # a plain pytest skips these because they start a real server
+      - name: Pytest (real server)
+        run: pytest -m real_server
+
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # skip everything until Shachi adds frontend/package.json
+      - name: Check for frontend
+        id: check
+        run: |
+          if [ -f frontend/package.json ]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "No frontend/package.json yet, skipping"
+          fi
+
+      - uses: actions/setup-node@v4
+        if: steps.check.outputs.exists == 'true'
+        with:
+          node-version: 20
+
+      - name: Install
+        if: steps.check.outputs.exists == 'true'
+        working-directory: frontend
+        run: npm ci
+
+      - name: Lint
+        if: steps.check.outputs.exists == 'true'
+        working-directory: frontend
+        run: npm run lint --if-present
+
+      - name: Build
+        if: steps.check.outputs.exists == 'true'
+        working-directory: frontend
+        run: npm run build
+
+  render-health:
+    # only after a merge to main, once tests passed. Render redeploys on the same push
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [backend, frontend]
+    runs-on: ubuntu-latest
+    env:
+      # secrets can't be used in "if:" directly, so go through an env var
+      RENDER_URL: ${{ secrets.RENDER_URL }}
+    steps:
+      - name: Skip without RENDER_URL
+        if: env.RENDER_URL == ''
+        run: echo "No RENDER_URL repo secret, skipping the live health check"
+
+      - name: Wait for /health on Render
+        if: env.RENDER_URL != ''
+        run: |
+          # the new deploy takes a few minutes and a free service may be asleep,
+          # so poll for up to about 10 minutes
+          url="${RENDER_URL%/}/health"
+          for attempt in $(seq 1 40); do
+            code=$(curl -s -o health.json -w "%{http_code}" --max-time 30 "$url" || true)
+            if [ "$code" = "200" ]; then
+              echo "Healthy on attempt $attempt: $(cat health.json)"
+              exit 0
+            fi
+            echo "Attempt $attempt: got $code, trying again in 15s"
+            sleep 15
+          done
+          echo "Render never answered 200 on $url"
+          exit 1

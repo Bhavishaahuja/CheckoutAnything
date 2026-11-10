@@ -47,3 +47,59 @@ jobs:
       - name: Build
         working-directory: frontend
         run: npm run build
+
+  # Leash lives in leash/ (git subtree) and keeps its own requirements, pyproject and tests.
+  # GitHub only reads workflows from the root .github/, so its jobs are declared here
+  leash-backend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: leash
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: |
+            leash/requirements.txt
+            leash/requirements-dev.txt
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+
+      - name: Ruff
+        run: ruff check .
+
+      - name: Pytest
+        run: pytest
+
+      # a plain pytest skips these because they start a real server
+      - name: Pytest (real server)
+        run: pytest -m real_server
+
+  leash-frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: leash/frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: leash/frontend/package-lock.json
+
+      - name: Install
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint --if-present
+
+      - name: Build
+        run: npm run build

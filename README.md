@@ -2,7 +2,20 @@
 
 PayPal made big stores agent-ready. Checkout Anything makes any store agent-ready from just a URL, in about a minute.
 
+Checkout Anything makes any store agent-ready. [Leash](leash/README.md) makes sure every agent order is one the human meant.
+
 Built for the PayPal AI Hackathon. Sandbox only, fictional stores only.
+
+## Two projects, one repo
+
+| Folder | What it is |
+| --- | --- |
+| `backend/`, `frontend/`, `demo-stores/` | **Checkout Anything**: paste a store URL, get a verified buy endpoint any AI shopping agent can pay through. The rest of this README is about it. |
+| [`leash/`](leash/README.md) | **Leash**: proof of intent for agent orders. The merchant authorizes the PayPal payment but holds the capture while Claude checks the order against what the human asked for. Clean matches capture on their own, anything off goes to the human. |
+
+They run as separate services (each has its own `backend/app` package, database and frontend) and deploy from the one `render.yaml`. Leash's own docs are in [`leash/README.md`](leash/README.md) and [`leash/docs/api.md`](leash/docs/api.md).
+
+Leash was built in its own repo, [Bhavishaahuja/leash](https://github.com/Bhavishaahuja/leash), starting October 21, and moved here with `git subtree` so its full commit history came along: `git log` shows every Leash commit.
 
 ## The problem
 
@@ -109,6 +122,8 @@ dev.cmd
 
 That installs everything and opens three windows: the API on 8000, the app on 5173, the demo stores on 5174. Open http://localhost:5173.
 
+It also starts the Leash API on 8001 once `leash/.env` is filled in (the first run creates it from `leash/.env.example`). Leash needs a Postgres database, see [`leash/README.md`](leash/README.md).
+
 ### Keys
 
 | Variable | What |
@@ -142,6 +157,8 @@ One test really talks to the sandbox. It is off by default:
 ```
 pytest -m live_sandbox
 ```
+
+Leash's tests are separate and run from its folder: `cd leash`, then `pytest`. CI runs both suites.
 
 ## Judge mode
 
