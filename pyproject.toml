@@ -1,0 +1,18 @@
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+extend-exclude = ["frontend"]
+
+[tool.ruff.lint]
+# pycodestyle errors/warnings, pyflakes, bugbear
+select = ["E", "W", "F", "B"]
+
+[tool.pytest.ini_options]
+testpaths = ["backend/tests"]
+# so tests can import backend.app the same way uvicorn does
+pythonpath = ["."]
+# a plain pytest never touches PayPal. the one live test runs with: pytest -m live_sandbox
+addopts = '-m "not live_sandbox"'
+markers = [
+    "live_sandbox: makes real PayPal sandbox calls, needs PAYPAL_CLIENT_ID and PAYPAL_CLIENT_SECRET",
+]

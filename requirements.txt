@@ -1,0 +1,8 @@
+requests
+python-dotenv
+anthropic
+fastapi
+uvicorn[standard]
+pydantic-settings
+sqlalchemy
+psycopg[binary]
