@@ -1,0 +1,181 @@
+/* The shared header, see AppHeader.tsx. This file is the same in both frontends, and it carries
+   its own font, colors and spacing instead of borrowing each app's tokens, which is what makes
+   the two headers match to the pixel. The palette is Checkout Anything's (frontend/src/index.css).
+   Dark applies wherever an ancestor has the .dark class. */
+
+.ca-header {
+  --ca-bg: #fafaf7;
+  --ca-card: #ffffff;
+  --ca-ink: #16181d;
+  --ca-muted-ink: #666a73;
+  --ca-muted: #f2f2ed;
+  --ca-line: #e5e4dd;
+  --ca-primary: #1d3fd0;
+
+  position: sticky;
+  top: 0;
+  z-index: 30;
+  border-bottom: 1px solid var(--ca-line);
+  background: color-mix(in srgb, var(--ca-bg) 88%, transparent);
+  backdrop-filter: blur(8px);
+  color: var(--ca-ink);
+  font-family: "Geist Variable", "Geist", ui-sans-serif, system-ui, sans-serif;
+  font-size: 13px;
+  line-height: 1.4;
+  -webkit-font-smoothing: antialiased;
+}
+
+.dark .ca-header {
+  --ca-bg: #0c0e13;
+  --ca-card: #13161d;
+  --ca-ink: #e9ebf0;
+  --ca-muted-ink: #9399a6;
+  --ca-muted: #1a1e27;
+  --ca-line: #252a35;
+  --ca-primary: #8aa4ff;
+}
+
+.ca-header__bar {
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  max-width: 1400px;
+  min-height: 56px;
+  margin: 0 auto;
+  padding: 0 16px;
+}
+
+.ca-header__brand {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 8px;
+  color: inherit;
+  text-decoration: none;
+}
+
+.ca-header__name {
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.015em;
+  white-space: nowrap;
+}
+
+.ca-header__nav {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 8px;
+  background: var(--ca-muted);
+}
+
+.ca-header__link {
+  display: inline-flex;
+  align-items: center;
+  height: 32px;
+  padding: 0 10px;
+  border-radius: 6px;
+  color: var(--ca-muted-ink);
+  font-size: 13px;
+  font-weight: 500;
+  text-decoration: none;
+  white-space: nowrap;
+  transition:
+    color 0.14s ease,
+    background-color 0.14s ease;
+}
+
+.ca-header__link:hover {
+  color: var(--ca-ink);
+}
+
+/* the section you are in */
+.ca-header__link[aria-current="page"] {
+  background: var(--ca-card);
+  color: var(--ca-ink);
+  box-shadow: 0 1px 2px rgb(0 0 0 / 0.08);
+}
+
+.ca-header__brand:focus-visible,
+.ca-header__link:focus-visible,
+.ca-header__tool:focus-visible {
+  outline: 2px solid var(--ca-primary);
+  outline-offset: 2px;
+}
+
+.ca-header__tools {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+
+/* a plain text control in the tools area, for an app that has no button styles of its own to
+   bring. works on a link or a button */
+.ca-header__tool {
+  display: inline-flex;
+  align-items: center;
+  height: 32px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  color: var(--ca-muted-ink);
+  font: inherit;
+  font-weight: 500;
+  text-decoration: none;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.ca-header__tool:hover,
+.ca-header__tool[aria-current="page"] {
+  background: var(--ca-muted);
+  color: var(--ca-ink);
+}
+
+.ca-header__tool:disabled {
+  opacity: 0.6;
+  cursor: progress;
+}
+
+/* a quiet label in the tools area, like the store's name */
+.ca-header__note {
+  color: var(--ca-muted-ink);
+  white-space: nowrap;
+}
+
+@media (max-width: 860px) {
+  .ca-header__name,
+  .ca-header__note {
+    display: none;
+  }
+}
+
+/* on a phone the four links take the first row beside the mark, and the app's own controls
+   wrap onto a second one. wrapping, not sideways scrolling, so everything stays in reach */
+@media (max-width: 640px) {
+  .ca-header__bar {
+    flex-wrap: wrap;
+    gap: 6px 8px;
+    padding: 8px 12px;
+  }
+
+  .ca-header__nav {
+    flex: 1;
+    justify-content: space-between;
+  }
+
+  .ca-header__link {
+    padding: 0 8px;
+  }
+
+  .ca-header__tools {
+    width: 100%;
+    margin-left: 0;
+    justify-content: flex-end;
+    flex-wrap: wrap;
+  }
+}

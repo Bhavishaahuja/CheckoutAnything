@@ -108,85 +108,18 @@ p {
 .decide-button,
 .icon-button,
 .segmented__button,
-.scenario-button,
-.topbar__link {
+.scenario-button {
   transition:
     background-color var(--dur) var(--ease),
     color var(--dur) var(--ease),
     border-color var(--dur) var(--ease);
 }
 
-/* ---- merchant shell ---- */
+/* ---- merchant shell ----
+   the header itself is the shared one, components/app-header.css. what's left here is this
+   app's own: the reset confirm strip under it, and the sample-data flag */
 
-.topbar {
-  background: var(--surface);
-  border-bottom: 1px solid var(--border);
-}
-
-.topbar__inner {
-  max-width: 1360px;
-  margin: 0 auto;
-  padding: 0 24px;
-  height: 56px;
-  display: flex;
-  align-items: center;
-  gap: 20px;
-}
-
-.brand {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  color: var(--primary);
-  text-decoration: none;
-}
-
-.brand__name {
-  font-weight: 800;
-  font-size: 17px;
-  letter-spacing: -0.03em;
-  text-transform: lowercase;
-  color: var(--ink);
-}
-
-.topbar__store {
-  color: var(--ink-muted);
-  padding-left: 20px;
-  border-left: 1px solid var(--border);
-}
-
-.topbar__nav {
-  display: flex;
-  gap: 4px;
-  margin-left: auto;
-}
-
-.topbar__link {
-  padding: 6px 12px;
-  border-radius: var(--radius);
-  color: var(--ink-muted);
-  text-decoration: none;
-  font-weight: 500;
-}
-
-.topbar__link:hover {
-  background: var(--surface-sunk);
-  color: var(--ink);
-}
-
-/* a button styled as a nav link. the short label is for phones, see the 640px query */
-.topbar__reset {
-  border: 0;
-  background: none;
-  font: inherit;
-  cursor: pointer;
-}
-
-.topbar__reset:disabled {
-  cursor: progress;
-  opacity: 0.6;
-}
-
+/* the reset button's short label is for phones, see the 640px query */
 .topbar__reset-short {
   display: none;
 }
@@ -247,8 +180,7 @@ p {
   opacity: 0.7;
 }
 
-.danger-button:focus-visible,
-.topbar__reset:focus-visible {
+.danger-button:focus-visible {
   outline: 2px solid var(--focus);
   outline-offset: 2px;
 }
@@ -257,11 +189,6 @@ p {
   margin: -8px 0 16px;
   color: var(--ink-muted);
   font-size: 14px;
-}
-
-.topbar__link.active {
-  background: var(--primary-soft);
-  color: var(--primary);
 }
 
 .mock-flag {
@@ -1543,40 +1470,8 @@ p {
 }
 
 @media (max-width: 640px) {
-  .topbar__store {
-    display: none;
-  }
-
   .scenario-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  /* three links, reset and log out don't fit beside the brand in 390px, so the nav gets its own
-     row under it. wrapping, not sideways scrolling, so every link stays visible */
-  .topbar__inner {
-    padding: 8px 12px;
-    gap: 4px 8px;
-    height: auto;
-    min-height: 56px;
-    flex-wrap: wrap;
-  }
-
-  .topbar__nav {
-    gap: 0;
-    order: 3;
-    width: 100%;
-    margin-left: 0;
-    flex-wrap: wrap;
-  }
-
-  .mock-flag {
-    margin-left: auto;
-  }
-
-  .topbar__link {
-    padding: 6px 8px;
-    font-size: 14px;
-    white-space: nowrap;
   }
 
   .mock-flag {
@@ -1954,19 +1849,6 @@ p {
 
 .login__form {
   margin-top: 20px;
-}
-
-.topbar__logout {
-  font: inherit;
-  font-weight: 500;
-  background: none;
-  border: 0;
-  cursor: pointer;
-}
-
-.topbar__logout:focus-visible {
-  outline: 2px solid var(--focus);
-  outline-offset: 2px;
 }
 
 /* ---- disputes ---- */

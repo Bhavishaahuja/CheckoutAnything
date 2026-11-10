@@ -80,6 +80,12 @@ services:
       # not a secret, it ends up in the public JS anyway
       - key: VITE_API_URL
         sync: false
+      # the shared header's links between the two apps: the check-frontend site's URL, and
+      # this site's own
+      - key: VITE_CHECK_URL
+        sync: false
+      - key: VITE_CONNECT_URL
+        sync: false
 
   # the three fictional demo stores, plain HTML with no build step
   - type: web
@@ -160,8 +166,11 @@ services:
       - key: VITE_USE_MOCKS
         value: "false"
       # the checkout-anything site's URL. the confirm page reports a finished decision to this
-      # origin and no other (the review drawer in the Orders grid listens for it)
+      # origin and no other (the review drawer in the Orders grid listens for it), and the
+      # shared header's Connect and Orders links go there
       - key: VITE_CONNECT_URL
+        sync: false
+      - key: VITE_CHECK_URL
         sync: false
       # AG Grid Enterprise trial key. set it in the dashboard, never in git
       - key: VITE_AG_GRID_LICENSE_KEY

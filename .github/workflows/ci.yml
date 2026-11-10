@@ -39,6 +39,14 @@ jobs:
           cache: npm
           cache-dependency-path: frontend/package-lock.json
 
+      # both apps wear the same header. the component and its stylesheet are kept as two
+      # identical copies, and this is what keeps them identical
+      - name: Shared header is the same in both apps
+        run: |
+          diff frontend/src/components/AppHeader.tsx check/frontend/src/components/AppHeader.tsx
+          diff frontend/src/components/app-header.css check/frontend/src/components/app-header.css
+          diff frontend/src/components/BrandMark.tsx check/frontend/src/components/BrandMark.tsx
+
       - name: Install
         working-directory: frontend
         run: npm ci

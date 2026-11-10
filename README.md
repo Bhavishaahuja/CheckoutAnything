@@ -147,6 +147,7 @@ It also starts the Check API on 8001 once `check/.env` is filled in (the first r
 | `CHECK_URL` | Optional. The Check service's URL (`http://127.0.0.1:8001` locally). Left empty, agent orders are paid and captured here and nothing else in this table below is used. |
 | `CHECK_AGENT_KEY` | One of the Check service's `AGENT_API_KEYS`. Its name there also has to be in the Check service's `STORE_NAMING_AGENTS`, or Check ignores the store name and holds every order for review. |
 | `CHECK_MERCHANT_KEY` | The Check service's `MERCHANT_API_KEY`. Lets the Orders grid show why an order was held and run the Disputes tab. Review links are not made with it: they need the merchant's own login. |
+| `VITE_CHECK_URL`, `VITE_CONNECT_URL` | Frontend build settings, in `frontend/.env.local` and `check/frontend/.env.local`: where the Check app and this app are served. Both apps wear the same header and use these to link to each other, and the Check app only lets `VITE_CONNECT_URL` frame its confirm page. |
 | `CHECK_FRONTEND_URL` | Where the Check frontend is served, for the confirm page (`http://localhost:5175` locally). The Check frontend in turn needs `VITE_CONNECT_URL` set to this app's URL, or it refuses to be shown in the review drawer. |
 
 To get `BUYER_VAULT_ID`, run this once and approve in the browser as your sandbox buyer (the personal account under Testing Tools, Sandbox Accounts):

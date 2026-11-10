@@ -584,7 +584,8 @@ function acceptMockFix(token: string, clientDecisionMs: number): AcceptFixResult
     void_result: null,
     replaced_by_order_id: null,
     replaces_order_id: order.id,
-    items: [{ ...order.items[0], name: fix.item, quantity: fix.quantity, unit_price: fix.price }],
+    // the fix only names the item, so the mock can't say which size or color it swapped in
+    items: [{ ...order.items[0], name: fix.item, size: null, quantity: fix.quantity, unit_price: fix.price }],
     total: (Number(fix.price) * fix.quantity + shipping).toFixed(2),
     status: 'captured',
     review_state: 'auto_approved',

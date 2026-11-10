@@ -26,6 +26,20 @@ interface OrderRow extends Order {
 // the grid starts empty (never "loading"), rows then arrive as transactions
 const NO_ROWS: OrderRow[] = []
 
+// room enough to keep a column pinned beside the scrolling ones
+const WIDE_SCREEN = "(min-width: 1024px)"
+
+function useWideScreen() {
+  const [wide, setWide] = useState(() => window.matchMedia(WIDE_SCREEN).matches)
+  useEffect(() => {
+    const query = window.matchMedia(WIDE_SCREEN)
+    const update = () => setWide(query.matches)
+    query.addEventListener("change", update)
+    return () => query.removeEventListener("change", update)
+  }, [])
+  return wide
+}
+
 // on hold at PayPal, waiting for a human to decide
 function isHeld(row: OrderRow) {
   return row.status === "authorized" && row.review_state === "needs_review" && !row.error
@@ -258,6 +272,7 @@ export function OrdersPage({
   const [grouped, setGrouped] = useState(true)
   const [search, setSearch] = useState("")
   const firstLoad = useRef(true)
+  const wide = useWideScreen()
 
   useEffect(() => {
     if (!active) return
@@ -351,6 +366,9 @@ export function OrdersPage({
         valueFormatter: (params) => (params.data ? money(params.value, params.data.currency) : ""),
         comparator: (a, b) => Number(a) - Number(b),
       },
+      // right after the money, ahead of the long PayPal ids, so "Held: wrong size" and
+      // "Fixed" are on screen without scrolling
+      { headerName: "Status", field: "status", cellRenderer: StatusCell, flex: 1, minWidth: checkOn ? 230 : 130 },
       {
         headerName: "PayPal order",
         field: "paypal_order_id",
@@ -364,7 +382,6 @@ export function OrdersPage({
         cellRenderer: (params: CustomCellRendererProps<OrderRow>) => <CopyId value={params.value} />,
       },
       { headerName: "Bought by", field: "created_by", width: 122, cellRenderer: ByCell },
-      { headerName: "Status", field: "status", cellRenderer: StatusCell, flex: 1, minWidth: checkOn ? 210 : 130 },
       // the Check columns, only when agent orders go through Check
       { headerName: "Check", field: "check_verdict", cellRenderer: VerdictCell, width: 124, hide: !checkOn },
       {
@@ -376,7 +393,16 @@ export function OrdersPage({
         tooltipField: "check_reason",
         cellClass: "text-muted-foreground",
       },
-      { headerName: "Review", field: "review_state", cellRenderer: ReviewCell, width: 236, hide: !checkOn },
+      {
+        headerName: "Review",
+        field: "review_state",
+        cellRenderer: ReviewCell,
+        width: 236,
+        hide: !checkOn,
+        // stays in view while the other columns scroll, so the Review button is never off screen.
+        // not on a narrow screen, where a pinned column would leave no room for the rest
+        pinned: wide ? "right" : null,
+      },
       {
         headerName: "Time to decide",
         field: "decision_ms",
@@ -396,7 +422,7 @@ export function OrdersPage({
         cellClass: "text-muted-foreground tabular-nums",
       },
     ],
-    [grouped, checkOn]
+    [grouped, checkOn, wide]
   )
 
   const openReview = useCallback((orderId: number) => setReviewId(orderId), [])
