@@ -1,0 +1,22 @@
+# secrets
+.env
+
+# python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+
+# frontend (for later)
+node_modules/
+dist/
+
+# editor / OS junk
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# spike scratch (sandbox vault ids)
+spikes/.vault_token.json
