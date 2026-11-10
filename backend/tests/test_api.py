@@ -36,7 +36,8 @@ BAKERY_URL = "https://stores.example/hollowbrook-bakery/"
 
 class World:
     # one test's app plus the fakes behind it
-    def __init__(self, vault_id="vault-123", demo_mode="live"):
+    def __init__(self, vault_id="vault-123", demo_mode="live", check=None,
+                 check_frontend_url=""):
         self.paypal = FakePayPal()
         self.spec_overrides = {}
         self.repairs = {}
@@ -49,12 +50,16 @@ class World:
             # the test host doesn't resolve, the fetch itself is faked below
             fetch_allow_hosts="stores.example:443",
             anthropic_api_key="",
+            # no CHECK_URL: a test that wants Check hands in a fake client instead
+            check_url="",
+            check_frontend_url=check_frontend_url,
         )
         self.agent_claude = FakeClaude([])
         self.checked = []
         self.app = create_app(
             settings=self.settings, paypal=self.paypal, ai_factory=self.ai_factory,
             fetch=self.fetch, agent_client=self.agent_claude, order_reader=self.order_reader,
+            check=check,
         )
 
     def slug(self, url):

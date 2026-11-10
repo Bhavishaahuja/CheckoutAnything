@@ -3,7 +3,7 @@
 
 from functools import lru_cache
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -49,8 +49,37 @@ def get_session():
         session.close()
 
 
+# columns added to orders after the first deploy. create_all only makes missing tables, so a
+# database from before these existed gets them added here. all nullable, nothing to backfill
+CHECK_COLUMNS = {
+    "check_order_id": "INTEGER",
+    "check_mandate_id": "INTEGER",
+    "review_state": "VARCHAR(20)",
+    "check_verdict": "VARCHAR(20)",
+    "check_reason": "TEXT",
+    "decision_ms": "INTEGER",
+    "check_fields": "VARCHAR(300)",
+    "review_action": "VARCHAR(20)",
+    "check_replaced_by_id": "INTEGER",
+    "check_replaces_id": "INTEGER",
+}
+
+
+def add_missing_order_columns(engine):
+    existing = set()
+    for column in inspect(engine).get_columns("orders"):
+        existing.add(column["name"])
+    with engine.begin() as connection:
+        for name, sql_type in CHECK_COLUMNS.items():
+            if name not in existing:
+                # names and types come from the dict above, never from a request
+                connection.execute(text("ALTER TABLE orders ADD COLUMN " + name + " " + sql_type))
+
+
 def create_tables():
     # six small tables and no migrations yet, so the API makes them on startup
     from backend.app import models  # noqa: F401
 
-    Base.metadata.create_all(get_engine())
+    engine = get_engine()
+    Base.metadata.create_all(engine)
+    add_missing_order_columns(engine)

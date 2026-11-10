@@ -49,6 +49,23 @@ class Settings(BaseSettings):
     # addresses, like localhost:5174 for the demo stores. leave empty on a hosted deploy
     fetch_allow_hosts: str = ""
 
+    # Check: hold an agent's payment until the order is shown to be what the human asked for.
+    # CHECK_URL is the flag. left empty, nothing changes: the agent's orders are paid and
+    # captured here, as before. set, the agent's orders go to the Check service instead
+    check_url: str = ""
+    # one of the Check service's AGENT_API_KEYS. it sends the mandate and the order
+    check_agent_key: str = ""
+    # the Check service's MERCHANT_API_KEY. reads the check result, makes review links and
+    # runs disputes. left empty, orders still go through Check but the grid can't say why
+    check_merchant_key: str = ""
+    # where the Check frontend is served, for the buyer's confirm page: <this>/confirm/<token>
+    check_frontend_url: str = ""
+
+    @field_validator("check_url", "check_frontend_url")
+    @classmethod
+    def no_trailing_slash(cls, url):
+        return url.strip().rstrip("/")
+
     @field_validator("paypal_base_url")
     @classmethod
     def sandbox_only(cls, url):

@@ -1,63 +1,76 @@
 # Checkout Anything
 
-PayPal made big stores agent-ready. Checkout Anything makes any store agent-ready from just a URL, in about a minute.
-
-Checkout Anything makes any store agent-ready. [Leash](leash/README.md) makes sure every agent order is one the human meant.
+Checkout Anything opens any store to AI agents, and makes sure every agent order is one the human actually meant.
 
 Built for the PayPal AI Hackathon. Sandbox only, fictional stores only.
 
-## Two projects, one repo
+PayPal's agentic commerce products (Agent Ready and Store Sync) reach merchants through supported platforms such as Wix, BigCommerce, Shopware and Cymbio. Everyone else is invisible to AI shopping agents: a hand-coded HTML shop, an artist with a commission price list, a bakery with a menu page. And once agents can buy, a merchant has no way to know whether the human behind the agent wanted that order. Checkout Anything covers both, in three features.
 
-| Folder | What it is |
-| --- | --- |
-| `backend/`, `frontend/`, `demo-stores/` | **Checkout Anything**: paste a store URL, get a verified buy endpoint any AI shopping agent can pay through. The rest of this README is about it. |
-| [`leash/`](leash/README.md) | **Leash**: proof of intent for agent orders. The merchant authorizes the PayPal payment but holds the capture while Claude checks the order against what the human asked for. Clean matches capture on their own, anything off goes to the human. |
+## Connect
 
-They run as separate services (each has its own `backend/app` package, database and frontend) and deploy from the one `render.yaml`. Leash's own docs are in [`leash/README.md`](leash/README.md) and [`leash/docs/api.md`](leash/docs/api.md).
-
-Leash was built in its own repo, [Bhavishaahuja/leash](https://github.com/Bhavishaahuja/leash), starting October 21, and moved here with `git subtree` so its full commit history came along: `git log` shows every Leash commit.
-
-## The problem
-
-PayPal's agentic commerce products (Agent Ready and Store Sync) reach merchants through supported platforms such as Wix, BigCommerce, Shopware and Cymbio. Everyone else is invisible to AI shopping agents: a hand-coded HTML shop, an artist with a commission price list, a bakery with a menu page. Today those sellers take payment by sending invoices by hand.
-
-## What it does
+Any store becomes buyable by an agent, from just its URL, in about a minute.
 
 1. The merchant pastes their store URL.
 2. Claude reads the page and writes a `store_spec`, a declarative JSON description of what is for sale and at what price.
 3. Fixed Python code verifies the spec. For every item it checks the price against the page, then creates a real PayPal sandbox order and checks what PayPal holds against the spec. On a mismatch Claude repairs the item (3 tries at most). Every step streams live to the UI.
-4. The verified store gets a buy endpoint. Any AI shopping agent can now buy from it through PayPal.
-5. A Claude shopping agent buys from the freshly connected store, pays with a vaulted sandbox wallet, and the payment is captured.
+4. The verified store gets a buy endpoint. Any AI shopping agent can now buy from it through PayPal, and a Claude shopping agent does, paying with a vaulted sandbox wallet.
 
 No integration is needed on the store's side. That is the difference from tools built on PayPal's Store Sync Cart API, which only work for shops that are already wired into PayPal.
 
+## Check
+
+Every agent order is held until it is shown to be what the human asked for.
+
+1. The human's request to their agent is saved as a mandate: the item, the limits, the store.
+2. The payment is authorized at PayPal but not captured.
+3. Fixed rules (price cap, store, expiry, currency) and then Claude compare the order with the mandate.
+4. A clean match is captured on its own. Anything off goes to the human on a one-screen confirm page with a one-line reason: approve captures, reject voids.
+5. A rubber-stamp watch times the approvals. When the human stops really reading them, it asks less often but more pointedly.
+
+## Defend
+
+When a buyer disputes a captured order, the merchant already holds the proof. Checkout Anything finds the dispute through PayPal's Disputes API, builds a packet from its own records (what the buyer asked for, what was ordered, how it was checked, who released the money and how long they took), has Claude draft a plain summary of it, and files both with PayPal as evidence.
+
+Check and Defend have their own API reference in [`check/docs/api.md`](check/docs/api.md) and setup notes in [`check/README.md`](check/README.md).
+
 ## Architecture
+
+One product, two backends. The Connect service is in `backend/` and `frontend/`. The Check service, which also does Defend, is in `check/`. Each has its own database, and both deploy from the one `render.yaml`.
+
+The two are joined by one setting, `CHECK_URL`, on the Connect service. Left empty, the shopping agent's orders are paid and captured by the Connect service, as in the Connect section above. Set, they take the dashed arrow instead: the human's own request goes to Check as a mandate, the priced order follows, and Check holds the payment, checks it and captures it or asks the human. The merchant stays in the one app: the Orders grid shows the check result, the one-line reason, the review state and how long the human took, a Review button on each order on hold, and a Disputes tab covers Defend. Review opens a drawer with the real confirm page inside it (after the merchant logs in), so a decision made there is opened, timed and recorded exactly like one made on the buyer's phone.
 
 ```mermaid
 flowchart LR
-    U[Merchant pastes URL] --> FE[React app with AG Grid]
-    FE -- POST /stores/connect --> API[FastAPI]
-    API -- SSE events --> FE
-    API --> F[fetcher.py: SSRF guard, HTML to text]
-    F --> X[extractor.py: Claude writes store_spec JSON]
-    X --> S[spec.py: Pydantic validation, 32 KB cap]
-    S --> V[verifier.py: page check, then PayPal check]
-    V -- mismatch reason --> X
-    V -- create and read back order --> PP[(PayPal sandbox Orders v2)]
-    V --> DB[(Postgres)]
-    AG[agent.py: Claude shopping agent] --> SH[shop.py: catalog and buy]
-    SH --> O[orders.py: price from spec, pay with vault id]
-    O --> PP
-    AG -- read order back --> TK[PayPal Agent Toolkit]
-    TK --> PP
-```
+    U[Merchant pastes URL] --> FE[Checkout Anything app: React, AG Grid]
+    AG[AI shopping agent] --> SH
 
-| Part | Where |
-|---|---|
-| API | `backend/app`, Python 3 + FastAPI, Postgres (sqlite locally) |
-| App | `frontend`, React + Vite + AG Grid Community |
-| Demo stores | `demo-stores`, three fictional static pages |
-| Hosting | Render: one web service, two static sites, one Postgres (`render.yaml`) |
+    subgraph CONNECT [Connect service: backend/]
+        API[FastAPI] --> F[fetcher.py: SSRF guard, HTML to text]
+        F --> X[extractor.py: Claude writes store_spec JSON]
+        X --> S[spec.py: Pydantic validation, 32 KB cap]
+        S --> V[verifier.py: page check, then PayPal check]
+        V -- mismatch reason --> X
+        SH[shop.py: catalog and buy] --> O[orders.py: price from the verified spec]
+    end
+
+    subgraph CHECK [Check service: check/]
+        M[mandates: the human's request, parsed] --> IC[intent check: fixed rules, then Claude]
+        IC -- clean match --> CAP[auto-capture]
+        IC -- anything off --> RV[confirm page: human approves or rejects]
+        RV --> RS[rubber-stamp watch]
+        CAP --> DSP[disputes: evidence packet and PDF]
+        RV --> DSP
+    end
+
+    FE -- POST /stores/connect, SSE back --> API
+    V -- create and read back order --> PP[(PayPal sandbox)]
+    O -- pay with vault id, capture --> PP
+    O -. with CHECK_URL: mandate and priced order .-> M
+    CAP -- authorize, capture, void --> PP
+    DSP -- Disputes API --> PP
+    V --> DB1[(Postgres: stores, specs, orders)]
+    IC --> DB2[(Postgres: mandates, checks, approvals, disputes)]
+```
 
 ## How verification works
 
@@ -132,16 +145,16 @@ AG Grid Community 36 only. Two grids share one theme, one saved-layout hook and 
 | 9 | Pagination | For large stores: page size picker, and an edit keeps you on the page you were on. |
 | 10 | CSV export | Downloads the cleaned catalog with the formatted values, as `hollowbrook-bakery-catalog-2026-11-10.csv`. |
 
-**Orders grid** (`frontend/src/components/LeashOrdersGrid.tsx`): Leash inside Checkout Anything, the Intent review view of the Orders screen.
+**Orders grid** (`frontend/src/components/OrdersGrid.tsx`): every purchase from a connected store, and what Check decided about it.
 
 | # | Feature | Why it is here |
 |---|---|---|
-| 11 | Transactions and cell flashing | When an order moves from held to captured or voided, its status cell flashes. Updates go through `applyTransaction`, so the grid keeps its scroll position. Leash has no push channel, so changes arrive by a 3 second poll. |
-| 12 | Status colours (`rowClassRules`) | Auto-captured, needs review, voided and disputed each get a colour, and each also has an icon and a label. |
-| 13 | Custom cell renderers | Risk badge, Claude's one-line reason, and Approve and Reject in the row. The buttons show progress and lock after the first click. |
-| 14 | Row pinning | Orders that need a human stay pinned at the top until decided, then travel down into the list. |
-| 15 | Column groups | Mandate, Order, Decision, left to right. The field that differs is marked in both groups (asked for M, got L). |
-| 16 | Time to decide | How long the human took, on Leash's own clock, with fast approvals flagged. The strip above the grid reads "Rubber-stamp risk: 4 approvals under 2s". |
+| 11 | Transactions and cell flashing | When an order moves from held to captured or voided, its status cells flash. Updates go through `applyTransaction`, so the grid keeps its scroll position. Changes arrive by a 3 second poll. |
+| 12 | Status colours (`rowClassRules`) | Amber held, green captured, gray voided, no tint for an order paid directly. Each also has an icon and a label in its status chip. |
+| 13 | Custom cell renderers | The status chip ("Held: wrong size", "Fixed", "Paid directly"), Check's verdict, and the Review button. Review only opens the drawer with the real confirm page: nothing is approved or rejected in the row, and the review link is asked for when the drawer opens, never when a row is drawn. |
+| 14 | Row pinning | Orders on hold stay pinned at the top until decided, then travel down into the list. |
+| 15 | Column groups | Order, Check, Decision, PayPal, left to right. The field Check flagged is marked on the order's own cell (the total for a price problem, the item for a wrong size). |
+| 16 | Time to decide | How long the human took on the confirm page, on Check's own clock, with fast approvals flagged. The strip above the grid reads "Rubber-stamp risk: 4 approvals under 2s". |
 | 17 | Quick filter and Find | One search box filters the rows and highlights matches inside cells, with "2 of 5" and next and previous. |
 
 **Both grids**
@@ -158,13 +171,9 @@ Extras that come with the grid and are switched on: column pinning, column resiz
 |---|---|
 | 4. Amber cells, the counter and the reason on hover | ![Confidence highlighting](docs/ag-grid/04-confidence-highlighting.png) |
 | 7. Publish is blocked while a selected row is amber | ![Bulk publish](docs/ag-grid/07-bulk-publish-blocked.png) |
-| 11. The status cell flashes as an order is captured | ![Status flash](docs/ag-grid/11-status-flash.png) |
-| 13. Approve and Reject in the row, locked while the capture runs | ![Approve in row](docs/ag-grid/13-approve-in-row.png) |
+| 14, 15. Held orders pinned on top, column groups, the flagged field marked | ![Orders grid](docs/ag-grid/14-orders-pinned-groups.png) |
 | 16. Time to decide and the rubber-stamp strip | ![Time to decide](docs/ag-grid/16-time-to-decide.png) |
-| 15. Mandate and Order side by side, the mismatch marked in both | ![Column groups](docs/ag-grid/15-column-groups-mismatch.png) |
 | 18. The same theme in dark mode | ![Dark theme](docs/ag-grid/18-theme-dark.png) |
-
-The Intent review grid talks to the Leash API (`VITE_LEASH_API_URL`, default `http://127.0.0.1:8001`) and signs in with Leash's demo merchant password. Showing an order with its buttons creates a review link for it, which replaces any link made earlier from the Leash dashboard.
 
 ## Run it locally
 
@@ -184,7 +193,7 @@ dev.cmd
 
 That installs everything and opens three windows: the API on 8000, the app on 5173, the demo stores on 5174. Open http://localhost:5173.
 
-It also starts the Leash API on 8001 once `leash/.env` is filled in (the first run creates it from `leash/.env.example`). Leash needs a Postgres database, see [`leash/README.md`](leash/README.md).
+It also starts the Check API on 8001 and the Check app on 5175 once `check/.env` is filled in (the first run creates it from `check/.env.example`). The Check service needs a Postgres database, see [`check/README.md`](check/README.md). The first run writes `check/frontend/.env.local` so the Check app talks to the local Check API and knows where the main app is.
 
 ### Keys
 
@@ -193,6 +202,11 @@ It also starts the Leash API on 8001 once `leash/.env` is filled in (the first r
 | `PAYPAL_CLIENT_ID`, `PAYPAL_CLIENT_SECRET` | A sandbox REST app from developer.paypal.com (Apps & Credentials, Sandbox). Turn on Vault for the app. |
 | `ANTHROPIC_API_KEY` | For live mode and the shopping agent. Replay mode connects stores without it. |
 | `BUYER_VAULT_ID` | The saved sandbox buyer wallet the buy endpoint pays with. See below. |
+| `CHECK_URL` | Optional. The Check service's URL (`http://127.0.0.1:8001` locally). Left empty, agent orders are paid and captured here and nothing else in this table below is used. |
+| `CHECK_AGENT_KEY` | One of the Check service's `AGENT_API_KEYS`. Its name there also has to be in the Check service's `STORE_NAMING_AGENTS`, or Check ignores the store name and holds every order for review. |
+| `CHECK_MERCHANT_KEY` | The Check service's `MERCHANT_API_KEY`. Lets the Orders grid show why an order was held and run the Disputes tab. Review links are not made with it: they need the merchant's own login. |
+| `VITE_CHECK_URL`, `VITE_CONNECT_URL` | Frontend build settings, in `frontend/.env.local` and `check/frontend/.env.local`: where the Check app and this app are served. Both apps wear the same header and use these to link to each other, and the Check app only lets `VITE_CONNECT_URL` frame its confirm page. |
+| `CHECK_FRONTEND_URL` | Where the Check frontend is served, for the confirm page (`http://localhost:5175` locally). The Check frontend in turn needs `VITE_CONNECT_URL` set to this app's URL, or it refuses to be shown in the review drawer. |
 
 To get `BUYER_VAULT_ID`, run this once and approve in the browser as your sandbox buyer (the personal account under Testing Tools, Sandbox Accounts):
 
@@ -220,7 +234,7 @@ One test really talks to the sandbox. It is off by default:
 pytest -m live_sandbox
 ```
 
-Leash's tests are separate and run from its folder: `cd leash`, then `pytest`. CI runs both suites.
+The Check service's tests are separate and run from its folder: `cd check`, then `pytest`. CI runs both suites.
 
 ## Judge mode
 
@@ -266,7 +280,13 @@ The names were searched before use and are not real businesses as far as we coul
 | PUT | `/stores/{id}/columns/{field}` | rename a catalog column |
 | POST | `/stores/{id}/orders` | buy (price computed server-side) |
 | POST | `/agent/chat` | the demo shopping agent |
-| GET | `/orders` | all orders |
+| GET | `/orders` | all orders, with the Check result on the ones that went through Check |
+| POST | `/auth/session` | the merchant's login: the Check dashboard's password for a session token (needs `CHECK_URL`) |
+| POST | `/orders/{id}/review-link` | a link to the confirm page for an order on hold. Needs the login, sent as `Authorization: Bearer <session token>`. It never approves or rejects by itself |
+| GET | `/disputes` | PayPal disputes on captured orders (needs `CHECK_URL`, like the three below) |
+| POST | `/disputes/sync` | ask PayPal for new disputes |
+| GET | `/disputes/{id}/evidence` | the evidence packet and its drafted summary |
+| POST | `/disputes/{id}/redraft`, `/disputes/{id}/submit-evidence` | redraft the summary, file the evidence with PayPal |
 | POST | `/demo/reset` | wipe demo data and reconnect the 3 demo stores |
 
 Event types: `fetch.started`, `fetch.done`, `extract.started`, `extract.done`, `item.checking`, `item.verified`, `item.failed`, `item.repairing`, `store.ready`, `error`. Each carries `store_id`, `item_id` (if any), a one sentence `message`, and `data`.
@@ -299,13 +319,17 @@ Only AG Grid Community is used, so there is no watermark and no license key. Gro
 - Prices are recognised with `$`, `€`, `£` or a trailing `USD`, `EUR`, `GBP`. The demo stores are all USD.
 - The merchant's PayPal account is the sandbox merchant from `.env`. A real version would need merchant onboarding.
 - The live log of a connect run is kept in memory, so the API runs as a single process and the log of a finished run is gone after a restart. The verified result is in the database either way.
-- The hosted demo has no login. Anyone with the link can connect a URL or reset the demo.
+- The hosted demo has no login for most things. Anyone with the link can connect a URL or reset the demo, and with `CHECK_URL` set, file dispute evidence, which the Check service's own dashboard keeps behind a login. The one exception is reviewing an order on hold: the Review button in the Orders grid asks for the merchant password (the Check dashboard's, `DEMO_MERCHANT_PASSWORD`), and the API only makes a review link for a session Check itself accepts. Fine for a sandbox demo, not for real money.
+- Only the shopping agent's orders go through Check. A manual test buy has no human request to check against, so it is paid and captured directly.
+- Check is US dollars only. Its dispute summary and evidence PDF name the store the order was placed at.
 
 ## Credits
 
 The overall shape comes from [ControlAnything](https://github.com/Apolotary/controlanything) (MIT): generated artifacts that are declarative and size-capped, a verify loop that tests against the real target and repairs on failure, the agent's work streaming live next to the thing being connected, and a judge mode that replays labelled fixtures. No code was copied, that project is Node and WebXR and this one is Python and React.
 
-The PayPal client is adapted from the author's own Leash project.
+## History
+
+Check and Defend started as a standalone prototype (codename Leash) on Oct 21 and were merged here with full history. That repo is [Bhavishaahuja/leash](https://github.com/Bhavishaahuja/leash), and `git log` here shows every one of its commits. The Connect service's PayPal client is adapted from it.
 
 ## License
 

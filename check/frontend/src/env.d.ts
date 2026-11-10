@@ -1,0 +1,21 @@
+/// <reference types="vite/client" />
+
+interface ImportMetaEnv {
+  // where the Leash API lives, e.g. http://127.0.0.1:8000 or the Render URL
+  readonly VITE_API_URL?: string
+  // "false" to call the real API, anything else (or unset) uses mock data
+  readonly VITE_USE_MOCKS?: string
+  // AG Grid Enterprise trial key, for row grouping. unset means Enterprise still runs, with a
+  // watermark and a console warning. it ends up in the public JS like any frontend key
+  readonly VITE_AG_GRID_LICENSE_KEY?: string
+  // where the Checkout Anything app (frontend/ at the repo root) is served. it is the one site
+  // allowed to frame the confirm page, the one the page reports a decision to, and where the
+  // header's Connect and Orders links go
+  readonly VITE_CONNECT_URL?: string
+  // where this app is served. only the Checkout Anything app reads it, for its header's Check link
+  readonly VITE_CHECK_URL?: string
+}
+
+interface ImportMeta {
+  readonly env: ImportMetaEnv
+}

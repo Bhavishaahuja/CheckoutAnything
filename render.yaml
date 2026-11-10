@@ -1,6 +1,7 @@
 # Render Blueprint for Checkout Anything. Spec: https://render.com/docs/blueprint-spec
-# Two projects, one repo: Checkout Anything (its own database and three services) and Leash
-# (API and frontend, built from leash/, on the leash-db database that already exists).
+# One product, two backends: the Connect service (its own database and three services) and
+# the Check service (API and frontend, built from check/, on the leash-db database that already
+# exists and keeps its old name).
 
 databases:
   - name: checkout-anything-db
@@ -52,6 +53,18 @@ services:
         value: https://api-m.sandbox.paypal.com
       - key: DEMO_MODE
         value: live
+      # Check. CHECK_URL is the switch: leave it empty and agent orders are paid and captured
+      # here, as before. set it to the check-api service's URL to send them through Check.
+      # the keys are check-api's own (one of its AGENT_API_KEYS, and its MERCHANT_API_KEY)
+      - key: CHECK_URL
+        sync: false
+      - key: CHECK_AGENT_KEY
+        sync: false
+      - key: CHECK_MERCHANT_KEY
+        sync: false
+      # the check-frontend service's URL, for the buyer's confirm page
+      - key: CHECK_FRONTEND_URL
+        sync: false
 
   # the app itself. a static site lives on Render's CDN, so no region or plan
   - type: web
@@ -67,9 +80,11 @@ services:
       # not a secret, it ends up in the public JS anyway
       - key: VITE_API_URL
         sync: false
-      # the leash-api service below, for the Intent review grid on the Orders screen. this
-      # app's own URL also has to be in leash-api's FRONTEND_ORIGINS
-      - key: VITE_LEASH_API_URL
+      # the shared header's links between the two apps: the check-frontend site's URL, and
+      # this site's own
+      - key: VITE_CHECK_URL
+        sync: false
+      - key: VITE_CONNECT_URL
         sync: false
 
   # the three fictional demo stores, plain HTML with no build step
@@ -82,12 +97,12 @@ services:
     buildCommand: echo "nothing to build"
     staticPublishPath: .
 
-  # ---- Leash (leash/, settings copied from leash/render.yaml) ----
+  # ---- Check and Defend (check/, settings copied from check/render.yaml) ----
   #
   # Its Postgres (leash-db, Oregon, paid plan) already exists and isn't declared here.
   # Paste its Internal Database URL into DATABASE_URL in the dashboard.
   - type: web
-    name: leash-api
+    name: check-api
     runtime: python
     # the $7/month instance. paid instances never spin down. this has to match the dashboard,
     # or a Blueprint sync puts the service back on the free plan
@@ -96,8 +111,8 @@ services:
     region: oregon
     branch: main
     autoDeployTrigger: commit
-    # build and start both run from here, so backend.app below is Leash's package, not ours
-    rootDir: leash
+    # build and start both run from here, so backend.app below is the Check service's package
+    rootDir: check
     buildCommand: pip install -r requirements.txt
     # migrations run right before uvicorn starts. if one fails, uvicorn never starts and the
     # deploy fails its health check
@@ -120,6 +135,10 @@ services:
         sync: false
       - key: MERCHANT_API_KEY
         sync: false
+      # the name CHECK_AGENT_KEY has in AGENT_API_KEYS, so the Connect service may say which
+      # store an order was placed at
+      - key: STORE_NAMING_AGENTS
+        sync: false
       - key: DEMO_MERCHANT_PASSWORD
         sync: false
       - key: DEMO_VAULT_ID
@@ -129,26 +148,40 @@ services:
       - key: PAYPAL_BASE_URL
         value: https://api-m.sandbox.paypal.com
 
-  # Leash's dashboard and confirm page
+  # the Check dashboard and the buyer's confirm page
   - type: web
-    name: leash-frontend
+    name: check-frontend
     runtime: static
     branch: main
     autoDeployTrigger: commit
-    rootDir: leash/frontend
+    rootDir: check/frontend
     buildCommand: npm ci && npm run build
     staticPublishPath: dist
     envVars:
-      # the URL of the leash-api service above. set in the dashboard, not here: the service
+      # the URL of the check-api service above. set in the dashboard, not here: the service
       # created from this file gets a new URL, and a value written here would be put back on
       # every Blueprint sync. Vite bakes it in at build time, so changing it needs a rebuild
       - key: VITE_API_URL
         sync: false
       - key: VITE_USE_MOCKS
         value: "false"
+      # the checkout-anything site's URL. the confirm page reports a finished decision to this
+      # origin and no other (the review drawer in the Orders grid listens for it), and the
+      # shared header's Connect and Orders links go there
+      - key: VITE_CONNECT_URL
+        sync: false
+      - key: VITE_CHECK_URL
+        sync: false
       # AG Grid Enterprise trial key. set it in the dashboard, never in git
       - key: VITE_AG_GRID_LICENSE_KEY
         sync: false
+    headers:
+      # who may show this site in an iframe: itself and the checkout-anything site, whose review
+      # drawer frames the confirm page. a static site can't read an env var here, so if the
+      # checkout-anything service has a different URL, change it on this line too
+      - path: /*
+        name: Content-Security-Policy
+        value: frame-ancestors 'self' https://checkout-anything.onrender.com
     routes:
       # single-page app: /dashboard and /confirm/<token> only exist in the browser, so every
       # path that isn't a real file serves index.html

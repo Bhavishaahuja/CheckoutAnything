@@ -139,25 +139,19 @@ button:disabled {
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--warn) 35%, transparent);
 }
 
-/* a field that differs between what was asked for and what was ordered */
+/* a field of the order that Check flagged */
 .ag-cell.cell-mismatch {
   background: var(--bad-soft);
   box-shadow: inset 0 -2px 0 var(--bad);
   font-weight: 600;
 }
 
-/* order rows by state. each also carries an icon and a label in its status cell */
-.ag-row.order-review { box-shadow: inset 3px 0 0 var(--warn); }
-.ag-row.order-captured { box-shadow: inset 3px 0 0 var(--ok); }
-.ag-row.order-voided { box-shadow: inset 3px 0 0 var(--muted-foreground); color: var(--muted-foreground); }
-.ag-row.order-disputed { box-shadow: inset 3px 0 0 var(--bad); background: color-mix(in srgb, var(--bad-soft) 45%, transparent); }
-.ag-row.order-failed { box-shadow: inset 3px 0 0 var(--bad); color: var(--muted-foreground); }
-
 /* column group headers read as section labels */
 .ag-header-group-cell { font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; }
-.ag-header-group-cell.group-mandate { box-shadow: inset 0 -2px 0 var(--primary); }
-.ag-header-group-cell.group-order { box-shadow: inset 0 -2px 0 var(--warn); }
+.ag-header-group-cell.group-order { box-shadow: inset 0 -2px 0 var(--primary); }
+.ag-header-group-cell.group-check { box-shadow: inset 0 -2px 0 var(--warn); }
 .ag-header-group-cell.group-decision { box-shadow: inset 0 -2px 0 var(--ok); }
+.ag-header-group-cell.group-paypal { box-shadow: inset 0 -2px 0 var(--border); }
 
 /* find matches inside cells */
 mark.find-hit {
@@ -178,6 +172,18 @@ mark.find-hit-active {
 /* custom tooltips and popup editors bring their own card */
 .ag-tooltip-custom { z-index: 60; }
 .ag-popup-editor { border-radius: 10px; }
+
+/* Orders grid: a row wears the color of where its money is. All from the theme's variables, so
+   dark mode follows. The Check dashboard uses the same four meanings (check/frontend). */
+.ag-row.row-held { background-color: color-mix(in srgb, var(--warn-soft) 70%, var(--card)); }
+.ag-row.row-captured { background-color: color-mix(in srgb, var(--ok-soft) 60%, var(--card)); }
+.ag-row.row-voided {
+  background-color: var(--muted);
+  color: var(--muted-foreground);
+}
+/* paid directly, never held by Check: the plain card, no tint */
+.ag-row.row-direct { background-color: var(--card); }
+.ag-row.row-clickable { cursor: pointer; }
 
 .spin-slow {
   animation: spin 1.1s linear infinite;

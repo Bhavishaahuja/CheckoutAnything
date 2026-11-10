@@ -13,7 +13,9 @@ copy .env.example .env.local
 npm run dev
 ```
 
-`VITE_API_URL` points at the FastAPI backend (default `http://127.0.0.1:8000`). `VITE_LEASH_API_URL` points at the Leash API (default `http://127.0.0.1:8001`).
+`VITE_API_URL` points at the FastAPI backend (default `http://127.0.0.1:8000`).
+
+`VITE_CHECK_URL` is where the Check app (`check/frontend`) is served (default `http://localhost:5175`). Both apps wear the same header (`src/components/AppHeader.tsx` and `app-header.css`, kept identical in both, CI compares them): Connect and Orders are screens here, Check opens the Check app, and Disputes is a screen here when the API can reach Check. The Check app links back with `VITE_CONNECT_URL`.
 
 No backend running? Set `VITE_USE_MOCK=true` in `.env.local`. The UI then plays scripted connect runs for the three demo stores and shows a "Mock data, no backend" badge. Nothing in mock mode talks to PayPal or Claude.
 
@@ -24,7 +26,7 @@ No backend running? Set `VITE_USE_MOCK=true` in `.env.local`. The UI then plays 
 | Connect | `src/pages/ConnectPage.tsx` | URL input, the pipeline, the live step log (SSE), and the catalog grid that fills row by row |
 | Spec drawer | `src/components/SpecDrawer.tsx` | Click a catalog row: source quote, every check, the spec JSON, version history, extraction notes, a test buy |
 | Agent | `src/pages/AgentPage.tsx` | Chat with the shopping agent, tool calls shown inline, receipt when a payment is captured |
-| Orders | `src/pages/OrdersPage.tsx` | Intent review (Leash orders next to their mandates, decided in the row) and Purchases (everything bought through a connected store) |
+| Orders | `src/pages/OrdersPage.tsx` | All orders, polled every 3 seconds. Orders on hold are pinned on top, and Review opens the confirm page in a drawer |
 
 The header has the Replay mode switch and the Reset demo button (inline confirm).
 
@@ -37,9 +39,8 @@ All 20 features and why each is there are in the root README, under [How we use 
 **Motion in the grids' own UI** (`src/components/grid/motion.tsx`)
 - Counters roll when they change: fields that need a look, rows to publish, find position, pinned orders, fast approvals
 - The amber counter turns into a green check with a bounce at 0, and a blocked publish shakes its reason
-- Status pills, mismatch marks and the Fast approval chip spring in. Approve and Reject press in, and the rubber-stamp strip jolts when another fast approval lands
+- Status chips, flag marks and the Fast approval chip spring in, and the rubber-stamp strip jolts when another fast approval lands
 - Tooltips, the price editor, the columns menu and the overlays scale and rise in. The loading bar springs between steps
-- The Intent review / Purchases switch is one pill that slides (`layoutId`)
 - `MotionConfig reducedMotion="user"` in `main.tsx` turns movement off for anyone whose system asks for less
 
 **Motion + AG Grid** (`src/lib/gridFlash.ts`)

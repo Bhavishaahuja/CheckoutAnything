@@ -7,7 +7,14 @@ from sqlalchemy import delete, select
 
 from backend.app import models, review
 from backend.app.models import ColumnLabel, ItemReview, Order, Store, StoreSpecRow, VerificationRun
-from backend.app.orders import OrderError, order_to_dict, place_order, price_order
+from backend.app.orders import (
+    OrderError,
+    order_to_dict,
+    place_order,
+    place_order_through_check,
+    price_order,
+    refresh_check_orders,
+)
 from backend.app.spec import parse_spec, spec_to_json
 
 
@@ -158,8 +165,11 @@ def get_catalog(session, store):
 
 
 def buy(session, paypal, vault_id, store_id, item_id, variant_id=None, add_on_ids=None,
-        quantity=1, created_by="manual"):
-    # prices from the verified spec and pays. raises OrderError when it can't even be tried
+        quantity=1, created_by="manual", check=None, mandate_for=None):
+    # prices from the verified spec and pays. raises OrderError when it can't even be tried.
+    # with check (a CheckClient) and mandate_for, the priced order goes to Check instead of
+    # being paid here. mandate_for(store) returns the mandate id, and is only called once the
+    # order has been priced, so a request that can't be bought never makes a mandate
     store = get_store(session, store_id)
     if store is None:
         raise OrderError("There is no store " + str(store_id), 404)
@@ -185,20 +195,42 @@ def buy(session, paypal, vault_id, store_id, item_id, variant_id=None, add_on_id
             raise OrderError(quote.line_name + " is out of stock", 409)
         raise OrderError("Only " + str(row.stock) + " of " + quote.line_name + " left", 409)
 
-    order = place_order(session, paypal, vault_id, store, quote, created_by)
+    if check is not None and mandate_for is not None:
+        order = place_order_through_check(
+            session, check, mandate_for, vault_id, store, quote, created_by
+        )
+    else:
+        order = place_order(session, paypal, vault_id, store, quote, created_by)
     if order.status == "captured":
         review.take_stock(session, store.id, item_id, quote.quantity)
     return order_to_dict(order, store.merchant_name), quote
 
 
-def list_orders(session):
+def list_orders(session, check=None):
     names = {}
     for store in session.execute(select(Store)).scalars():
         names[store.id] = store.merchant_name
+    rows = list(session.execute(select(Order).order_by(Order.id.desc())).scalars())
+    # orders held at Check get their newest state first. a no-op without Check
+    refresh_check_orders(session, check, rows)
+    # newest first, including a fix's replacement order that the refresh just made a row for
+    rows.sort(key=lambda order: -order.id)
+    # Check's order id to ours, to link a fixed order and its replacement by the ids the grid has
+    ours = {}
+    for order in rows:
+        if order.check_order_id is not None:
+            ours[order.check_order_id] = order.id
     orders = []
-    for order in session.execute(select(Order).order_by(Order.id.desc())).scalars():
-        orders.append(order_to_dict(order, names.get(order.store_id)))
+    for order in rows:
+        listed = order_to_dict(order, names.get(order.store_id))
+        listed["replaced_by_order_id"] = ours.get(order.check_replaced_by_id)
+        listed["replaces_order_id"] = ours.get(order.check_replaces_id)
+        orders.append(listed)
     return orders
+
+
+def get_order(session, order_id):
+    return session.get(Order, order_id)
 
 
 def wipe_everything(session):

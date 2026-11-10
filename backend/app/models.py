@@ -81,13 +81,36 @@ class Order(Base):
     currency: Mapped[str] = mapped_column(String(3), default="USD")
     paypal_order_id: Mapped[str | None] = mapped_column(String(40), nullable=True)
     capture_id: Mapped[str | None] = mapped_column(String(40), nullable=True)
-    # captured or failed
+    # paid here: captured or failed. sent through Check: Check's own status, which is
+    # authorized (on hold), captured, voided or failed
     status: Mapped[str] = mapped_column(String(20))
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     # "agent" or "manual"
     created_by: Mapped[str] = mapped_column(String(20), default="manual")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
+    # everything below is only set on an order that went through Check (CHECK_URL).
+    # CHECK_COLUMNS in db.py adds these to an orders table made before they existed
+    check_order_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    check_mandate_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # needs_review, auto_approved, approved or rejected
+    review_state: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    # match, mismatch or unsure
+    check_verdict: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    # the one line Check wrote for the human
+    check_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # which fields Check flagged, comma separated: "size" or "price,merchant". the grid turns
+    # these into the short reason on the chip, "Held: wrong size"
+    check_fields: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    # how long the human took to decide, on Check's clock. None when nobody had to
+    decision_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # what the human tapped on the confirm page: approve, reject or accept_fix
+    review_action: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    # accept_fix voids the order and Check places the suggested one instead. these are Check's
+    # ids for the two ends of that: on the voided order, the one that replaced it. on the
+    # replacement, the one it replaced
+    check_replaced_by_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    check_replaces_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
 class ItemReview(Base):
     # what the merchant decided about one item, kept apart from the spec (which only Claude and
