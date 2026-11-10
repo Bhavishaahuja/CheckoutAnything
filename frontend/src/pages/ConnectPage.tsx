@@ -1,454 +1,317 @@
-import type { ColDef, GetRowIdParams, GridApi, RowClickedEvent } from 'ag-grid-community'
-import { AgGridReact } from 'ag-grid-react'
-import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
-import { connectStore, eventsUrl, getSpec, getStores } from '../api'
-import { CheckCell, MonoCell, StatusCell } from '../components/cells'
-import SpecDrawer from '../components/SpecDrawer'
-import { gridTheme } from '../gridTheme'
-import { rowFromItem, rowsFromSpec } from '../rows'
-import type { AppConfig, CatalogRow, Mode, RunEvent, SpecItem, Store, StoreSpec } from '../types'
+// Screen 1: paste a URL, watch the store become agent-ready.
 
-// every event type the API streams. EventSource needs a listener per named event
-const EVENT_TYPES = [
-  'fetch.started', 'fetch.done', 'extract.started', 'extract.done', 'item.checking',
-  'item.verified', 'item.failed', 'item.repairing', 'store.ready', 'error',
-]
+import { ArrowRight, ExternalLink, Link2, Store as StoreIcon } from "lucide-react"
+import { AnimatePresence } from "motion/react"
+import { useState, type FormEvent } from "react"
 
-// how long a row keeps its flash class. matches the row-flash animation in index.css
-const FLASH_MS = 1800
+import { Card, ErrorNote, Pill, StoreStatusPill } from "@/components/bits"
+import { CatalogGrid } from "@/components/CatalogGrid"
+import { AnimatedShinyText } from "@/components/magicui/animated-shiny-text"
+import { AuroraText } from "@/components/magicui/aurora-text"
+import { BlurFade } from "@/components/magicui/blur-fade"
+import { BorderBeam } from "@/components/magicui/border-beam"
+import { DotPattern } from "@/components/magicui/dot-pattern"
+import { NumberTicker } from "@/components/magicui/number-ticker"
+import { ShimmerButton } from "@/components/magicui/shimmer-button"
+import { PipelineBeam } from "@/components/PipelineBeam"
+import { SpecDrawer } from "@/components/SpecDrawer"
+import { StepLog } from "@/components/StepLog"
+import { api } from "@/lib/api"
+import { hostAndPath } from "@/lib/format"
+import { useRun } from "@/lib/run"
+import type { AppConfig, Mode, Store } from "@/lib/types"
+import { cn } from "@/lib/utils"
 
-function iconFor(event: RunEvent): { icon: string; tone: string } {
-  if (event.type === 'error') return { icon: '✗', tone: 'bad' }
-  if (event.type === 'item.failed') return { icon: '✗', tone: 'bad' }
-  if (event.type === 'item.verified') return { icon: '✓', tone: 'good' }
-  if (event.type === 'store.ready') {
-    return event.data.status === 'live' ? { icon: '✓', tone: 'good' } : { icon: '✗', tone: 'bad' }
-  }
-  if (event.type.endsWith('.done')) return { icon: '✓', tone: 'good' }
-  return { icon: '⟳', tone: 'busy' }
+function prettyName(url: string) {
+  // "https://x/hollowbrook-bakery/" -> "Hollowbrook Bakery"
+  const parts = url.replace(/\/$/, "").split("/")
+  const slug = parts[parts.length - 1] || url
+  return slug
+    .split("-")
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(" ")
 }
 
-const COLUMNS: ColDef<CatalogRow>[] = [
-  { field: 'name', headerName: 'Item', flex: 2, minWidth: 140 },
-  {
-    headerName: 'Options',
-    width: 100,
-    valueGetter: (params) => {
-      const row = params.data
-      if (!row) return ''
-      const parts: string[] = []
-      if (row.variantCount > 0) parts.push(row.variantCount + (row.variantCount === 1 ? ' variant' : ' variants'))
-      if (row.addOnCount > 0) parts.push(row.addOnCount + (row.addOnCount === 1 ? ' add-on' : ' add-ons'))
-      return parts.join(', ')
-    },
-  },
-  {
-    field: 'price',
-    headerName: 'Price',
-    width: 96,
-    type: 'rightAligned',
-    // a number for sorting, the exact string for display
-    comparator: (a: string, b: string) => Number(a) - Number(b),
-    valueFormatter: (params) => (params.data ? params.value + ' ' + params.data.currency : ''),
-    cellClass: 'mono',
-    enableCellChangeFlash: true,
-  },
-  { field: 'pageCheck', headerName: 'Page check', width: 118, cellRenderer: CheckCell },
-  { field: 'paypalCheck', headerName: 'PayPal check', width: 130, cellRenderer: CheckCell },
-  { field: 'repairs', headerName: 'Repairs', width: 92, type: 'rightAligned' },
-  { field: 'paypalOrderId', headerName: 'PayPal order id', flex: 1, minWidth: 140, cellRenderer: MonoCell },
-  { field: 'status', headerName: 'Status', width: 125, cellRenderer: StatusCell },
-]
+function Counter({ value, label, tone }: { value: number; label: string; tone: string }) {
+  return (
+    <div className="flex items-baseline gap-1.5">
+      <span className={cn("text-xl font-semibold tabular-nums", tone)}>
+        {value === 0 ? "0" : <NumberTicker value={value} className={tone} />}
+      </span>
+      <span className="text-xs text-muted-foreground">{label}</span>
+    </div>
+  )
+}
 
-const DEFAULT_COLUMN: ColDef = { sortable: true, resizable: true, suppressMovable: true }
-
-interface Props {
-  mode: Mode
+export function ConnectPage({
+  config,
+  mode,
+  stores,
+  activeStoreId,
+  onPickStore,
+  onStoresChanged,
+  onOrdersChanged,
+  onGoToAgent,
+}: {
   config: AppConfig | null
-}
-
-export default function ConnectPage({ mode, config }: Props) {
-  const [url, setUrl] = useState('')
-  const [busy, setBusy] = useState(false)
+  mode: Mode
+  stores: Store[]
+  activeStoreId: number | null
+  onPickStore: (storeId: number | null) => void
+  onStoresChanged: () => void
+  onOrdersChanged: () => void
+  onGoToAgent: () => void
+}) {
+  const [url, setUrl] = useState("")
+  const [starting, setStarting] = useState(false)
   const [formError, setFormError] = useState<string | null>(null)
-  const [stores, setStores] = useState<Store[]>([])
-  const [storeId, setStoreId] = useState<number | null>(null)
-  const [log, setLog] = useState<RunEvent[]>([])
-  const [spec, setSpec] = useState<StoreSpec | null>(null)
-  const [openItem, setOpenItem] = useState<string | null>(null)
-  // goes up whenever the run moves on, the open drawer reloads on it
-  const [progress, setProgress] = useState(0)
+  const [openItemId, setOpenItemId] = useState<string | null>(null)
 
-  const gridApi = useRef<GridApi<CatalogRow> | null>(null)
-  // the rows as we know them. the grid is fed from here through transactions
-  const rows = useRef<Map<string, CatalogRow>>(new Map())
-  const source = useRef<EventSource | null>(null)
-  const flashTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map())
-  const logEnd = useRef<HTMLDivElement | null>(null)
+  const run = useRun(activeStoreId, onStoresChanged)
+  const connecting = run.status === "connecting"
+  const repairing = run.rows.some((row) => row.status === "repairing")
+  const openRow = openItemId ? run.rows.find((row) => row.item_id === openItemId) || null : null
+  const hasRun = activeStoreId !== null
 
-  const refreshStores = useCallback(() => {
-    getStores()
-      .then(setStores)
-      .catch(() => {
-        // the banner at the top already says when the API can't be reached
-      })
-  }, [])
-
-  // ---- rows ----
-
-  const replaceRows = useCallback((next: CatalogRow[]) => {
-    rows.current = new Map(next.map((row) => [row.id, row]))
-    gridApi.current?.setGridOption('rowData', next)
-  }, [])
-
-  // change one row with a transaction, so only that row redraws
-  const patchRow = useCallback((id: string, change: Partial<CatalogRow>) => {
-    const current = rows.current.get(id)
-    if (!current) return
-    const next = { ...current, ...change }
-    rows.current.set(id, next)
-    gridApi.current?.applyTransaction({ update: [next] })
-  }, [])
-
-  const flashRow = useCallback(
-    (id: string, flash: 'ok' | 'fail') => {
-      patchRow(id, { flash })
-      const waiting = flashTimers.current.get(id)
-      if (waiting) clearTimeout(waiting)
-      flashTimers.current.set(
-        id,
-        setTimeout(() => patchRow(id, { flash: null }), FLASH_MS),
-      )
-    },
-    [patchRow],
-  )
-
-  const applyItem = useCallback(
-    (item: SpecItem | undefined) => {
-      // a repair can change the name, price and options
-      if (!item) return
-      patchRow(item.id, {
-        name: item.name,
-        price: item.unit_price,
-        variantCount: item.variants.length,
-        addOnCount: item.add_ons.length,
-      })
-    },
-    [patchRow],
-  )
-
-  // ---- events ----
-
-  const closeStream = useCallback(() => {
-    source.current?.close()
-    source.current = null
-  }, [])
-
-  const onEvent = useCallback(
-    (event: RunEvent) => {
-      setLog((before) => {
-        // a reconnect can replay events we already have
-        if (before.some((one) => one.seq === event.seq)) return before
-        return [...before, event]
-      })
-
-      const id = event.item_id
-      const data = event.data
-
-      if (event.type === 'extract.done') {
-        const loaded = data.spec as StoreSpec
-        setSpec(loaded)
-        replaceRows(loaded.items.map((item) => rowFromItem(item, loaded.merchant.currency)))
-      } else if (event.type === 'item.checking' && id) {
-        applyItem(data.item)
-        patchRow(id, { status: 'checking', pageCheck: 'pending', paypalCheck: 'pending', reason: null })
-      } else if (event.type === 'item.verified' && id) {
-        applyItem(data.item)
-        patchRow(id, {
-          status: 'verified',
-          pageCheck: 'ok',
-          paypalCheck: 'ok',
-          paypalOrderId: data.paypal_order_id,
-          reason: null,
-        })
-        flashRow(id, 'ok')
-      } else if (event.type === 'item.failed' && id) {
-        const change: Partial<CatalogRow> = { reason: data.reason ?? null }
-        if (data.page_check_ok !== undefined) {
-          change.pageCheck = data.page_check_ok ? 'ok' : 'fail'
-          if (data.paypal_check_ok === null) change.paypalCheck = 'skipped'
-          else change.paypalCheck = data.paypal_check_ok ? 'ok' : 'fail'
-        }
-        if (data.paypal_order_id) change.paypalOrderId = data.paypal_order_id
-        if (data.unavailable) change.status = 'unavailable'
-        else change.status = 'failed'
-        patchRow(id, change)
-        flashRow(id, 'fail')
-      } else if (event.type === 'item.repairing' && id) {
-        patchRow(id, { status: 'repairing', repairs: data.attempt })
-      } else if (event.type === 'store.ready' || event.type === 'error') {
-        if (data.spec) setSpec(data.spec as StoreSpec)
-        closeStream()
-        refreshStores()
-      }
-      setProgress((count) => count + 1)
-    },
-    [applyItem, closeStream, flashRow, patchRow, refreshStores, replaceRows],
-  )
-
-  const openStream = useCallback(
-    (id: number) => {
-      closeStream()
-      const stream = new EventSource(eventsUrl(id))
-      source.current = stream
-      const handle = (message: MessageEvent) => onEvent(JSON.parse(message.data) as RunEvent)
-      for (const type of EVENT_TYPES) {
-        // "error" is also what EventSource calls a dropped connection, which has no data
-        stream.addEventListener(type, (message) => {
-          if ((message as MessageEvent).data) handle(message as MessageEvent)
-        })
-      }
-      stream.onerror = () => {
-        // a finished run with no live log left answers 410. don't keep retrying that
-        if (stream.readyState === EventSource.CLOSED || source.current !== stream) return
-        stream.close()
-        if (source.current === stream) source.current = null
-      }
-    },
-    [closeStream, onEvent],
-  )
-
-  // ---- picking a store ----
-
-  const showStore = useCallback(
-    async (id: number) => {
-      closeStream()
-      setStoreId(id)
-      setLog([])
-      setSpec(null)
-      setOpenItem(null)
-      replaceRows([])
-      try {
-        // what the database has, in case the live log is gone
-        const loaded = await getSpec(id)
-        if (loaded.spec) {
-          setSpec(loaded.spec)
-          replaceRows(rowsFromSpec(loaded.spec, loaded.runs))
-        }
-      } catch {
-        // a store that failed before it had a spec. the log below will say why
-      }
-      // then the log, which replays the run from the start if the API still has it
-      openStream(id)
-    },
-    [closeStream, openStream, replaceRows],
-  )
-
-  useEffect(() => {
-    // first load: show the newest store, if there is one
-    let cancelled = false
-    getStores()
-      .then((loaded) => {
-        if (cancelled) return
-        setStores(loaded)
-        if (loaded.length > 0) void showStore(loaded[loaded.length - 1].id)
-      })
-      .catch(() => {})
-    const timers = flashTimers.current
-    return () => {
-      cancelled = true
-      closeStream()
-      for (const timer of timers.values()) clearTimeout(timer)
+  const connect = async (target: string) => {
+    const cleaned = target.trim()
+    if (!cleaned) {
+      setFormError("Paste a store URL first")
+      return
     }
-    // once on mount
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+    setStarting(true)
+    setFormError(null)
+    setOpenItemId(null)
+    try {
+      const started = await api.connectStore(cleaned, mode)
+      onPickStore(started.store_id)
+      onStoresChanged()
+    } catch (problem) {
+      setFormError(problem instanceof Error ? problem.message : "Couldn't start connecting")
+    } finally {
+      setStarting(false)
+    }
+  }
 
-  // keep the store chips fresh while anything is still connecting
-  const anyConnecting = stores.some((store) => store.status === 'connecting')
-  useEffect(() => {
-    if (!anyConnecting) return
-    const timer = setInterval(refreshStores, 2000)
-    return () => clearInterval(timer)
-  }, [anyConnecting, refreshStores])
+  const onSubmit = (event: FormEvent) => {
+    event.preventDefault()
+    void connect(url)
+  }
 
-  useEffect(() => {
-    logEnd.current?.scrollIntoView({ block: 'nearest' })
-  }, [log.length])
-
-  const onSubmit = useCallback(
-    async (event: FormEvent) => {
-      event.preventDefault()
-      const trimmed = url.trim()
-      if (!trimmed) return
-      setBusy(true)
-      setFormError(null)
-      try {
-        const started = await connectStore(trimmed, mode)
-        refreshStores()
-        await showStore(started.store_id)
-      } catch (error) {
-        setFormError((error as Error).message)
-      } finally {
-        setBusy(false)
-      }
-    },
-    [mode, refreshStores, showStore, url],
-  )
-
-  const getRowId = useCallback((params: GetRowIdParams<CatalogRow>) => params.data.id, [])
-  const onRowClicked = useCallback((event: RowClickedEvent<CatalogRow>) => {
-    if (event.data) setOpenItem(event.data.id)
-  }, [])
-  const rowClassRules = useMemo(
-    () => ({
-      'row--flash-ok': (params: { data?: CatalogRow }) => params.data?.flash === 'ok',
-      'row--flash-fail': (params: { data?: CatalogRow }) => params.data?.flash === 'fail',
-      'row--unavailable': (params: { data?: CatalogRow }) => params.data?.status === 'unavailable',
-    }),
-    [],
-  )
-
-  const current = stores.find((store) => store.id === storeId) ?? null
-  const fromFixture = log.some((event) => event.data.fixture === true) || current?.mode === 'replay'
-  const demoUrls = config?.demo_store_urls ?? []
+  const activeStore = stores.find((store) => store.id === activeStoreId) || null
+  const sourceUrl = run.detail?.store.source_url || activeStore?.source_url || ""
+  const isFixture = (run.detail?.store.mode || activeStore?.mode) === "replay"
 
   return (
-    <div className="connect">
-      <section className="hero">
-        <h1>Make any store agent-ready from just a URL</h1>
-        <p className="hero__sub">
-          Paste a store page. Claude reads it and writes a store spec, then fixed code checks
-          every item against the page and against PayPal with a real sandbox order.
-        </p>
-        <form className="urlform" onSubmit={onSubmit}>
-          <input
-            className="input"
-            type="url"
-            inputMode="url"
-            placeholder="https://your-store.example/menu"
-            value={url}
-            onChange={(event) => setUrl(event.target.value)}
-            aria-label="Store URL"
-            required
-          />
-          <button className="button button--primary" type="submit" disabled={busy}>
-            {busy ? 'Starting...' : 'Make it agent-ready'}
-          </button>
-        </form>
-        {demoUrls.length > 0 && (
-          <div className="tryrow">
-            <span className="faint">Try a demo store:</span>
-            {demoUrls.map((demoUrl) => (
-              <button key={demoUrl} className="linkbutton" onClick={() => setUrl(demoUrl)}>
-                {demoUrl.replace(/\/$/, '').split('/').pop()}
+    <div className="relative">
+      {/* hero */}
+      <section className={cn("relative overflow-hidden border-b border-border", hasRun ? "py-6" : "py-12 sm:py-16")}>
+        <DotPattern
+          width={22}
+          height={22}
+          cr={1}
+          className="text-muted-foreground/25 [mask-image:radial-gradient(520px_circle_at_center,white,transparent)]"
+        />
+        <div className="relative mx-auto flex max-w-3xl flex-col items-center px-4 text-center">
+          {!hasRun && (
+            <BlurFade delay={0.05}>
+              <div className="mb-5 inline-flex rounded-full border border-border bg-card/80 px-3.5 py-1 text-[13px]">
+                <AnimatedShinyText>PayPal sandbox + Claude. No integration needed on the store.</AnimatedShinyText>
+              </div>
+              <h1 className="text-4xl font-semibold tracking-tight text-balance sm:text-5xl">
+                Make <AuroraText colors={["#1d3fd0", "#12805c", "#3b82f6", "#0ea5a4"]}>any store</AuroraText>{" "}
+                agent-ready, from just a URL
+              </h1>
+              <p className="mx-auto mt-4 max-w-xl text-base text-pretty text-muted-foreground">
+                Claude reads the page and writes a store spec. Fixed code checks every price against the page and a
+                real PayPal sandbox order. Then any AI shopping agent can buy from it.
+              </p>
+            </BlurFade>
+          )}
+
+          <form onSubmit={onSubmit} className={cn("w-full", !hasRun && "mt-8")}>
+            <div className="relative flex flex-col gap-2 rounded-2xl border border-border bg-card p-2 shadow-sm sm:flex-row sm:items-center">
+              <label className="flex min-w-0 flex-1 items-center gap-2.5 px-3">
+                <Link2 className="size-4 shrink-0 text-muted-foreground" />
+                <span className="sr-only">Store URL</span>
+                <input
+                  type="url"
+                  inputMode="url"
+                  value={url}
+                  onChange={(event) => setUrl(event.target.value)}
+                  placeholder="https://your-store.example/shop"
+                  className="h-11 w-full min-w-0 bg-transparent text-[15px] outline-none placeholder:text-muted-foreground/70"
+                  autoComplete="off"
+                  spellCheck={false}
+                />
+              </label>
+              <ShimmerButton
+                type="submit"
+                disabled={starting || connecting}
+                background="var(--primary)"
+                shimmerColor="#ffffff"
+                borderRadius="12px"
+                className="h-11 shrink-0 px-5 text-sm font-medium text-primary-foreground disabled:opacity-60 dark:text-primary-foreground"
+              >
+                <span className="flex items-center gap-2">
+                  {connecting ? "Connecting" : "Make it agent-ready"} <ArrowRight className="size-4" />
+                </span>
+              </ShimmerButton>
+              {connecting && <BorderBeam size={90} duration={5} colorFrom="var(--primary)" colorTo="var(--ok)" />}
+            </div>
+          </form>
+
+          {formError && (
+            <div className="mt-3 w-full text-left">
+              <ErrorNote>{formError}</ErrorNote>
+            </div>
+          )}
+
+          {config && config.demo_store_urls.length > 0 && (
+            <div className="mt-4 flex flex-wrap items-center justify-center gap-2 text-[13px]">
+              <span className="text-muted-foreground">Try a demo store:</span>
+              {config.demo_store_urls.map((demoUrl) => (
+                <button
+                  key={demoUrl}
+                  type="button"
+                  disabled={starting || connecting}
+                  onClick={() => {
+                    setUrl(demoUrl)
+                    void connect(demoUrl)
+                  }}
+                  className="h-8 rounded-full border border-border bg-card px-3 transition-colors hover:border-primary hover:text-primary disabled:opacity-50"
+                >
+                  {prettyName(demoUrl)}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      </section>
+
+      <div className="mx-auto flex max-w-[1400px] flex-col gap-5 px-4 py-6">
+        {/* the path a store takes */}
+        <Card className="px-4 py-5 sm:px-10">
+          <PipelineBeam stage={run.stage} repairing={repairing} />
+        </Card>
+
+        {/* stores connected so far */}
+        {stores.length > 0 && (
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="mr-1 text-xs font-medium tracking-wide text-muted-foreground uppercase">Stores</span>
+            {stores.map((store) => (
+              <button
+                key={store.id}
+                type="button"
+                onClick={() => {
+                  setOpenItemId(null)
+                  onPickStore(store.id)
+                }}
+                className={cn(
+                  "flex h-9 items-center gap-2 rounded-lg border px-3 text-[13px] transition-colors",
+                  store.id === activeStoreId ? "border-primary bg-info-soft" : "border-border bg-card hover:bg-muted"
+                )}
+              >
+                <span
+                  className={cn(
+                    "size-2 rounded-full",
+                    store.status === "live" && "bg-ok",
+                    store.status === "failed" && "bg-bad",
+                    store.status === "connecting" && "animate-pulse bg-primary"
+                  )}
+                />
+                <span className="font-medium">{store.merchant_name || prettyName(store.source_url)}</span>
+                <span className="text-xs text-muted-foreground tabular-nums">
+                  {store.status === "connecting" ? "connecting" : store.counts.verified + " verified"}
+                </span>
               </button>
             ))}
           </div>
         )}
-        {formError && <div className="banner banner--bad banner--inline">{formError}</div>}
-      </section>
 
-      {stores.length > 0 && (
-        <div className="storechips" role="tablist" aria-label="Connected stores">
-          {stores.map((store) => (
-            <button
-              key={store.id}
-              role="tab"
-              aria-selected={store.id === storeId}
-              className={'storechip' + (store.id === storeId ? ' storechip--active' : '')}
-              onClick={() => void showStore(store.id)}
-              title={store.source_url}
-            >
-              <span className={'dot dot--' + store.status} aria-hidden="true" />
-              {store.merchant_name || 'Store ' + store.id}
-              <span className="storechip__count">
-                {store.status === 'connecting' ? 'connecting' : store.counts.verified + ' verified'}
-              </span>
-            </button>
-          ))}
-        </div>
-      )}
-
-      <div className="workspace">
-        <section className="panel panel--log" aria-label="Live steps">
-          <div className="panel__head">
-            <h2>Live steps</h2>
-            {fromFixture && <span className="fixture">FIXTURE</span>}
-          </div>
-          <div className="log">
-            {log.length === 0 && (
-              <p className="faint log__empty">
-                {storeId === null
-                  ? 'Each step of the connect run shows up here as it happens.'
-                  : 'No live log for this store. The grid shows what was saved.'}
-              </p>
-            )}
-            {log.map((event) => {
-              const { icon, tone } = iconFor(event)
-              return (
-                <div key={event.seq} className={'logline logline--' + tone}>
-                  <span className="logline__icon" aria-hidden="true">{icon}</span>
-                  <span>{event.message}</span>
-                </div>
-              )
-            })}
-            <div ref={logEnd} />
-          </div>
-        </section>
-
-        <section className="panel panel--grid" aria-label="Catalog">
-          <div className="panel__head">
-            <h2>{spec ? spec.merchant.name : 'Catalog'}</h2>
-            {spec && (
-              <span className="faint">
-                {spec.shipping.type === 'flat'
-                  ? 'Flat shipping ' + spec.shipping.amount + ' ' + spec.merchant.currency
-                  : 'No shipping fee'}
-                {' · click a row for its spec'}
-              </span>
-            )}
-          </div>
-          <div className="grid-wrap">
-            <AgGridReact<CatalogRow>
-              theme={gridTheme}
-              columnDefs={COLUMNS}
-              defaultColDef={DEFAULT_COLUMN}
-              // no rowData prop: the rows only ever go in through the grid api (see replaceRows
-              // and patchRow), a prop here would overwrite them on every render
-              getRowId={getRowId}
-              rowClassRules={rowClassRules}
-              onRowClicked={onRowClicked}
-              onGridReady={(event) => {
-                gridApi.current = event.api
-                event.api.setGridOption('rowData', Array.from(rows.current.values()))
-              }}
-              animateRows
-              suppressCellFocus
-              overlayNoRowsTemplate="Paste a store URL above. The catalog fills in here, one verified row at a time."
-            />
-          </div>
-          {spec && spec.extraction_notes.length > 0 && (
-            <div className="notesbox">
-              <h3>Claude's extraction notes</h3>
-              <ul className="notes">
-                {spec.extraction_notes.map((note, index) => (
-                  <li key={index}>{note}</li>
-                ))}
-              </ul>
+        {/* log + catalog */}
+        <div className="grid gap-5 lg:grid-cols-[340px_minmax(0,1fr)]">
+          <Card className="flex h-[300px] flex-col overflow-hidden lg:h-[560px]">
+            <div className="flex h-12 shrink-0 items-center justify-between border-b border-border px-4">
+              <h2 className="text-sm font-semibold">Live steps</h2>
+              {run.events.length > 0 && <span className="text-xs text-muted-foreground tabular-nums">{run.events.length} events</span>}
             </div>
-          )}
-        </section>
+            <div className="min-h-0 flex-1">
+              <StepLog events={run.events} running={connecting} selectedItemId={openItemId} onPickItem={setOpenItemId} />
+            </div>
+          </Card>
+
+          <Card className="flex h-[560px] flex-col overflow-hidden">
+            <div className="flex min-h-12 shrink-0 flex-wrap items-center justify-between gap-x-6 gap-y-2 border-b border-border px-4 py-2">
+              <div className="flex min-w-0 items-center gap-2.5">
+                <StoreIcon className="size-4 shrink-0 text-muted-foreground" />
+                <h2 className="truncate text-sm font-semibold">{run.merchantName || (connecting ? "Reading the store" : sourceUrl ? prettyName(sourceUrl) : "Catalog")}</h2>
+                <StoreStatusPill status={run.status} />
+                {isFixture && (
+                  <Pill tone="warn" className="font-mono tracking-wider">
+                    FIXTURE
+                  </Pill>
+                )}
+                {sourceUrl && (
+                  <a
+                    href={sourceUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="hidden min-w-0 items-center gap-1 truncate text-xs text-muted-foreground hover:text-foreground md:flex"
+                  >
+                    <span className="truncate">{hostAndPath(sourceUrl)}</span>
+                    <ExternalLink className="size-3 shrink-0" />
+                  </a>
+                )}
+              </div>
+              <div className="flex items-center gap-5">
+                <Counter value={run.counts.verified} label="verified" tone="text-ok" />
+                <Counter value={run.counts.failed} label="failed" tone="text-bad" />
+                <Counter value={run.counts.unavailable} label="not for sale" tone="text-muted-foreground" />
+              </div>
+            </div>
+
+            {run.error && (
+              <div className="px-4 pt-3">
+                <ErrorNote>{run.error}</ErrorNote>
+              </div>
+            )}
+
+            <div className="min-h-0 flex-1">
+              <CatalogGrid rows={run.rows} selectedItemId={openItemId} onPickItem={setOpenItemId} />
+            </div>
+
+            {run.status === "live" && (
+              <div className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-t border-border bg-ok-soft/50 px-4 py-2.5 text-[13px]">
+                <span>
+                  <span className="font-medium">{run.merchantName} is live.</span>{" "}
+                  <span className="text-muted-foreground">
+                    A shopping agent can buy its {run.counts.verified} verified {run.counts.verified === 1 ? "item" : "items"} through
+                    PayPal right now.
+                  </span>
+                </span>
+                <button type="button" onClick={onGoToAgent} className="flex items-center gap-1 font-medium text-primary hover:underline">
+                  Send an agent shopping <ArrowRight className="size-3.5" />
+                </button>
+              </div>
+            )}
+            {connecting && <BorderBeam size={140} duration={7} colorFrom="var(--primary)" colorTo="var(--ok)" />}
+          </Card>
+        </div>
       </div>
 
-      {storeId !== null && openItem && (
-        <SpecDrawer
-          storeId={storeId}
-          itemId={openItem}
-          refreshKey={progress}
-          onClose={() => setOpenItem(null)}
-        />
-      )}
+      <AnimatePresence>
+        {openRow && activeStoreId !== null && (
+          <SpecDrawer
+            key="drawer"
+            row={openRow}
+            detail={run.detail}
+            storeId={activeStoreId}
+            onClose={() => setOpenItemId(null)}
+            onBought={onOrdersChanged}
+          />
+        )}
+      </AnimatePresence>
     </div>
   )
 }

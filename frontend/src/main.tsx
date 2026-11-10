@@ -1,14 +1,11 @@
-import { AllCommunityModule, ModuleRegistry } from 'ag-grid-community'
-import { StrictMode } from 'react'
-import { createRoot } from 'react-dom/client'
-import App from './App'
-import './index.css'
+import { StrictMode } from "react"
+import { createRoot } from "react-dom/client"
 
-// AG Grid Community only. Nothing here needs an Enterprise licence
-ModuleRegistry.registerModules([AllCommunityModule])
+import "./index.css"
+import App from "./App.tsx"
 
-createRoot(document.getElementById('root')!).render(
+createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <App />
-  </StrictMode>,
+  </StrictMode>
 )
