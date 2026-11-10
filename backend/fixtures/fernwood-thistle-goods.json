@@ -1,0 +1,102 @@
+{
+  "label": "FIXTURE",
+  "slug": "fernwood-thistle-goods",
+  "recorded_at": "2026-11-10T23:41:20Z",
+  "recorded_from": "http://localhost:5174/fernwood-thistle-goods/",
+  "page": {
+    "title": "Fernwood & Thistle Goods",
+    "text": "Fernwood & Thistle Goods\nUseful things for home and trail, made in small batches.\nWaxed Canvas Tote\nHeavy olive canvas with leather handles. Carries a week of groceries.\nWaxed Canvas Tote: $48\nEnamel Camp Mug\nSpeckled enamel over steel, 12 oz. Fine on a camp stove.\nEnamel Camp Mug: $14\nBeeswax Pillar Candle\nHand poured, burns for about 40 hours.\nBeeswax Pillar Candle: $18\nLinen Tea Towels\nSet of two, stonewashed, in sage.\nLinen Tea Towels, set of 2: $22\nWool Camp Blanket\nUndyed wool with a rust stripe. Pick a size.\nWool Camp Blanket, Small: $85\nWool Camp Blanket, Medium: $120\nWool Camp Blanket, Large: $160\nBrass Key Hook\nSolid brass, comes with two screws.\nBrass Key Hook: $12\nShipping is a flat $6 per order, anywhere in the US.\nTo order, email us what you'd like and we'll send an invoice. This is a fictional store made for a demo."
+  },
+  "spec": {
+    "spec_version": 1,
+    "source_url": "http://localhost:5174/fernwood-thistle-goods/",
+    "merchant": {
+      "name": "Fernwood & Thistle Goods",
+      "currency": "USD"
+    },
+    "items": [
+      {
+        "id": "waxed-canvas-tote",
+        "name": "Waxed Canvas Tote",
+        "description": "Heavy olive canvas with leather handles.",
+        "unit_price": "48.00",
+        "available": true,
+        "variants": [],
+        "add_ons": [],
+        "source_quote": "Waxed Canvas Tote: $48"
+      },
+      {
+        "id": "enamel-camp-mug",
+        "name": "Enamel Camp Mug",
+        "description": "Speckled enamel over steel, 12 oz.",
+        "unit_price": "14.00",
+        "available": true,
+        "variants": [],
+        "add_ons": [],
+        "source_quote": "Enamel Camp Mug: $14"
+      },
+      {
+        "id": "beeswax-pillar-candle",
+        "name": "Beeswax Pillar Candle",
+        "description": "Hand poured, burns for about 40 hours.",
+        "unit_price": "18.00",
+        "available": true,
+        "variants": [],
+        "add_ons": [],
+        "source_quote": "Beeswax Pillar Candle: $18"
+      },
+      {
+        "id": "linen-tea-towels",
+        "name": "Linen Tea Towels, set of 2",
+        "description": "Set of two, stonewashed, in sage.",
+        "unit_price": "22.00",
+        "available": true,
+        "variants": [],
+        "add_ons": [],
+        "source_quote": "Linen Tea Towels, set of 2: $22"
+      },
+      {
+        "id": "wool-camp-blanket",
+        "name": "Wool Camp Blanket",
+        "description": "Undyed wool with a rust stripe.",
+        "unit_price": "85.00",
+        "available": true,
+        "variants": [
+          {
+            "id": "medium",
+            "label": "Medium",
+            "unit_price": "120.00"
+          },
+          {
+            "id": "large",
+            "label": "Large",
+            "unit_price": "160.00"
+          }
+        ],
+        "add_ons": [],
+        "source_quote": "Wool Camp Blanket, Small: $85"
+      },
+      {
+        "id": "brass-key-hook",
+        "name": "Brass Key Hook",
+        "description": "Solid brass, comes with two screws.",
+        "unit_price": "12.00",
+        "available": true,
+        "variants": [],
+        "add_ons": [],
+        "source_quote": "Brass Key Hook: $12"
+      }
+    ],
+    "shipping": {
+      "type": "flat",
+      "amount": "6.00",
+      "notes": "Flat $6 per order, anywhere in the US."
+    },
+    "extraction_notes": [
+      "Wool Camp Blanket has three sizes; Small ($85) is the base price and Medium and Large are variants.",
+      "Shipping is a flat $6 per order per the page.",
+      "Currency assumed USD from the $ sign."
+    ]
+  },
+  "repairs": []
+}
