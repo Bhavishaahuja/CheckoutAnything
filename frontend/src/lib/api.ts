@@ -8,10 +8,14 @@ import {
   type AppConfig,
   type ChatMessage,
   type ConnectResponse,
+  type Dispute,
+  type DisputeEvidence,
+  type DisputeSync,
   type Mode,
   type Order,
   type OrderRequest,
   type ResetResponse,
+  type ReviewLink,
   type SpecResponse,
   type Store,
   type StoreEvent,
@@ -76,6 +80,13 @@ export interface Api {
   listOrders(): Promise<Order[]>
   agentChat(messages: ChatMessage[]): Promise<AgentReply>
   resetDemo(mode: Mode): Promise<ResetResponse>
+  // Check and Defend. every call to reviewLink makes a new link and kills the one before
+  reviewLink(orderId: number): Promise<ReviewLink>
+  listDisputes(): Promise<Dispute[]>
+  syncDisputes(): Promise<DisputeSync>
+  disputeEvidence(disputeId: number): Promise<DisputeEvidence>
+  redraftDispute(disputeId: number): Promise<DisputeEvidence>
+  submitDisputeEvidence(disputeId: number): Promise<Dispute>
 }
 
 const realApi: Api = {
@@ -139,6 +150,20 @@ const realApi: Api = {
 
   resetDemo: (mode) =>
     request<ResetResponse>("/demo/reset", { method: "POST", body: JSON.stringify({ mode }) }),
+
+  reviewLink: (orderId) => request<ReviewLink>("/orders/" + orderId + "/review-link", { method: "POST" }),
+
+  listDisputes: async () => (await request<{ disputes: Dispute[] }>("/disputes")).disputes,
+
+  syncDisputes: () => request<DisputeSync>("/disputes/sync", { method: "POST" }),
+
+  disputeEvidence: (disputeId) => request<DisputeEvidence>("/disputes/" + disputeId + "/evidence"),
+
+  redraftDispute: (disputeId) =>
+    request<DisputeEvidence>("/disputes/" + disputeId + "/redraft", { method: "POST" }),
+
+  submitDisputeEvidence: (disputeId) =>
+    request<Dispute>("/disputes/" + disputeId + "/submit-evidence", { method: "POST" }),
 }
 
 export const api: Api = USE_MOCK ? mockApi : realApi

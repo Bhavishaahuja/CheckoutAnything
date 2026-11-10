@@ -409,6 +409,7 @@ What the confirm page shows. It's read only and changes nothing, so a link previ
   "status": "authorized",
   "review_state": "needs_review",
   "authorization_expires_at": "2026-12-03T01:56:55Z",
+  "merchant": null,
   "mandate": {
     "buyer_label": "Sam",
     "raw_request": "Black trail runners, women's size 9, up to $120, from Fernwood"
@@ -423,7 +424,7 @@ What the confirm page shows. It's read only and changes nothing, so a link previ
 }
 ```
 
-`intent_check` can be `null`, so handle a missing reason. `suggested_fix` has the same shape as on the order, and is often `null`. `authorization_expires_at` is also when the link stops working.
+`merchant` is the store the order was placed at, or `null` for Fernwood Supply Co. `intent_check` can be `null`, so handle a missing reason. `suggested_fix` has the same shape as on the order, and is often `null`. `authorization_expires_at` is also when the link stops working.
 
 | Code | When |
 |---|---|

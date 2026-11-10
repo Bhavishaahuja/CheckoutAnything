@@ -133,7 +133,7 @@ function Decide({ token, order }: { token: string; order: ReviewView }) {
         </div>
       }
     >
-      <p className="eyebrow">Your agent wants to buy</p>
+      <p className="eyebrow">Your agent wants to buy from {order.merchant || OWN_STORE}</p>
       <ul className="item-list">
         {order.items.map((item, index) => (
           <li key={index}>
@@ -165,6 +165,9 @@ function Decide({ token, order }: { token: string; order: ReviewView }) {
     </ConfirmFrame>
   )
 }
+
+// an order with no store on it was placed at the demo's own store
+const OWN_STORE = 'Fernwood Supply Co'
 
 function Done({ action, order, decisionMs }: { action: ApprovalAction; order: ReviewView; decisionMs: number }) {
   const approved = action === 'approve'
@@ -281,8 +284,8 @@ function ConfirmFrame({ children, footer }: { children: ReactNode; footer?: Reac
   return (
     <div className="confirm">
       <header className="confirm__head">
-        <BrandMark size={20} />
-        <span>Fernwood Supply Co</span>
+        <BrandMark size={24} />
+        <span>Checkout Anything</span>
       </header>
       <main className="confirm__body">{children}</main>
       {footer}

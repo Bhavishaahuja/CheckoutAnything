@@ -2071,3 +2071,161 @@ p {
     transition: none !important;
   }
 }
+
+/* ---- confirm page: Checkout Anything's theme ----
+   This is the buyer's phone screen, so it wears the main app's look (frontend/src/index.css
+   in the repo root): warm off-white page, white cards with a hairline border, the blue as the
+   one action color, Geist, rounded corners. The tokens are only changed inside .confirm, the
+   merchant dashboard keeps its own. Dark follows the phone's setting, with the app's dark
+   palette. */
+
+.confirm {
+  --bg: #fafaf7;
+  --surface: #ffffff;
+  --surface-sunk: #f2f2ed;
+  --border: #e5e4dd;
+  --divider: #e5e4dd;
+  --ink: #16181d;
+  --ink-muted: #666a73;
+  --ink-faint: #666a73;
+
+  --primary: #1d3fd0;
+  --primary-hover: #1935b0;
+  --primary-ink: #ffffff;
+  --focus: #1d3fd0;
+  --link: #1d3fd0;
+
+  --captured: #12805c;
+  --captured-ink: #12805c;
+  --captured-bg: #e3f4ec;
+  --authorized: #a86200;
+  --authorized-ink: #a86200;
+  --authorized-bg: #fbf0d9;
+  --review: #c8372d;
+  --review-ink: #c8372d;
+  --review-bg: #fbe9e7;
+  --failed: #c8372d;
+  --failed-ink: #c8372d;
+  --failed-bg: #fbe9e7;
+  --voided: #666a73;
+  --voided-ink: #666a73;
+  --voided-bg: #f2f2ed;
+
+  --fix: #1d3fd0;
+  --fix-ink: #1d3fd0;
+  --fix-bg: #e8edfd;
+  --fix-line: #c5d0fa;
+
+  --radius: 10px;
+  --radius-lg: 12px;
+
+  --font: 'Geist', ui-sans-serif, system-ui, sans-serif;
+  --mono: 'Geist Mono', ui-monospace, SFMono-Regular, monospace;
+  --serif: 'Geist', ui-sans-serif, system-ui, sans-serif;
+
+  font-family: var(--font);
+  color: var(--ink);
+  background: var(--bg);
+}
+
+@media (prefers-color-scheme: dark) {
+  .confirm {
+    --bg: #0c0e13;
+    --surface: #13161d;
+    --surface-sunk: #1a1e27;
+    --border: #252a35;
+    --divider: #252a35;
+    --ink: #e9ebf0;
+    --ink-muted: #9399a6;
+    --ink-faint: #9399a6;
+
+    --primary: #8aa4ff;
+    --primary-hover: #a3b8ff;
+    --primary-ink: #0c0e13;
+    --focus: #8aa4ff;
+    --link: #8aa4ff;
+
+    --captured: #4cc79a;
+    --captured-ink: #4cc79a;
+    --captured-bg: #12291f;
+    --authorized: #f0b354;
+    --authorized-ink: #f0b354;
+    --authorized-bg: #30240d;
+    --review: #ff8478;
+    --review-ink: #ff8478;
+    --review-bg: #331715;
+    --failed: #ff8478;
+    --failed-ink: #ff8478;
+    --failed-bg: #331715;
+    --voided: #9399a6;
+    --voided-ink: #9399a6;
+    --voided-bg: #1a1e27;
+
+    --fix: #8aa4ff;
+    --fix-ink: #8aa4ff;
+    --fix-bg: #171f3d;
+    --fix-line: #2b3a75;
+
+    color-scheme: dark;
+  }
+}
+
+.confirm .confirm__head {
+  gap: 10px;
+  padding: 14px 20px;
+  background: var(--bg);
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.confirm .confirm__body {
+  padding-top: 20px;
+}
+
+/* labels in the app are plain small text, not mono caps */
+.confirm .eyebrow {
+  font-family: var(--font);
+  font-size: 13px;
+  font-weight: 500;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.confirm .confirm__total {
+  font-family: var(--font);
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+/* the buyer's own words, in a card like the app's */
+.confirm .quote {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--ink);
+  font-size: 16px;
+  font-style: normal;
+  line-height: 1.45;
+}
+
+.confirm .why__label {
+  font-size: 13px;
+  font-weight: 500;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.confirm .decide-bar {
+  background: var(--bg);
+}
+
+.confirm .decide-button {
+  font-weight: 600;
+}
+
+.confirm .decide-button--reject {
+  border-width: 1px;
+  border-color: var(--border);
+  background: var(--surface);
+  color: var(--failed-ink);
+}

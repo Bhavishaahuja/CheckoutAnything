@@ -1804,6 +1804,8 @@ def test_review_page_has_what_confirmpage_needs_and_no_more(client, paypal, clau
     assert set(body) == {
         "id", "items", "total", "shipping_amount", "currency", "status", "review_state",
         "authorization_expires_at", "mandate", "intent_check", "replaced_by_order_id",
+        # the store the order was placed at, so the page can say where. the buyer chose it
+        "merchant",
     }
     assert body["items"][0]["name"] == "Trail runner"
     assert body["total"] == "66.00"

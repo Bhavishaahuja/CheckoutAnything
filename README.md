@@ -37,7 +37,7 @@ Check and Defend have their own API reference in [`check/docs/api.md`](check/doc
 
 One product, two backends. The Connect service is in `backend/` and `frontend/`. The Check service, which also does Defend, is in `check/`. Each has its own database, and both deploy from the one `render.yaml`.
 
-Today the two run side by side: the demo shopping agent pays and captures through the Connect service. Sending its orders through Check instead (the dashed arrow) is the next step and sits behind a `CHECK_URL` setting.
+The two are joined by one setting, `CHECK_URL`, on the Connect service. Left empty, the shopping agent's orders are paid and captured by the Connect service, as in the Connect section above. Set, they take the dashed arrow instead: the human's own request goes to Check as a mandate, the priced order follows, and Check holds the payment, checks it and captures it or asks the human. The merchant stays in the one app: the Orders grid shows the check result, the one-line reason, the review state and how long the human took, links to the buyer's confirm page, and a Disputes tab covers Defend.
 
 ```mermaid
 flowchart LR
@@ -144,6 +144,10 @@ It also starts the Check API on 8001 once `check/.env` is filled in (the first r
 | `PAYPAL_CLIENT_ID`, `PAYPAL_CLIENT_SECRET` | A sandbox REST app from developer.paypal.com (Apps & Credentials, Sandbox). Turn on Vault for the app. |
 | `ANTHROPIC_API_KEY` | For live mode and the shopping agent. Replay mode connects stores without it. |
 | `BUYER_VAULT_ID` | The saved sandbox buyer wallet the buy endpoint pays with. See below. |
+| `CHECK_URL` | Optional. The Check service's URL (`http://127.0.0.1:8001` locally). Left empty, agent orders are paid and captured here and nothing else in this table below is used. |
+| `CHECK_AGENT_KEY` | One of the Check service's `AGENT_API_KEYS`. Its name there also has to be in the Check service's `STORE_NAMING_AGENTS`, or Check ignores the store name and holds every order for review. |
+| `CHECK_MERCHANT_KEY` | The Check service's `MERCHANT_API_KEY`. Lets the Orders grid show why an order was held, make review links and run the Disputes tab. |
+| `CHECK_FRONTEND_URL` | Where the Check frontend is served, for the buyer's confirm page (`http://localhost:5175` locally). |
 
 To get `BUYER_VAULT_ID`, run this once and approve in the browser as your sandbox buyer (the personal account under Testing Tools, Sandbox Accounts):
 
@@ -212,7 +216,12 @@ The names were searched before use and are not real businesses as far as we coul
 | GET | `/stores/{id}/spec` | full spec, extraction notes, version history, verification attempts |
 | POST | `/stores/{id}/orders` | buy (price computed server-side) |
 | POST | `/agent/chat` | the demo shopping agent |
-| GET | `/orders` | all orders |
+| GET | `/orders` | all orders, with the Check result on the ones that went through Check |
+| POST | `/orders/{id}/review-link` | a link to the buyer's confirm page for an order on hold (needs `CHECK_URL`) |
+| GET | `/disputes` | PayPal disputes on captured orders (needs `CHECK_URL`, like the three below) |
+| POST | `/disputes/sync` | ask PayPal for new disputes |
+| GET | `/disputes/{id}/evidence` | the evidence packet and its drafted summary |
+| POST | `/disputes/{id}/redraft`, `/disputes/{id}/submit-evidence` | redraft the summary, file the evidence with PayPal |
 | POST | `/demo/reset` | wipe demo data and reconnect the 3 demo stores |
 
 Event types: `fetch.started`, `fetch.done`, `extract.started`, `extract.done`, `item.checking`, `item.verified`, `item.failed`, `item.repairing`, `store.ready`, `error`. Each carries `store_id`, `item_id` (if any), a one sentence `message`, and `data`.
@@ -245,7 +254,9 @@ Only AG Grid Community is used. Grouping orders by store is done with full-width
 - Prices are recognised with `$`, `€`, `£` or a trailing `USD`, `EUR`, `GBP`. The demo stores are all USD.
 - The merchant's PayPal account is the sandbox merchant from `.env`. A real version would need merchant onboarding.
 - The live log of a connect run is kept in memory, so the API runs as a single process and the log of a finished run is gone after a restart. The verified result is in the database either way.
-- The hosted demo has no login. Anyone with the link can connect a URL or reset the demo.
+- The hosted demo has no login. Anyone with the link can connect a URL or reset the demo. With `CHECK_URL` set that also covers making a review link (and so approving or rejecting an order on hold) and filing dispute evidence, which the Check service's own dashboard keeps behind a login. Fine for a sandbox demo, not for real money.
+- Only the shopping agent's orders go through Check. A manual test buy has no human request to check against, so it is paid and captured directly.
+- Check is US dollars only, and its dispute summary and evidence PDF still name the original demo store (Fernwood Supply Co) as the merchant, whichever connected store the order was at.
 
 ## Credits
 

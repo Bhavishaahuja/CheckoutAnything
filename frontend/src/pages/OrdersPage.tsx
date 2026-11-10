@@ -2,16 +2,17 @@
 
 import type { ColDef, GetRowIdParams } from "ag-grid-community"
 import { AgGridReact, type CustomCellRendererProps } from "ag-grid-react"
-import { Bot, Check, Hand, Search, X } from "lucide-react"
-import { useEffect, useMemo, useRef, useState } from "react"
+import { Bot, Check, ExternalLink, Hand, Hourglass, Search, ShieldCheck, ShieldQuestion, Undo2, X } from "lucide-react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 
 import { Card, CopyId, ErrorNote, Pill, Switch } from "@/components/bits"
+import { Button } from "@/components/ui/button"
 import { NumberTicker } from "@/components/magicui/number-ticker"
 import { api } from "@/lib/api"
-import { clockTime, money } from "@/lib/format"
+import { clockTime, dateAndTime, decisionTime, money } from "@/lib/format"
 import { flashGridRow } from "@/lib/gridFlash"
 import { calmTheme } from "@/lib/gridTheme"
-import type { Order } from "@/lib/types"
+import type { Order, ReviewLink } from "@/lib/types"
 import { useGridRows } from "@/lib/useGridRows"
 
 const POLL_MS = 3000
@@ -61,6 +62,21 @@ function StatusCell({ data }: CustomCellRendererProps<OrderRow>) {
       </Pill>
     )
   }
+  // the two states only an order that went through Check can be in
+  if (data.status === "authorized" && !data.error) {
+    return (
+      <Pill tone="warn">
+        <Hourglass className="size-3.5" /> On hold
+      </Pill>
+    )
+  }
+  if (data.status === "voided") {
+    return (
+      <Pill tone="muted">
+        <Undo2 className="size-3.5" /> Voided
+      </Pill>
+    )
+  }
   return (
     <span className="flex min-w-0 items-center gap-2">
       <Pill tone="bad">
@@ -75,7 +91,80 @@ function StatusCell({ data }: CustomCellRendererProps<OrderRow>) {
   )
 }
 
-export function OrdersPage({ active, refreshKey }: { active: boolean; refreshKey: number }) {
+// what Check concluded about the order, or a dash for an order that never went through it
+function VerdictCell({ data }: CustomCellRendererProps<OrderRow>) {
+  if (!data || data.check_order_id === null) return <span className="text-muted-foreground/60">-</span>
+  if (data.check_verdict === "match") {
+    return (
+      <Pill tone="ok">
+        <ShieldCheck className="size-3.5" /> Match
+      </Pill>
+    )
+  }
+  if (data.check_verdict === "mismatch") {
+    return (
+      <Pill tone="bad">
+        <X className="size-3.5" strokeWidth={3} /> Mismatch
+      </Pill>
+    )
+  }
+  if (data.check_verdict === "unsure") {
+    return (
+      <Pill tone="warn">
+        <ShieldQuestion className="size-3.5" /> Unsure
+      </Pill>
+    )
+  }
+  return <span className="text-xs text-muted-foreground">Not checked</span>
+}
+
+const REVIEW_LABELS: Record<string, string> = {
+  auto_approved: "Auto-captured",
+  approved: "Approved",
+  rejected: "Rejected",
+}
+
+function ReviewCell({ data, context }: CustomCellRendererProps<OrderRow, unknown, GridContext>) {
+  if (!data || !data.review_state) return <span className="text-muted-foreground/60">-</span>
+  if (data.review_state !== "needs_review") {
+    const tone = data.review_state === "rejected" ? "muted" : "ok"
+    return <Pill tone={tone}>{REVIEW_LABELS[data.review_state] || data.review_state}</Pill>
+  }
+  return (
+    <span className="flex min-w-0 items-center gap-2">
+      <Pill tone="warn">Needs review</Pill>
+      {context.reviewLinks && (
+        <button
+          type="button"
+          onClick={() => context.openReview(data.id)}
+          className="inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline"
+        >
+          Confirm page <ExternalLink className="size-3" />
+        </button>
+      )}
+    </span>
+  )
+}
+
+interface GridContext {
+  reviewLinks: boolean
+  openReview: (orderId: number) => void
+}
+
+export function OrdersPage({
+  active,
+  refreshKey,
+  checkOn,
+  reviewLinks,
+}: {
+  active: boolean
+  refreshKey: number
+  // agent orders go through Check, so the grid shows what it decided
+  checkOn: boolean
+  reviewLinks: boolean
+}) {
+  const [link, setLink] = useState<{ orderId: number; made: ReviewLink } | null>(null)
+  const [linkBusy, setLinkBusy] = useState(false)
   const [rows, setRows] = useState<OrderRow[]>([])
   const [error, setError] = useState<string | null>(null)
   const [grouped, setGrouped] = useState(true)
@@ -97,7 +186,15 @@ export function OrdersPage({ active, refreshKey }: { active: boolean; refreshKey
           let changed = orders.length !== previous.length
           const next = orders.map((order) => {
             const old = before.get(order.id)
-            if (old && old.status === order.status && old.capture_id === order.capture_id) return old
+            if (
+              old &&
+              old.status === order.status &&
+              old.capture_id === order.capture_id &&
+              old.review_state === order.review_state &&
+              old.check_verdict === order.check_verdict &&
+              old.decision_ms === order.decision_ms
+            )
+              return old
             changed = true
             // orders already there on first load don't flash, new ones do
             return { ...order, seen_at: firstLoad.current ? 0 : Date.now() }
@@ -177,6 +274,27 @@ export function OrdersPage({ active, refreshKey }: { active: boolean; refreshKey
       },
       { headerName: "Bought by", field: "created_by", width: 122, cellRenderer: ByCell },
       { headerName: "Status", field: "status", cellRenderer: StatusCell, flex: 1, minWidth: 130 },
+      // the Check columns, only when agent orders go through Check
+      { headerName: "Check", field: "check_verdict", cellRenderer: VerdictCell, width: 124, hide: !checkOn },
+      {
+        headerName: "Reason",
+        field: "check_reason",
+        flex: 2,
+        minWidth: 220,
+        hide: !checkOn,
+        tooltipField: "check_reason",
+        cellClass: "text-muted-foreground",
+      },
+      { headerName: "Review", field: "review_state", cellRenderer: ReviewCell, width: 236, hide: !checkOn },
+      {
+        headerName: "Time to decide",
+        field: "decision_ms",
+        width: 132,
+        type: "rightAligned",
+        hide: !checkOn,
+        cellClass: "tabular-nums",
+        valueFormatter: (params) => decisionTime(params.value),
+      },
       {
         headerName: "Time",
         field: "created_at",
@@ -187,16 +305,34 @@ export function OrdersPage({ active, refreshKey }: { active: boolean; refreshKey
         cellClass: "text-muted-foreground tabular-nums",
       },
     ],
-    [grouped]
+    [grouped, checkOn]
   )
+
+  // a new link kills the one made before, so this only runs on a click, never on a refresh
+  const openReview = useCallback(async (orderId: number) => {
+    setLinkBusy(true)
+    try {
+      const made = await api.reviewLink(orderId)
+      setLink({ orderId, made })
+      setError(null)
+    } catch (problem) {
+      setError(problem instanceof Error ? problem.message : "Couldn't make the review link")
+    } finally {
+      setLinkBusy(false)
+    }
+  }, [])
+
+  const gridContext = useMemo<GridContext>(() => ({ reviewLinks, openReview }), [reviewLinks, openReview])
 
   let captured = 0
   let volume = 0
   let byAgent = 0
+  let waiting = 0
   const storeIds = new Set<number>()
   for (const row of rows) {
     storeIds.add(row.store_id)
     if (row.created_by === "agent") byAgent += 1
+    if (row.review_state === "needs_review") waiting += 1
     if (row.status === "captured") {
       captured += 1
       volume += Number(row.total)
@@ -210,6 +346,8 @@ export function OrdersPage({ active, refreshKey }: { active: boolean; refreshKey
         <p className="mt-1 text-sm text-muted-foreground">
           Every purchase from a connected store. Prices are computed by the API from the verified spec, then paid with
           the saved sandbox buyer and captured.
+          {checkOn &&
+            " An agent's order is held first and checked against what the buyer asked for: a clean match is captured, anything off waits for the buyer."}
         </p>
       </div>
 
@@ -230,7 +368,39 @@ export function OrdersPage({ active, refreshKey }: { active: boolean; refreshKey
         </Tile>
       </div>
 
+      {checkOn && waiting > 0 && (
+        <p className="rounded-lg bg-warn-soft px-3 py-2 text-[13px] text-warn">
+          {waiting === 1 ? "1 order is" : waiting + " orders are"} on hold, waiting for the buyer to confirm. Nothing
+          has been charged for {waiting === 1 ? "it" : "them"}.
+        </p>
+      )}
+
       {error && <ErrorNote>{error}</ErrorNote>}
+
+      {link && (
+        <Card className="flex flex-wrap items-center gap-3 px-4 py-3 text-[13px]">
+          <span className="font-medium">Confirm page for order {link.orderId}</span>
+          <CopyId value={link.made.url} className="min-w-0 flex-1" />
+          {link.made.expires_at && (
+            <span className="text-xs text-muted-foreground">works until {dateAndTime(link.made.expires_at)}</span>
+          )}
+          <a
+            href={link.made.url}
+            target="_blank"
+            rel="noreferrer"
+            className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-primary px-2.5 text-[13px] font-medium text-primary-foreground hover:opacity-90"
+          >
+            Open <ExternalLink className="size-3.5" />
+          </a>
+          <Button size="sm" variant="ghost" onClick={() => setLink(null)}>
+            Close
+          </Button>
+          <span className="w-full text-xs text-muted-foreground">
+            This is what the buyer sees on their phone. Asking for a new link turns this one off.
+          </span>
+        </Card>
+      )}
+      {linkBusy && <p className="text-xs text-muted-foreground">Making the link...</p>}
 
       <Card className="flex h-[560px] flex-col overflow-hidden">
         <div className="flex min-h-12 shrink-0 flex-wrap items-center justify-between gap-3 border-b border-border px-4 py-2">
@@ -259,6 +429,8 @@ export function OrdersPage({ active, refreshKey }: { active: boolean; refreshKey
             defaultColDef={{ sortable: true, resizable: true, suppressMovable: true }}
             getRowId={(params: GetRowIdParams<OrderRow>) => String(params.data.id)}
             enableCellSpan
+            context={gridContext}
+            tooltipShowDelay={300}
             onGridReady={onGridReady}
             animateRows
             suppressCellFocus

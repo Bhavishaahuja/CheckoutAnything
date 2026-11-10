@@ -1,4 +1,4 @@
-import { Bot, FlaskConical, Link2, ReceiptText, RotateCcw } from "lucide-react"
+import { Bot, FlaskConical, Link2, ReceiptText, RotateCcw, Scale } from "lucide-react"
 import { useCallback, useEffect, useState, type ReactNode } from "react"
 
 import { Pill, Switch } from "@/components/bits"
@@ -9,14 +9,17 @@ import type { AppConfig, Mode, Store } from "@/lib/types"
 import { cn } from "@/lib/utils"
 import { AgentPage } from "@/pages/AgentPage"
 import { ConnectPage } from "@/pages/ConnectPage"
+import { DisputesPage } from "@/pages/DisputesPage"
 import { OrdersPage } from "@/pages/OrdersPage"
 
-type Tab = "connect" | "agent" | "orders"
+type Tab = "connect" | "agent" | "orders" | "disputes"
 
 const TABS: { id: Tab; label: string; icon: ReactNode }[] = [
   { id: "connect", label: "Connect", icon: <Link2 /> },
   { id: "agent", label: "Agent", icon: <Bot /> },
   { id: "orders", label: "Orders", icon: <ReceiptText /> },
+  // Defend. only shown when the API can reach the Check service
+  { id: "disputes", label: "Disputes", icon: <Scale /> },
 ]
 
 function tabFromHash(): Tab {
@@ -123,6 +126,9 @@ export default function App() {
     return () => clearInterval(timer)
   }, [anyConnecting, refreshStores])
 
+  const checkOn = config ? config.check_configured : false
+  const disputesOn = config ? config.check_merchant_configured : false
+
   const missing: string[] = []
   if (config && !config.paypal_configured) missing.push("PayPal sandbox keys")
   if (config && !config.claude_configured) missing.push("the Claude API key")
@@ -138,7 +144,7 @@ export default function App() {
           </button>
 
           <nav className="flex items-center gap-0.5 rounded-lg bg-muted p-0.5" aria-label="Screens">
-            {TABS.map((entry) => (
+            {TABS.filter((entry) => entry.id !== "disputes" || disputesOn).map((entry) => (
               <button
                 key={entry.id}
                 type="button"
@@ -195,7 +201,7 @@ export default function App() {
         )}
       </header>
 
-      {/* all three screens stay mounted, so a run keeps streaming while you look at another tab */}
+      {/* every screen stays mounted, so a run keeps streaming while you look at another tab */}
       <main className="flex-1">
         <div className={cn(tab !== "connect" && "hidden")}>
           <ConnectPage
@@ -218,8 +224,18 @@ export default function App() {
           />
         </div>
         <div className={cn(tab !== "orders" && "hidden")}>
-          <OrdersPage active={tab === "orders"} refreshKey={ordersKey} />
+          <OrdersPage
+            active={tab === "orders"}
+            refreshKey={ordersKey}
+            checkOn={checkOn}
+            reviewLinks={config ? config.check_review_links : false}
+          />
         </div>
+        {disputesOn && (
+          <div className={cn(tab !== "disputes" && "hidden")}>
+            <DisputesPage active={tab === "disputes"} />
+          </div>
+        )}
       </main>
     </div>
   )

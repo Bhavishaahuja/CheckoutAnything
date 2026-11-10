@@ -53,6 +53,18 @@ services:
         value: https://api-m.sandbox.paypal.com
       - key: DEMO_MODE
         value: live
+      # Check. CHECK_URL is the switch: leave it empty and agent orders are paid and captured
+      # here, as before. set it to the check-api service's URL to send them through Check.
+      # the keys are check-api's own (one of its AGENT_API_KEYS, and its MERCHANT_API_KEY)
+      - key: CHECK_URL
+        sync: false
+      - key: CHECK_AGENT_KEY
+        sync: false
+      - key: CHECK_MERCHANT_KEY
+        sync: false
+      # the check-frontend service's URL, for the buyer's confirm page
+      - key: CHECK_FRONTEND_URL
+        sync: false
 
   # the app itself. a static site lives on Render's CDN, so no region or plan
   - type: web
@@ -116,6 +128,10 @@ services:
       - key: AGENT_API_KEY
         sync: false
       - key: MERCHANT_API_KEY
+        sync: false
+      # the name CHECK_AGENT_KEY has in AGENT_API_KEYS, so the Connect service may say which
+      # store an order was placed at
+      - key: STORE_NAMING_AGENTS
         sync: false
       - key: DEMO_MERCHANT_PASSWORD
         sync: false
