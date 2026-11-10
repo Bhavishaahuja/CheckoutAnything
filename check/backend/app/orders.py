@@ -40,7 +40,7 @@ from sqlalchemy.orm import Session, selectinload
 from backend.app import fixes, mandate_parser, rubber_stamp
 from backend.app.catalog import format_event_date
 from backend.app.auth import AgentName, require_agent, require_merchant
-from backend.app.config import STORE_NAME, get_settings
+from backend.app.config import STORE_NAME, get_settings, store_naming_agents
 from backend.app.db import get_session
 from backend.app.intent.check import build_decision, run_intent_check
 from backend.app.intent.rules import as_utc
@@ -105,6 +105,10 @@ class OrderCreate(BaseModel):
     shipping: Decimal = Field(default=Decimal("0"), ge=0, max_digits=10, decimal_places=2)
     # saved PayPal wallet from spike 2's flow. with it, no buyer popup
     vault_id: str | None = Field(default=None, max_length=64)
+    # the store the order was placed at. only read from an agent listed in STORE_NAMING_AGENTS
+    # (Checkout Anything's own backend, which knows the store from its records). from any
+    # other agent it's dropped and the order counts as placed at our own store
+    merchant: str | None = Field(default=None, min_length=1, max_length=200)
 
 
 class RuleResultOut(BaseModel):
@@ -275,9 +279,11 @@ def item_display_name(item):
     return ", ".join(parts)
 
 
-def build_paypal_order(order_id, items, shipping, vault_id, settings):
+def build_paypal_order(order_id, items, shipping, vault_id, settings, store_name=None):
     # Orders v2 create body. With items, amount.breakdown.item_total has to equal the sum of
     # unit_amount * quantity, and amount.value has to equal item_total + shipping
+    # what the buyer sees at PayPal. PayPal caps the description at 127 characters
+    store_name = (store_name or STORE_NAME).strip() or STORE_NAME
     paypal_items = []
     item_total = Decimal("0")
     for item in items:
@@ -295,7 +301,7 @@ def build_paypal_order(order_id, items, shipping, vault_id, settings):
         "reference_id": "leash-order-" + str(order_id),
         # our id rides along so PayPal records (and disputes) point back at this row
         "custom_id": str(order_id),
-        "description": STORE_NAME + " agent order",
+        "description": (store_name + " agent order")[:127],
         "amount": {
             "currency_code": CURRENCY,
             "value": money(total),
@@ -324,7 +330,7 @@ def build_paypal_order(order_id, items, shipping, vault_id, settings):
         payment_source = {
             "paypal": {
                 "experience_context": {
-                    "brand_name": STORE_NAME,
+                    "brand_name": store_name[:127],
                     "user_action": "PAY_NOW",
                     "shipping_preference": "GET_FROM_FILE",
                     "return_url": settings.paypal_return_url,
@@ -684,7 +690,8 @@ def place_order(
 ):
     # the whole path an order takes: save, hold at PayPal, check, auto-decide. POST /orders and
     # POST /demo/orders both land here, so the demo can't drift from what an agent's order does.
-    # merchant stays None for a real agent order, those are always at our one store.
+    # merchant is None for an order at our own store, and the store's name for one that came
+    # in from a connected store.
     # agent_name is whoever the caller's key says it is, never something the body claimed.
     # replaces_order_id is set by an accepted fix, and saved before PayPal is called, so even a
     # replacement that fails at PayPal says which order it was replacing.
@@ -711,7 +718,7 @@ def place_order(
     session.flush()
 
     paypal_body, total = build_paypal_order(
-        order.id, items, shipping, vault_id, get_settings()
+        order.id, items, shipping, vault_id, get_settings(), store_name=merchant
     )
     order.total = total
 
@@ -769,9 +776,13 @@ def create_order(
             status_code=404, detail="Mandate " + str(body.mandate_id) + " not found"
         )
 
+    merchant = None
+    if agent_name in store_naming_agents(get_settings()):
+        merchant = body.merchant
+
     order, payer_action_url = place_order(
         session, mandate, body.items, body.shipping, body.vault_id, paypal, claude,
-        agent_name=agent_name,
+        merchant=merchant, agent_name=agent_name,
     )
 
     # the agent doesn't get the reason or anything else from the check, or it could read why it was

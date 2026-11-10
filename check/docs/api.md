@@ -161,7 +161,7 @@ Review links only work when `status` is `authorized` and `review_state` is `need
 - **Item `model` and `event_date`** are optional. `event_date` is a date like `"2026-12-05"`. Orders from before they existed don't have the keys at all, so treat missing the same as `null`.
 - **`replaced_by_order_id`** and **`replaces_order_id`** link an order to the one placed when a human accepted its suggested fix. The voided original has `replaced_by_order_id`, the new order has `replaces_order_id`. Both are `null` on every other order.
 - **`agent_name`** is the shopping agent that placed the order. The API works it out from the agent's key, never from the request. `"Demo page"` for an order from `/place-order`, `"Shopping agent"` for one placed with the old single `AGENT_API_KEY`, and `null` on orders from before agents had names.
-- **`merchant`** is `null` for an order at Fernwood Supply Co, which is every agent order. Only `POST /demo/orders` sets it.
+- **`merchant`** is `null` for an order at Fernwood Supply Co. It's the store's name when `POST /orders` was sent one (an order from a store connected through Checkout Anything) and on `POST /demo/orders`.
 - **`max_price`** can be in another currency, so don't hardcode `$`. Read `mandate.rules.currency`. If that's `null`, treat it as USD.
 - **`max_price_inclusive`**: `true` means "up to" and `false` means "under".
 - **`intent_check`** is `null` before the order is checked. It's also `null` if saving the result failed, and that order will be in `needs_review` with nothing to explain why, so handle a missing reason.
@@ -533,7 +533,35 @@ These now return `404`. `captureOrder` and `voidOrder` in `frontend/src/api.ts` 
 
 The agent only ever sees where an order stands. It never gets a token, a reason, or mandate details, so it can't read why it was flagged and adjust.
 
+### `POST /mandates`
+
+What the human asked their agent for, sent before the order.
+
+```json
+{
+  "buyer_label": "Sam",
+  "request_text": "Black trail runners, women's size 9, up to $120, from Fernwood",
+  "merchant": "Fernwood Supply Co"
+}
+```
+
+`buyer_label` (1 to 200 characters) and `request_text` (1 to 4000) are required. `merchant` is optional, up to 200 characters, and wins over a store named in `request_text`. Claude parses the text into rules. Success is a `201` with the mandate in the same shape as `GET /mandates/{id}`, and its `id` is what `POST /orders` takes. A `502` means the text couldn't be parsed, try again.
+
 ### `POST /orders` and `POST /orders/{id}/authorize`
+
+```json
+{
+  "mandate_id": 7,
+  "items": [
+    { "name": "Sourdough Loaf + Sliced", "size": "Half loaf", "quantity": 1, "unit_price": "6.00" }
+  ],
+  "shipping": "6.00",
+  "vault_id": "abc123",
+  "merchant": "Hollowbrook Bakery"
+}
+```
+
+`mandate_id` and `items` (1 to 50) are required. An item needs `name`, `quantity` (1 to 1000) and `unit_price` (above 0, two decimals), and can have `color`, `size`, `model` and `event_date`. `shipping` defaults to `0`. `vault_id` is a saved PayPal wallet: with it there's no buyer popup. `merchant` is the store the order was placed at, up to 200 characters. It's only read from an agent whose name is in `STORE_NAMING_AGENTS` on the API, which is meant for Checkout Anything's own backend. From any other agent it's ignored, so a shopping agent can't name its way past the store rule. Leave it out for an order at Fernwood Supply Co. The store rule compares it with the mandate's store, and it's also the store name the buyer sees at PayPal. A `404` means there's no such mandate.
 
 These return the status object after the check and any auto-capture, so they can take several seconds.
 
