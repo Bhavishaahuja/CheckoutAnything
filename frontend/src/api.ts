@@ -227,6 +227,7 @@ function toReviewView(order: OrderDetail): ReviewView {
           suggested_fix: check.suggested_fix,
         }
       : null,
+    replaced_by_order_id: order.replaced_by_order_id,
   }
 }
 
