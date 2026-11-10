@@ -19,6 +19,7 @@ from sqlalchemy.pool import StaticPool
 
 from backend.app import disputes, evidence_pdf, orders
 from backend.app.db import Base, get_session
+from backend.app.prompts import dispute as dispute_prompt
 from backend.app.disputes import (
     OTHER_EXPLANATION,
     SUMMARY_MAX_CHARS,
@@ -385,6 +386,39 @@ def test_list_shape_and_submitted_flag(client, db_sessions):
 
 
 # ---- the packet ----
+
+
+def test_the_packet_and_the_pdf_name_the_orders_real_store(client, db_sessions, paypal):
+    # an order the Connect service sent in for one of its connected stores, not our demo store
+    with db_sessions() as session:
+        session.get(Order, 1).merchant = "Hollowbrook Bakery"
+        session.commit()
+    dispute_id = add_dispute_row(db_sessions)
+
+    packet = client.get("/disputes/" + str(dispute_id) + "/evidence").json()["packet"]
+
+    assert packet["order"]["store"] == "Hollowbrook Bakery"
+    lines = disputes.packet_lines(packet)
+    assert lines[0] == "Checkout Anything proof of intent: Hollowbrook Bakery"
+    # the PDF is these lines, so its heading is the bakery's and never the demo store's
+    pdf_bytes = evidence_pdf.build_pdf(lines)
+    assert b"Hollowbrook Bakery" in pdf_bytes
+    assert b"proof of intent: Fernwood" not in pdf_bytes
+
+
+def test_an_order_with_no_store_is_still_the_demo_stores(client, db_sessions, paypal):
+    dispute_id = add_dispute_row(db_sessions)
+    packet = client.get("/disputes/" + str(dispute_id) + "/evidence").json()["packet"]
+    assert disputes.packet_lines(packet)[0] == \
+        "Checkout Anything proof of intent: Fernwood Supply Co"
+
+
+def test_the_summary_prompt_takes_the_merchant_from_the_packet():
+    # no store is written into the prompt. Claude is pointed at the order's own store instead
+    assert "Fernwood" not in dispute_prompt.SYSTEM_PROMPT
+    assert "order.store" in dispute_prompt.SYSTEM_PROMPT
+    message = dispute_prompt.build_user_message({"order": {"store": "Hollowbrook Bakery"}})
+    assert "Hollowbrook Bakery" in message
 
 
 def test_packet_for_an_auto_captured_order(client, db_sessions, paypal):

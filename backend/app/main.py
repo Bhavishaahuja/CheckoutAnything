@@ -8,6 +8,11 @@
 #   POST /stores/{id}/orders    buy (price computed server-side)
 #   POST /agent/chat            demo shopping agent
 #   GET  /orders                all orders
+#   POST /auth/session          the merchant's login, passed through to Check
+#   POST /orders/{id}/review-link   link to the confirm page for an order on hold (Check).
+#                                   needs the login
+#   GET  /disputes, POST /disputes/sync, GET /disputes/{id}/evidence,
+#   POST /disputes/{id}/redraft, POST /disputes/{id}/submit-evidence   (Defend)
 #   POST /demo/reset            wipe demo data and reconnect the 3 demo stores
 
 import json
@@ -22,8 +27,9 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from backend.app import connect, models, shop
+from backend.app import check_client, connect, models, shop
 from backend.app.agent import ShoppingAgent
+from backend.app.check_client import CheckError
 from backend.app.config import DEMO_STORE_SLUGS, allowed_fetch_hosts, cors_origins, get_settings
 from backend.app.db import create_tables, get_session, new_session
 from backend.app.demo import load_fixture
@@ -70,6 +76,11 @@ class ChatRequest(BaseModel):
     messages: list[ChatMessage] = Field(min_length=1, max_length=40)
 
 
+class LoginRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    password: str = Field(min_length=1, max_length=200)
+
+
 class ResetRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     mode: Literal["live", "replay"] | None = None
@@ -79,11 +90,13 @@ class ResetRequest(BaseModel):
 
 
 def create_app(settings=None, paypal=None, ai_factory=None, fetch=None, agent_client=None,
-               order_reader=None):
-    # everything that reaches outside (PayPal, Claude, the page fetch) can be swapped in here,
-    # which is how the tests run without a network
+               order_reader=None, check=None):
+    # everything that reaches outside (PayPal, Claude, the page fetch, Check) can be swapped
+    # in here, which is how the tests run without a network
     settings = settings or get_settings()
     paypal = paypal or client_from_settings(settings)
+    # None unless CHECK_URL is set. every Check code path below starts from this
+    check = check or check_client.client_from_settings(settings)
     ai_factory = ai_factory or connect.default_ai_factory
     fetch = fetch or fetch_page
 
@@ -109,7 +122,8 @@ def create_app(settings=None, paypal=None, ai_factory=None, fetch=None, agent_cl
         CORSMiddleware,
         allow_origins=cors_origins(settings.frontend_origins),
         allow_methods=["GET", "POST"],
-        allow_headers=["Content-Type", "Last-Event-ID"],
+        # Authorization carries the merchant's session to the review-link route
+        allow_headers=["Content-Type", "Last-Event-ID", "Authorization"],
     )
 
     def begin_connect(session, url, mode):
@@ -151,6 +165,13 @@ def create_app(settings=None, paypal=None, ai_factory=None, fetch=None, agent_cl
             "paypal_configured": bool(settings.paypal_client_id and settings.paypal_client_secret),
             "claude_configured": bool(settings.anthropic_api_key),
             "vault_configured": bool(settings.buyer_vault_id),
+            # agent orders go through Check
+            "check_configured": check is not None,
+            # the grid can show check results, review links and disputes
+            "check_merchant_configured": check is not None and check.can_read,
+            # orders on hold can be reviewed from the grid (after logging in)
+            "check_review_links": check is not None and check.can_read
+            and bool(settings.check_frontend_url),
         }
 
     # ---- connect ----
@@ -263,7 +284,118 @@ def create_app(settings=None, paypal=None, ai_factory=None, fetch=None, agent_cl
 
     @app.get("/orders")
     def orders(session: DbSession):
-        return {"orders": shop.list_orders(session)}
+        return {"orders": shop.list_orders(session, check)}
+
+    # ---- Check and Defend, passed through to the Check service ----
+
+    def merchant_check():
+        # the Check client, for a route that needs the merchant side of it
+        if check is None:
+            raise HTTPException(status_code=503, detail="CHECK_URL isn't set on the API")
+        if not check.can_read:
+            raise HTTPException(status_code=503, detail="CHECK_MERCHANT_KEY isn't set on the API")
+        return check
+
+    def check_failure(error):
+        # Check's own 4xx goes back as it is, so the page can say "already submitted" and the
+        # like. a 401 means our key is wrong, which is our problem, not the caller's
+        if error.status_code in (404, 409, 422, 429):
+            return HTTPException(status_code=error.status_code, detail=str(error))
+        return HTTPException(status_code=502, detail="Check: " + str(error))
+
+    def session_token_from(authorization):
+        # "Bearer <token>", the same header the Check dashboard sends its own API
+        scheme, _, token = (authorization or "").partition(" ")
+        token = token.strip()
+        if scheme.lower() != "bearer" or not token:
+            raise HTTPException(status_code=401, detail="Log in to review an order")
+        return token
+
+    @app.post("/auth/session")
+    def log_in(body: LoginRequest):
+        # the merchant's login is Check's dashboard login: one password for both apps. we only
+        # pass it along and hand back the session Check made, nothing is kept here
+        if check is None:
+            raise HTTPException(status_code=503, detail="CHECK_URL isn't set on the API")
+        try:
+            made = check.create_session(body.password)
+        except CheckError as error:
+            if error.status_code == 401:
+                raise HTTPException(status_code=401, detail="Wrong password") from error
+            raise check_failure(error) from error
+        return {"session_token": made["session_token"], "expires_at": made.get("expires_at")}
+
+    @app.post("/orders/{order_id}/review-link", status_code=201)
+    def review_link(order_id: int, session: DbSession,
+                    authorization: Annotated[str | None, Header()] = None):
+        # the confirm page for an order on hold, behind the merchant's login. it never approves
+        # or rejects anything itself: the decision is made on the confirm page, so Check times
+        # it the same way as on the buyer's phone. every call makes a new link and kills the
+        # one before, so the frontend only asks when someone clicks
+        token = session_token_from(authorization)
+        if check is None:
+            raise HTTPException(status_code=503, detail="CHECK_URL isn't set on the API")
+        if not settings.check_frontend_url:
+            raise HTTPException(status_code=503,
+                                detail="CHECK_FRONTEND_URL isn't set on the API")
+        order = shop.get_order(session, order_id)
+        if order is None:
+            raise HTTPException(status_code=404, detail="There is no order " + str(order_id))
+        if order.check_order_id is None:
+            raise HTTPException(status_code=409, detail="This order didn't go through Check")
+        try:
+            link = check.create_review_link(order.check_order_id, token)
+        except CheckError as error:
+            if error.status_code == 401:
+                # Check didn't take the session: expired, or made before its key changed
+                raise HTTPException(
+                    status_code=401, detail="Your login has expired, log in again"
+                ) from error
+            raise check_failure(error) from error
+        return {
+            "url": settings.check_frontend_url + "/confirm/" + link["review_token"],
+            "expires_at": link.get("expires_at"),
+        }
+
+    @app.get("/disputes")
+    def disputes():
+        client = merchant_check()
+        try:
+            return {"disputes": client.list_disputes()}
+        except CheckError as error:
+            raise check_failure(error) from error
+
+    @app.post("/disputes/sync")
+    def sync_disputes():
+        client = merchant_check()
+        try:
+            return client.sync_disputes()
+        except CheckError as error:
+            raise check_failure(error) from error
+
+    @app.get("/disputes/{dispute_id}/evidence")
+    def dispute_evidence(dispute_id: int):
+        client = merchant_check()
+        try:
+            return client.dispute_evidence(dispute_id)
+        except CheckError as error:
+            raise check_failure(error) from error
+
+    @app.post("/disputes/{dispute_id}/redraft")
+    def redraft_dispute(dispute_id: int):
+        client = merchant_check()
+        try:
+            return client.redraft_dispute(dispute_id)
+        except CheckError as error:
+            raise check_failure(error) from error
+
+    @app.post("/disputes/{dispute_id}/submit-evidence")
+    def submit_dispute_evidence(dispute_id: int):
+        client = merchant_check()
+        try:
+            return client.submit_dispute_evidence(dispute_id)
+        except CheckError as error:
+            raise check_failure(error) from error
 
     # ---- the demo shopping agent ----
 
@@ -274,7 +406,7 @@ def create_app(settings=None, paypal=None, ai_factory=None, fetch=None, agent_cl
         if agent_client is None and not settings.anthropic_api_key:
             raise HTTPException(status_code=503, detail="ANTHROPIC_API_KEY isn't set on the API")
 
-        agent_options = {"client": agent_client}
+        agent_options = {"client": agent_client, "check": check}
         if order_reader is not None:
             agent_options["order_reader"] = order_reader
         agent = ShoppingAgent(session, paypal, settings, **agent_options)

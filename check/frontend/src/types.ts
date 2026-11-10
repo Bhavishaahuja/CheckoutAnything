@@ -173,6 +173,8 @@ export interface ReviewView {
   status: OrderStatus
   review_state: ReviewState | null
   authorization_expires_at: string | null
+  // the store the order was placed at. null or missing means Fernwood Supply Co
+  merchant?: string | null
   mandate: {
     buyer_label: string
     raw_request: string

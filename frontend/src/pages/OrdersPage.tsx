@@ -1,16 +1,19 @@
 // Screen 4: every purchase made through connected stores, live.
 
-import type { ColDef, GetRowIdParams } from "ag-grid-community"
+import type { ColDef, GetRowIdParams, RowClassRules } from "ag-grid-community"
 import { AgGridReact, type CustomCellRendererProps } from "ag-grid-react"
-import { Bot, Check, Hand, Search, X } from "lucide-react"
-import { useEffect, useMemo, useRef, useState } from "react"
+import { ArrowRight, Bot, Check, Hand, Hourglass, Search, ShieldCheck, ShieldQuestion, Undo2, X } from "lucide-react"
+import { AnimatePresence } from "motion/react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 
 import { Card, CopyId, ErrorNote, Pill, Switch } from "@/components/bits"
+import { ReviewDrawer } from "@/components/ReviewDrawer"
 import { NumberTicker } from "@/components/magicui/number-ticker"
 import { api } from "@/lib/api"
-import { clockTime, money } from "@/lib/format"
+import { clockTime, decisionTime, money } from "@/lib/format"
 import { flashGridRow } from "@/lib/gridFlash"
 import { calmTheme } from "@/lib/gridTheme"
+import { heldLabel } from "@/lib/shortReason"
 import type { Order } from "@/lib/types"
 import { useGridRows } from "@/lib/useGridRows"
 
@@ -22,6 +25,48 @@ interface OrderRow extends Order {
 
 // the grid starts empty (never "loading"), rows then arrive as transactions
 const NO_ROWS: OrderRow[] = []
+
+// room enough to keep a column pinned beside the scrolling ones
+const WIDE_SCREEN = "(min-width: 1024px)"
+
+function useWideScreen() {
+  const [wide, setWide] = useState(() => window.matchMedia(WIDE_SCREEN).matches)
+  useEffect(() => {
+    const query = window.matchMedia(WIDE_SCREEN)
+    const update = () => setWide(query.matches)
+    query.addEventListener("change", update)
+    return () => query.removeEventListener("change", update)
+  }, [])
+  return wide
+}
+
+// on hold at PayPal, waiting for a human to decide
+function isHeld(row: OrderRow) {
+  return row.status === "authorized" && row.review_state === "needs_review" && !row.error
+}
+
+// paid and captured here, without going through Check (a manual test buy, or Check is off)
+function isPaidDirectly(row: OrderRow) {
+  return row.check_order_id === null && row.status === "captured"
+}
+
+// the row's color says where the money is: amber held, green captured, gray voided, and no
+// tint for an order that was paid directly. the classes are in index.css
+const ROW_CLASS_RULES: RowClassRules<OrderRow> = {
+  "row-held": (params) => !!params.data && isHeld(params.data),
+  "row-captured": (params) => !!params.data && params.data.status === "captured" && !isPaidDirectly(params.data),
+  "row-voided": (params) => params.data?.status === "voided",
+  "row-direct": (params) => !!params.data && isPaidDirectly(params.data),
+}
+
+// polling replaces a changed row through a transaction. any cell whose value is different
+// afterwards flashes, so the eye lands on what changed
+const DEFAULT_COL_DEF: ColDef<OrderRow> = {
+  sortable: true,
+  resizable: true,
+  suppressMovable: true,
+  enableCellChangeFlash: true,
+}
 
 function Tile({ label, children }: { label: string; children: React.ReactNode }) {
   return (
@@ -52,12 +97,63 @@ function ByCell({ value }: CustomCellRendererProps<OrderRow>) {
   )
 }
 
-function StatusCell({ data }: CustomCellRendererProps<OrderRow>) {
+function StatusCell({ data, context }: CustomCellRendererProps<OrderRow, unknown, GridContext>) {
   if (!data) return null
+  // the human accepted Check's suggested fix: this order was voided and a new one placed.
+  // the old row says so and points at the new one
+  if (data.status === "voided" && data.replaced_by_order_id !== null) {
+    const newId = data.replaced_by_order_id
+    return (
+      <span className="flex min-w-0 items-center gap-2">
+        <Pill tone="muted">
+          <Undo2 className="size-3.5" /> Fixed
+        </Pill>
+        <button
+          type="button"
+          onClick={() => context.goToOrder(newId)}
+          aria-label={"Go to the new order, number " + newId}
+          className="inline-flex h-11 items-center gap-1 text-xs font-medium whitespace-nowrap text-primary hover:underline"
+        >
+          New order {newId} <ArrowRight className="size-3" />
+        </button>
+      </span>
+    )
+  }
+  if (isPaidDirectly(data) && context.checkOn) {
+    // neutral on purpose: nothing was held or checked, it was simply paid
+    return (
+      <Pill tone="muted">
+        <Check className="size-3.5" strokeWidth={3} /> Paid directly
+      </Pill>
+    )
+  }
   if (data.status === "captured") {
     return (
       <Pill tone="ok">
         <Check className="size-3.5" strokeWidth={3} /> Captured
+      </Pill>
+    )
+  }
+  // the two states only an order that went through Check can be in
+  if (isHeld(data)) {
+    // why, in two or three words: "Held: wrong size". the full sentence is in the Reason column
+    return (
+      <Pill tone="warn">
+        <Hourglass className="size-3.5" /> {heldLabel(data.check_mismatched_fields, data.check_verdict)}
+      </Pill>
+    )
+  }
+  if (data.status === "authorized" && !data.error) {
+    return (
+      <Pill tone="warn">
+        <Hourglass className="size-3.5" /> On hold
+      </Pill>
+    )
+  }
+  if (data.status === "voided") {
+    return (
+      <Pill tone="muted">
+        <Undo2 className="size-3.5" /> Voided
       </Pill>
     )
   }
@@ -75,12 +171,108 @@ function StatusCell({ data }: CustomCellRendererProps<OrderRow>) {
   )
 }
 
-export function OrdersPage({ active, refreshKey }: { active: boolean; refreshKey: number }) {
+// what Check concluded about the order, or a dash for an order that never went through it
+function VerdictCell({ data }: CustomCellRendererProps<OrderRow>) {
+  if (!data || data.check_order_id === null) return <span className="text-muted-foreground/60">-</span>
+  if (data.check_verdict === "match") {
+    return (
+      <Pill tone="ok">
+        <ShieldCheck className="size-3.5" /> Match
+      </Pill>
+    )
+  }
+  if (data.check_verdict === "mismatch") {
+    return (
+      <Pill tone="bad">
+        <X className="size-3.5" strokeWidth={3} /> Mismatch
+      </Pill>
+    )
+  }
+  if (data.check_verdict === "unsure") {
+    return (
+      <Pill tone="warn">
+        <ShieldQuestion className="size-3.5" /> Unsure
+      </Pill>
+    )
+  }
+  return <span className="text-xs text-muted-foreground">Not checked</span>
+}
+
+// "the fix for order 3" under the item of an order Check placed for an accepted fix
+function ItemCell({ data }: CustomCellRendererProps<OrderRow>) {
+  if (!data) return null
+  if (data.replaces_order_id === null) return <span className="truncate">{data.description}</span>
+  return (
+    <span className="flex min-w-0 flex-col justify-center leading-tight">
+      <span className="truncate">{data.description}</span>
+      <span className="truncate text-xs text-muted-foreground">The fix for order {data.replaces_order_id}</span>
+    </span>
+  )
+}
+
+const REVIEW_LABELS: Record<string, string> = {
+  auto_approved: "Auto-captured",
+  approved: "Approved",
+  rejected: "Rejected",
+}
+
+function ReviewCell({ data, context }: CustomCellRendererProps<OrderRow, unknown, GridContext>) {
+  if (!data || !data.review_state) return <span className="text-muted-foreground/60">-</span>
+  if (data.review_action === "accept_fix") return <Pill tone="muted">Fix accepted</Pill>
+  if (data.review_state !== "needs_review") {
+    const tone = data.review_state === "rejected" ? "muted" : "ok"
+    return <Pill tone={tone}>{REVIEW_LABELS[data.review_state] || data.review_state}</Pill>
+  }
+  return (
+    <span className="flex min-w-0 items-center gap-2">
+      <Pill tone="warn">Needs review</Pill>
+      {context.reviewLinks && (
+        // opens the drawer. it never decides anything from here, the confirm page does.
+        // 44px tall so it's a fair target on a touch screen
+        <button
+          type="button"
+          onClick={() => context.openReview(data.id)}
+          aria-label={"Review order " + data.id}
+          className="inline-flex h-11 items-center rounded-lg bg-primary px-3.5 text-[13px] font-medium text-primary-foreground hover:opacity-90"
+        >
+          Review
+        </button>
+      )}
+    </span>
+  )
+}
+
+interface GridContext {
+  // agent orders go through Check, so "paid directly" means something
+  checkOn: boolean
+  reviewLinks: boolean
+  openReview: (orderId: number) => void
+  // scroll to another order's row and light it up
+  goToOrder: (orderId: number) => void
+}
+
+export function OrdersPage({
+  active,
+  refreshKey,
+  checkOn,
+  reviewLinks,
+}: {
+  active: boolean
+  refreshKey: number
+  // agent orders go through Check, so the grid shows what it decided
+  checkOn: boolean
+  reviewLinks: boolean
+}) {
+  // the order whose review drawer is open
+  const [reviewId, setReviewId] = useState<number | null>(null)
+  // bumped to load right away instead of waiting for the next poll
+  const [nudge, setNudge] = useState(0)
   const [rows, setRows] = useState<OrderRow[]>([])
   const [error, setError] = useState<string | null>(null)
   const [grouped, setGrouped] = useState(true)
   const [search, setSearch] = useState("")
   const firstLoad = useRef(true)
+  const wide = useWideScreen()
 
   useEffect(() => {
     if (!active) return
@@ -97,7 +289,18 @@ export function OrdersPage({ active, refreshKey }: { active: boolean; refreshKey
           let changed = orders.length !== previous.length
           const next = orders.map((order) => {
             const old = before.get(order.id)
-            if (old && old.status === order.status && old.capture_id === order.capture_id) return old
+            if (
+              old &&
+              old.status === order.status &&
+              old.capture_id === order.capture_id &&
+              old.review_state === order.review_state &&
+              old.check_verdict === order.check_verdict &&
+              old.decision_ms === order.decision_ms &&
+              old.review_action === order.review_action &&
+              old.check_mismatched_fields.join() === order.check_mismatched_fields.join() &&
+              old.replaced_by_order_id === order.replaced_by_order_id
+            )
+              return old
             changed = true
             // orders already there on first load don't flash, new ones do
             return { ...order, seen_at: firstLoad.current ? 0 : Date.now() }
@@ -116,7 +319,7 @@ export function OrdersPage({ active, refreshKey }: { active: boolean; refreshKey
       cancelled = true
       clearInterval(timer)
     }
-  }, [active, refreshKey])
+  }, [active, refreshKey, nudge])
 
   const { gridApi, onGridReady } = useGridRows(rows, (row) => String(row.id))
 
@@ -152,7 +355,7 @@ export function OrdersPage({ active, refreshKey }: { active: boolean; refreshKey
         flex: 1.2,
         minWidth: 170,
       },
-      { headerName: "Item", field: "description", flex: 2, minWidth: 200 },
+      { headerName: "Item", field: "description", cellRenderer: ItemCell, flex: 2, minWidth: 200 },
       { headerName: "Qty", field: "quantity", width: 72, type: "rightAligned", cellClass: "tabular-nums" },
       {
         headerName: "Total",
@@ -163,6 +366,9 @@ export function OrdersPage({ active, refreshKey }: { active: boolean; refreshKey
         valueFormatter: (params) => (params.data ? money(params.value, params.data.currency) : ""),
         comparator: (a, b) => Number(a) - Number(b),
       },
+      // right after the money, ahead of the long PayPal ids, so "Held: wrong size" and
+      // "Fixed" are on screen without scrolling
+      { headerName: "Status", field: "status", cellRenderer: StatusCell, flex: 1, minWidth: checkOn ? 230 : 130 },
       {
         headerName: "PayPal order",
         field: "paypal_order_id",
@@ -176,7 +382,36 @@ export function OrdersPage({ active, refreshKey }: { active: boolean; refreshKey
         cellRenderer: (params: CustomCellRendererProps<OrderRow>) => <CopyId value={params.value} />,
       },
       { headerName: "Bought by", field: "created_by", width: 122, cellRenderer: ByCell },
-      { headerName: "Status", field: "status", cellRenderer: StatusCell, flex: 1, minWidth: 130 },
+      // the Check columns, only when agent orders go through Check
+      { headerName: "Check", field: "check_verdict", cellRenderer: VerdictCell, width: 124, hide: !checkOn },
+      {
+        headerName: "Reason",
+        field: "check_reason",
+        flex: 2,
+        minWidth: 220,
+        hide: !checkOn,
+        tooltipField: "check_reason",
+        cellClass: "text-muted-foreground",
+      },
+      {
+        headerName: "Review",
+        field: "review_state",
+        cellRenderer: ReviewCell,
+        width: 236,
+        hide: !checkOn,
+        // stays in view while the other columns scroll, so the Review button is never off screen.
+        // not on a narrow screen, where a pinned column would leave no room for the rest
+        pinned: wide ? "right" : null,
+      },
+      {
+        headerName: "Time to decide",
+        field: "decision_ms",
+        width: 132,
+        type: "rightAligned",
+        hide: !checkOn,
+        cellClass: "tabular-nums",
+        valueFormatter: (params) => decisionTime(params.value),
+      },
       {
         headerName: "Time",
         field: "created_at",
@@ -187,16 +422,42 @@ export function OrdersPage({ active, refreshKey }: { active: boolean; refreshKey
         cellClass: "text-muted-foreground tabular-nums",
       },
     ],
-    [grouped]
+    [grouped, checkOn, wide]
   )
+
+  const openReview = useCallback((orderId: number) => setReviewId(orderId), [])
+  const closeReview = useCallback(() => setReviewId(null), [])
+  // the confirm page in the drawer finished a decision: read the row again now
+  const reviewDecided = useCallback(() => setNudge((count) => count + 1), [])
+
+  // from a fixed order to the order that replaced it
+  const goToOrder = useCallback(
+    (orderId: number) => {
+      if (!gridApi || gridApi.isDestroyed()) return
+      const node = gridApi.getRowNode(String(orderId))
+      if (!node) return
+      gridApi.ensureNodeVisible(node, "middle")
+      flashGridRow(gridApi, wrapper.current, String(orderId), "new")
+    },
+    [gridApi]
+  )
+
+  const gridContext = useMemo<GridContext>(
+    () => ({ checkOn, reviewLinks, openReview, goToOrder }),
+    [checkOn, reviewLinks, openReview, goToOrder]
+  )
+
+  const reviewOrder = reviewId === null ? null : rows.find((row) => row.id === reviewId) || null
 
   let captured = 0
   let volume = 0
   let byAgent = 0
+  let waiting = 0
   const storeIds = new Set<number>()
   for (const row of rows) {
     storeIds.add(row.store_id)
     if (row.created_by === "agent") byAgent += 1
+    if (row.review_state === "needs_review") waiting += 1
     if (row.status === "captured") {
       captured += 1
       volume += Number(row.total)
@@ -210,6 +471,8 @@ export function OrdersPage({ active, refreshKey }: { active: boolean; refreshKey
         <p className="mt-1 text-sm text-muted-foreground">
           Every purchase from a connected store. Prices are computed by the API from the verified spec, then paid with
           the saved sandbox buyer and captured.
+          {checkOn &&
+            " An agent's order is held first and checked against what the buyer asked for: a clean match is captured, anything off waits for the buyer."}
         </p>
       </div>
 
@@ -229,6 +492,13 @@ export function OrdersPage({ active, refreshKey }: { active: boolean; refreshKey
           <Ticker value={byAgent} />
         </Tile>
       </div>
+
+      {checkOn && waiting > 0 && (
+        <p className="rounded-lg bg-warn-soft px-3 py-2 text-[13px] text-warn">
+          {waiting === 1 ? "1 order is" : waiting + " orders are"} on hold, waiting for the buyer to confirm. Nothing
+          has been charged for {waiting === 1 ? "it" : "them"}.
+        </p>
+      )}
 
       {error && <ErrorNote>{error}</ErrorNote>}
 
@@ -256,9 +526,14 @@ export function OrdersPage({ active, refreshKey }: { active: boolean; refreshKey
             theme={calmTheme}
             rowData={NO_ROWS}
             columnDefs={columnDefs}
-            defaultColDef={{ sortable: true, resizable: true, suppressMovable: true }}
+            defaultColDef={DEFAULT_COL_DEF}
+            rowClassRules={ROW_CLASS_RULES}
             getRowId={(params: GetRowIdParams<OrderRow>) => String(params.data.id)}
+            // taller than the theme's 44 so the 44px Review button has air around it
+            rowHeight={52}
             enableCellSpan
+            context={gridContext}
+            tooltipShowDelay={300}
             onGridReady={onGridReady}
             animateRows
             suppressCellFocus
@@ -266,6 +541,12 @@ export function OrdersPage({ active, refreshKey }: { active: boolean; refreshKey
           />
         </div>
       </Card>
+
+      <AnimatePresence>
+        {reviewOrder && (
+          <ReviewDrawer key={reviewOrder.id} order={reviewOrder} onClose={closeReview} onDecided={reviewDecided} />
+        )}
+      </AnimatePresence>
     </div>
   )
 }

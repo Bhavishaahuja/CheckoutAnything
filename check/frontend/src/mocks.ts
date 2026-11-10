@@ -271,6 +271,14 @@ export const mockOrders: OrderDetail[] = [
       mismatchedFields: ['size'],
       latencyMs: 2010,
       createdMinutesAgo: 42,
+      // the one mock order with a fix to accept, so the confirm page's third button can be tried
+      suggestedFix: {
+        sku: 'RIDGE-TR-SLATE-W8',
+        item: 'Ridgeline trail runner',
+        price: '104.00',
+        quantity: 1,
+        sentence: 'Size 8 is in stock at the same price.',
+      },
     }),
   }),
   order({

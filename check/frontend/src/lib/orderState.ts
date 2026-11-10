@@ -3,6 +3,7 @@
 
 import type { DisplayStatus } from '../components/StatusChip'
 import type { Order } from '../types'
+import { heldLabel } from './shortReason'
 
 // approvals faster than this look like a rubber stamp, not a real look at the order
 export const RUBBER_STAMP_MS = 2000
@@ -11,10 +12,27 @@ export function displayStatus(order: Order): DisplayStatus {
   if (order.status === 'authorized' && order.review_state === 'needs_review') {
     return 'needs_review'
   }
+  if (wasFixed(order)) {
+    return 'fixed'
+  }
   return order.status
 }
 
-export type DecisionKind = 'auto' | 'approved' | 'rejected' | 'opened' | 'waiting' | 'none'
+// what the status chip says. an order held for a human says why in two or three words, from the
+// fields the check flagged: "Held: wrong size". undefined means the chip's own stock label
+export function statusLabel(order: Order): string | undefined {
+  if (displayStatus(order) !== 'needs_review') {
+    return undefined
+  }
+  return heldLabel(order.intent_check?.mismatched_fields, order.intent_check?.verdict)
+}
+
+// the human took the suggested fix: this order was voided and a new one placed instead
+export function wasFixed(order: Order): boolean {
+  return order.status === 'voided' && order.replaced_by_order_id !== null
+}
+
+export type DecisionKind = 'auto' | 'approved' | 'rejected' | 'fixed' | 'opened' | 'waiting' | 'none'
 
 export function decisionKind(order: Order): DecisionKind {
   if (order.review_state === 'auto_approved') {
@@ -22,6 +40,11 @@ export function decisionKind(order: Order): DecisionKind {
   }
   if (order.review_state === 'approved') {
     return 'approved'
+  }
+  if (wasFixed(order) || order.approval?.action === 'accept_fix') {
+    // the backend files it under rejected, since the original was voided. the human didn't say
+    // no though, they said "the other one"
+    return 'fixed'
   }
   if (order.review_state === 'rejected') {
     return 'rejected'
@@ -40,6 +63,7 @@ export const DECISION_LABELS: Record<DecisionKind, string> = {
   auto: 'Auto-captured',
   approved: 'Approved',
   rejected: 'Rejected',
+  fixed: 'Fix accepted',
   opened: 'Opened, deciding',
   waiting: 'Waiting on human',
   none: 'Not needed',
@@ -68,8 +92,24 @@ export function mandateCurrency(order: Order): string {
 
 // "held" means Leash didn't let the order through on its own: it went to a human, whatever they
 // decided. per agent, that share is the trust score: an agent that gets held a lot buys the wrong thing
+// a fixed order counts: the agent ordered the wrong thing and a human had to step in, even though
+// the right thing got bought in the end
 export function wasHeld(order: Order): boolean {
+  if (wasFixed(order)) {
+    return true
+  }
   return order.review_state === 'needs_review' || order.review_state === 'approved' || order.review_state === 'rejected'
+}
+
+// what an order adds to its agent's held rate: 1 held, 0 let through, null not counted. the
+// replacement for a fixed order isn't counted at all. the human picked it by accepting the fix, so
+// it says nothing about the agent, and counting it as a clean order would halve the held rate of
+// exactly the agent that got it wrong (1 held of 2 instead of 1 of 1)
+export function heldRateValue(order: Order): number | null {
+  if (order.replaces_order_id !== null) {
+    return null
+  }
+  return wasHeld(order) ? 1 : 0
 }
 
 export interface HeldRate {

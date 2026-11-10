@@ -50,6 +50,11 @@ class Settings(BaseSettings):
     # key:Name,key:Name, or a JSON object, {"key": "Name"}. the name always comes from here and
     # never from what the agent sends, see auth.require_agent
     agent_api_keys: str = ""
+    # agents allowed to say which store an order was placed at (POST /orders "merchant"), by the
+    # name their key has above, comma-separated. this is for Checkout Anything's own backend,
+    # which knows the store from its records. any other agent's "merchant" is dropped, so a
+    # shopping agent can't talk its way past the store rule
+    store_naming_agents: str = ""
     # the dashboard's login. left empty, login is off and the dashboard can't get a session
     demo_merchant_password: str = ""
     # the saved sandbox wallet POST /demo/orders pays with, from spikes/.vault_token.json. without
@@ -88,6 +93,15 @@ class Settings(BaseSettings):
         if url.startswith("postgresql://"):
             url = "postgresql+psycopg://" + url[len("postgresql://"):]
         return url
+
+
+def store_naming_agents(settings):
+    names = set()
+    for name in settings.store_naming_agents.split(","):
+        name = name.strip()
+        if name:
+            names.add(name)
+    return names
 
 
 def parse_agent_api_keys(setting):

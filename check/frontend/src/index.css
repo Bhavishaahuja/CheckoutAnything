@@ -108,85 +108,18 @@ p {
 .decide-button,
 .icon-button,
 .segmented__button,
-.scenario-button,
-.topbar__link {
+.scenario-button {
   transition:
     background-color var(--dur) var(--ease),
     color var(--dur) var(--ease),
     border-color var(--dur) var(--ease);
 }
 
-/* ---- merchant shell ---- */
+/* ---- merchant shell ----
+   the header itself is the shared one, components/app-header.css. what's left here is this
+   app's own: the reset confirm strip under it, and the sample-data flag */
 
-.topbar {
-  background: var(--surface);
-  border-bottom: 1px solid var(--border);
-}
-
-.topbar__inner {
-  max-width: 1360px;
-  margin: 0 auto;
-  padding: 0 24px;
-  height: 56px;
-  display: flex;
-  align-items: center;
-  gap: 20px;
-}
-
-.brand {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  color: var(--primary);
-  text-decoration: none;
-}
-
-.brand__name {
-  font-weight: 800;
-  font-size: 17px;
-  letter-spacing: -0.03em;
-  text-transform: lowercase;
-  color: var(--ink);
-}
-
-.topbar__store {
-  color: var(--ink-muted);
-  padding-left: 20px;
-  border-left: 1px solid var(--border);
-}
-
-.topbar__nav {
-  display: flex;
-  gap: 4px;
-  margin-left: auto;
-}
-
-.topbar__link {
-  padding: 6px 12px;
-  border-radius: var(--radius);
-  color: var(--ink-muted);
-  text-decoration: none;
-  font-weight: 500;
-}
-
-.topbar__link:hover {
-  background: var(--surface-sunk);
-  color: var(--ink);
-}
-
-/* a button styled as a nav link. the short label is for phones, see the 640px query */
-.topbar__reset {
-  border: 0;
-  background: none;
-  font: inherit;
-  cursor: pointer;
-}
-
-.topbar__reset:disabled {
-  cursor: progress;
-  opacity: 0.6;
-}
-
+/* the reset button's short label is for phones, see the 640px query */
 .topbar__reset-short {
   display: none;
 }
@@ -247,8 +180,7 @@ p {
   opacity: 0.7;
 }
 
-.danger-button:focus-visible,
-.topbar__reset:focus-visible {
+.danger-button:focus-visible {
   outline: 2px solid var(--focus);
   outline-offset: 2px;
 }
@@ -257,11 +189,6 @@ p {
   margin: -8px 0 16px;
   color: var(--ink-muted);
   font-size: 14px;
-}
-
-.topbar__link.active {
-  background: var(--primary-soft);
-  color: var(--primary);
 }
 
 .mock-flag {
@@ -531,31 +458,48 @@ p {
   box-shadow: inset 3px 0 0 var(--review);
 }
 
-/* a row that just changed status flashes its new color, then fades back. FLASH_MS in
+/* a row wears the color of where its money is: amber on hold for a human, green captured, gray
+   voided. the same meanings as the Checkout Anything Orders grid, from this app's own tokens */
+.grid-wrap .ag-row.row--held {
+  background-color: var(--authorized-bg);
+}
+
+.grid-wrap .ag-row.row--captured {
+  background-color: var(--captured-bg);
+}
+
+.grid-wrap .ag-row.row--voided {
+  background-color: var(--voided-bg);
+  color: var(--voided-ink);
+}
+
+/* a row that just changed status flashes its new color, then fades back to its resting tint.
+   stronger than the tint, or the flash wouldn't show on a row that is already colored. FLASH_MS in
    DashboardPage.tsx matches the animation length */
 .grid-wrap .row--flash {
   animation: row-flash 2.4s ease-out;
 }
 
 .grid-wrap .row--flash-needs_review {
-  --flash-color: var(--review-bg);
+  --flash-color: color-mix(in srgb, var(--authorized) 32%, var(--surface));
 }
 
 .grid-wrap .row--flash-authorized,
 .grid-wrap .row--flash-created {
-  --flash-color: var(--authorized-bg);
+  --flash-color: color-mix(in srgb, var(--authorized) 32%, var(--surface));
 }
 
 .grid-wrap .row--flash-captured {
-  --flash-color: var(--captured-bg);
+  --flash-color: color-mix(in srgb, var(--captured) 32%, var(--surface));
 }
 
+.grid-wrap .row--flash-fixed,
 .grid-wrap .row--flash-voided {
-  --flash-color: var(--voided-bg);
+  --flash-color: color-mix(in srgb, var(--voided) 32%, var(--surface));
 }
 
 .grid-wrap .row--flash-failed {
-  --flash-color: var(--failed-bg);
+  --flash-color: color-mix(in srgb, var(--failed) 32%, var(--surface));
 }
 
 @keyframes row-flash {
@@ -802,7 +746,8 @@ p {
   color: var(--captured-ink);
 }
 
-.decision--rejected {
+.decision--rejected,
+.decision--fixed {
   color: var(--voided-ink);
 }
 
@@ -1188,14 +1133,16 @@ p {
   background: var(--authorized);
 }
 
+/* "Held: wrong size". amber like the held row, and like the same chip in the Checkout Anything
+   Orders grid */
 .chip--needs_review {
-  color: var(--review-ink);
-  border-color: var(--review);
+  color: var(--authorized-ink);
+  border-color: var(--authorized);
   background: var(--surface);
 }
 
 .chip--needs_review .chip__dot {
-  background: var(--review);
+  background: var(--authorized);
 }
 
 .chip--voided {
@@ -1206,6 +1153,49 @@ p {
 
 .chip--voided .chip__dot {
   background: var(--voided);
+}
+
+/* a fixed order is a voided one, so it wears the voided gray */
+.chip--fixed {
+  color: var(--voided-ink);
+  border-color: var(--voided);
+  background: var(--surface);
+}
+
+.chip--fixed .chip__dot {
+  background: var(--voided);
+}
+
+.status-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* a text link that jumps to another order's row */
+.row-link {
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--link);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.row-link:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.panel__fix-link {
+  margin-top: 10px;
+  color: var(--ink-muted);
+  font-size: 14px;
 }
 
 .chip--failed {
@@ -1480,40 +1470,8 @@ p {
 }
 
 @media (max-width: 640px) {
-  .topbar__store {
-    display: none;
-  }
-
   .scenario-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  /* three links, reset and log out don't fit beside the brand in 390px, so the nav gets its own
-     row under it. wrapping, not sideways scrolling, so every link stays visible */
-  .topbar__inner {
-    padding: 8px 12px;
-    gap: 4px 8px;
-    height: auto;
-    min-height: 56px;
-    flex-wrap: wrap;
-  }
-
-  .topbar__nav {
-    gap: 0;
-    order: 3;
-    width: 100%;
-    margin-left: 0;
-    flex-wrap: wrap;
-  }
-
-  .mock-flag {
-    margin-left: auto;
-  }
-
-  .topbar__link {
-    padding: 6px 8px;
-    font-size: 14px;
-    white-space: nowrap;
   }
 
   .mock-flag {
@@ -1641,6 +1599,34 @@ p {
   touch-action: manipulation;
 }
 
+/* the suggested fix: its sentence, then its own full-width button, above approve and reject.
+   the buttons keep the 56px height, well over the 44px a thumb needs at 390px wide */
+.decide-bar__fix {
+  display: grid;
+  gap: 8px;
+  padding: 10px 12px 12px;
+  border: 1px solid var(--fix-line);
+  border-radius: var(--radius-lg);
+  background: var(--fix-bg);
+}
+
+.decide-bar__fix-text {
+  color: var(--ink);
+  font-size: 15px;
+  font-weight: 550;
+}
+
+.decide-button--fix {
+  width: 100%;
+  border: 0;
+  background: var(--fix);
+  color: var(--surface);
+}
+
+.decide-button--fix:active:not(:disabled) {
+  background: var(--fix-ink);
+}
+
 .decide-button--approve {
   border: 0;
   background: var(--primary);
@@ -1696,6 +1682,49 @@ p {
 .done__icon--rejected {
   background: var(--voided-bg);
   color: var(--voided-ink);
+}
+
+.done__icon--fixed {
+  background: var(--fix-bg);
+  color: var(--fix-ink);
+}
+
+/* how the replacement order turned out, after Accept fix */
+.done__outcome {
+  display: grid;
+  gap: 6px;
+  width: 100%;
+  max-width: 34ch;
+  margin: 8px 0;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  text-align: left;
+  font-size: 15px;
+}
+
+.done__outcome-label {
+  font-weight: 650;
+}
+
+.done__outcome--captured .done__outcome-label {
+  color: var(--captured-ink);
+}
+
+.done__outcome--review .done__outcome-label {
+  color: var(--review-ink);
+}
+
+.done__outcome--authorized .done__outcome-label {
+  color: var(--authorized-ink);
+}
+
+.done__outcome-items {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  color: var(--ink-muted);
 }
 
 .done__title {
@@ -1820,19 +1849,6 @@ p {
 
 .login__form {
   margin-top: 20px;
-}
-
-.topbar__logout {
-  font: inherit;
-  font-weight: 500;
-  background: none;
-  border: 0;
-  cursor: pointer;
-}
-
-.topbar__logout:focus-visible {
-  outline: 2px solid var(--focus);
-  outline-offset: 2px;
 }
 
 /* ---- disputes ---- */
@@ -2070,4 +2086,162 @@ p {
     animation: none !important;
     transition: none !important;
   }
+}
+
+/* ---- confirm page: Checkout Anything's theme ----
+   This is the buyer's phone screen, so it wears the main app's look (frontend/src/index.css
+   in the repo root): warm off-white page, white cards with a hairline border, the blue as the
+   one action color, Geist, rounded corners. The tokens are only changed inside .confirm, the
+   merchant dashboard keeps its own. Dark follows the phone's setting, with the app's dark
+   palette. */
+
+.confirm {
+  --bg: #fafaf7;
+  --surface: #ffffff;
+  --surface-sunk: #f2f2ed;
+  --border: #e5e4dd;
+  --divider: #e5e4dd;
+  --ink: #16181d;
+  --ink-muted: #666a73;
+  --ink-faint: #666a73;
+
+  --primary: #1d3fd0;
+  --primary-hover: #1935b0;
+  --primary-ink: #ffffff;
+  --focus: #1d3fd0;
+  --link: #1d3fd0;
+
+  --captured: #12805c;
+  --captured-ink: #12805c;
+  --captured-bg: #e3f4ec;
+  --authorized: #a86200;
+  --authorized-ink: #a86200;
+  --authorized-bg: #fbf0d9;
+  --review: #c8372d;
+  --review-ink: #c8372d;
+  --review-bg: #fbe9e7;
+  --failed: #c8372d;
+  --failed-ink: #c8372d;
+  --failed-bg: #fbe9e7;
+  --voided: #666a73;
+  --voided-ink: #666a73;
+  --voided-bg: #f2f2ed;
+
+  --fix: #1d3fd0;
+  --fix-ink: #1d3fd0;
+  --fix-bg: #e8edfd;
+  --fix-line: #c5d0fa;
+
+  --radius: 10px;
+  --radius-lg: 12px;
+
+  --font: 'Geist', ui-sans-serif, system-ui, sans-serif;
+  --mono: 'Geist Mono', ui-monospace, SFMono-Regular, monospace;
+  --serif: 'Geist', ui-sans-serif, system-ui, sans-serif;
+
+  font-family: var(--font);
+  color: var(--ink);
+  background: var(--bg);
+}
+
+@media (prefers-color-scheme: dark) {
+  .confirm {
+    --bg: #0c0e13;
+    --surface: #13161d;
+    --surface-sunk: #1a1e27;
+    --border: #252a35;
+    --divider: #252a35;
+    --ink: #e9ebf0;
+    --ink-muted: #9399a6;
+    --ink-faint: #9399a6;
+
+    --primary: #8aa4ff;
+    --primary-hover: #a3b8ff;
+    --primary-ink: #0c0e13;
+    --focus: #8aa4ff;
+    --link: #8aa4ff;
+
+    --captured: #4cc79a;
+    --captured-ink: #4cc79a;
+    --captured-bg: #12291f;
+    --authorized: #f0b354;
+    --authorized-ink: #f0b354;
+    --authorized-bg: #30240d;
+    --review: #ff8478;
+    --review-ink: #ff8478;
+    --review-bg: #331715;
+    --failed: #ff8478;
+    --failed-ink: #ff8478;
+    --failed-bg: #331715;
+    --voided: #9399a6;
+    --voided-ink: #9399a6;
+    --voided-bg: #1a1e27;
+
+    --fix: #8aa4ff;
+    --fix-ink: #8aa4ff;
+    --fix-bg: #171f3d;
+    --fix-line: #2b3a75;
+
+    color-scheme: dark;
+  }
+}
+
+.confirm .confirm__head {
+  gap: 10px;
+  padding: 14px 20px;
+  background: var(--bg);
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.confirm .confirm__body {
+  padding-top: 20px;
+}
+
+/* labels in the app are plain small text, not mono caps */
+.confirm .eyebrow {
+  font-family: var(--font);
+  font-size: 13px;
+  font-weight: 500;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.confirm .confirm__total {
+  font-family: var(--font);
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+/* the buyer's own words, in a card like the app's */
+.confirm .quote {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--ink);
+  font-size: 16px;
+  font-style: normal;
+  line-height: 1.45;
+}
+
+.confirm .why__label {
+  font-size: 13px;
+  font-weight: 500;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.confirm .decide-bar {
+  background: var(--bg);
+}
+
+.confirm .decide-button {
+  font-weight: 600;
+}
+
+.confirm .decide-button--reject {
+  border-width: 1px;
+  border-color: var(--border);
+  background: var(--surface);
+  color: var(--failed-ink);
 }

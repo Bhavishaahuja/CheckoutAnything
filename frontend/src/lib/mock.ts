@@ -421,6 +421,16 @@ function placeOrder(target: MockStore, item_id: string, variant_id: string | nul
     error: null,
     created_by,
     created_at: now(),
+    check_order_id: null,
+    check_mandate_id: null,
+    review_state: null,
+    check_verdict: null,
+    check_reason: null,
+    check_mismatched_fields: [],
+    decision_ms: null,
+    review_action: null,
+    replaced_by_order_id: null,
+    replaces_order_id: null,
   }
   orders.unshift(order)
   return order
@@ -532,6 +542,10 @@ export const mockApi: Api = {
       paypal_configured: true,
       claude_configured: true,
       vault_configured: true,
+      // the mock has no Check service, so it shows the app with the flag off
+      check_configured: false,
+      check_merchant_configured: false,
+      check_review_links: false,
     }
   },
 
@@ -601,5 +615,37 @@ export const mockApi: Api = {
       started.push({ store_id: target.store.id, url: script.spec.source_url })
     }
     return { mode, stores: started }
+  },
+
+  hasSession() {
+    return false
+  },
+
+  async logIn() {
+    throw new Error("The mock has no Check service")
+  },
+
+  async reviewLink() {
+    throw new Error("The mock has no Check service")
+  },
+
+  async listDisputes() {
+    return []
+  },
+
+  async syncDisputes() {
+    return { orders_checked: 0, disputes_found: 0, created: 0, updated: 0, errors: [] }
+  },
+
+  async disputeEvidence() {
+    throw new Error("The mock has no Check service")
+  },
+
+  async redraftDispute() {
+    throw new Error("The mock has no Check service")
+  },
+
+  async submitDisputeEvidence() {
+    throw new Error("The mock has no Check service")
   },
 }

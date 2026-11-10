@@ -15,6 +15,7 @@ def api_keys(monkeypatch):
     # set their own
     monkeypatch.setenv("AGENT_API_KEYS", "")
     monkeypatch.setenv("MERCHANT_API_KEY", MERCHANT_KEY)
+    monkeypatch.setenv("STORE_NAMING_AGENTS", "")
     monkeypatch.setenv("DEMO_MERCHANT_PASSWORD", DEMO_PASSWORD)
     get_settings.cache_clear()
     # the rate limiters are module-level, so their counts outlive a test. every TestClient comes

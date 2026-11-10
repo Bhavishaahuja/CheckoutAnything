@@ -89,6 +89,8 @@ class ReviewView(BaseModel):
     authorization_expires_at: datetime | None
     mandate: ReviewMandate
     intent_check: ReviewCheck | None
+    # the store the order was placed at, so the page can say where. None means our own store
+    merchant: str | None = None
     # set once the human accepted the suggested fix: this order was voided and replaced by that one
     replaced_by_order_id: int | None = None
 

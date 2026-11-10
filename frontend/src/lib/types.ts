@@ -142,6 +142,63 @@ export interface Order {
   error: string | null
   created_by: "agent" | "manual"
   created_at: string | null
+  // the rest is only set on an order that went through Check, and null otherwise
+  check_order_id: number | null
+  check_mandate_id: number | null
+  review_state: ReviewState | null
+  check_verdict: "match" | "mismatch" | "unsure" | null
+  check_reason: string | null
+  // the fields Check flagged, like ["size"]. the chip's short reason comes from these
+  check_mismatched_fields: string[]
+  // how long the human took to decide, in milliseconds
+  decision_ms: number | null
+  // what the human tapped on the confirm page
+  review_action: "approve" | "reject" | "accept_fix" | null
+  // an accepted fix voids the order and Check places the suggested one instead. these are the
+  // ids of the two rows in this grid: on the voided order, the new one. on the new one, the old
+  replaced_by_order_id: number | null
+  replaces_order_id: number | null
+}
+
+export type ReviewState = "needs_review" | "auto_approved" | "approved" | "rejected"
+
+export interface ReviewLink {
+  url: string
+  expires_at: string | null
+}
+
+// Disputes come from the Check service as they are (check/docs/api.md).
+export interface Dispute {
+  id: number
+  paypal_dispute_id: string
+  order_id: number
+  reason: string | null
+  status: string | null
+  evidence_submitted: boolean
+  evidence_submitted_at: string | null
+  evidence_type: string | null
+  has_summary: boolean
+  seller_response_due_at: string | null
+  created_at: string | null
+}
+
+export interface DisputeEvidence {
+  dispute: Dispute
+  packet: {
+    mandate?: { raw_request?: string; merchant?: string | null; max_price?: string | null } | null
+    order?: { store?: string; total?: string; currency?: string; status?: string } | null
+    intent_check?: { verdict?: string; risk_score?: number | null; reason?: string } | null
+    decision?: { released_by?: string; decision_ms?: number | null; decided_at?: string | null } | null
+  }
+  summary: string
+}
+
+export interface DisputeSync {
+  orders_checked: number
+  disputes_found: number
+  created: number
+  updated: number
+  errors: { order_id: number; message: string }[]
 }
 
 export interface AppConfig {
@@ -151,6 +208,12 @@ export interface AppConfig {
   paypal_configured: boolean
   claude_configured: boolean
   vault_configured: boolean
+  // agent orders go through Check (CHECK_URL is set on the API)
+  check_configured: boolean
+  // the API can read check results and disputes
+  check_merchant_configured: boolean
+  // the API can make links to the buyer's confirm page
+  check_review_links: boolean
 }
 
 export interface ConnectResponse {

@@ -15,6 +15,8 @@ npm run dev
 
 `VITE_API_URL` points at the FastAPI backend (default `http://127.0.0.1:8000`).
 
+`VITE_CHECK_URL` is where the Check app (`check/frontend`) is served (default `http://localhost:5175`). Both apps wear the same header (`src/components/AppHeader.tsx` and `app-header.css`, kept identical in both, CI compares them): Connect and Orders are screens here, Check opens the Check app, and Disputes is a screen here when the API can reach Check. The Check app links back with `VITE_CONNECT_URL`.
+
 No backend running? Set `VITE_USE_MOCK=true` in `.env.local`. The UI then plays scripted connect runs for the three demo stores and shows a "Mock data, no backend" badge. Nothing in mock mode talks to PayPal or Claude.
 
 ## Screens

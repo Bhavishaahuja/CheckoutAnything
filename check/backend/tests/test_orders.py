@@ -1804,6 +1804,8 @@ def test_review_page_has_what_confirmpage_needs_and_no_more(client, paypal, clau
     assert set(body) == {
         "id", "items", "total", "shipping_amount", "currency", "status", "review_state",
         "authorization_expires_at", "mandate", "intent_check", "replaced_by_order_id",
+        # the store the order was placed at, so the page can say where. the buyer chose it
+        "merchant",
     }
     assert body["items"][0]["name"] == "Trail runner"
     assert body["total"] == "66.00"
@@ -2381,3 +2383,71 @@ def test_main_app_serves_order_routes():
     assert "post" in paths["/review/{token}/reject"]
     assert "post" in paths["/orders/{order_id}/authorize"]
     assert "get" in paths["/orders/{order_id}"]
+
+
+# ---- orders from a connected store (POST /orders with a merchant) ----
+
+
+def merchant_rule(order):
+    for result in order["intent_check"]["rule_results"]:
+        if result["rule"] == "merchant":
+            return result
+    return None
+
+
+@pytest.fixture
+def trusted_agent(monkeypatch):
+    # the test key's agent is "Shopping agent". this lets it say which store an order is at
+    monkeypatch.setenv("STORE_NAMING_AGENTS", "Some other agent, Shopping agent")
+    get_settings.cache_clear()
+
+
+def post_order_at(client, paypal, merchant):
+    paypal.add(
+        responses.POST,
+        BASE + "/v2/checkout/orders",
+        status=201,
+        json=authorized_paypal_order("5O190127TN364715T", "0AW2184448108334S"),
+    )
+    body = dict(ORDER_BODY)
+    body["vault_id"] = VAULT_ID
+    # mandate 2 is for Ridgeline Outdoors
+    body["mandate_id"] = 2
+    if merchant is not None:
+        body["merchant"] = merchant
+    response = client.post("/orders", json=body)
+    assert response.status_code == 201, response.text
+    return merchant_view(client, response.json())
+
+
+def test_a_trusted_agents_order_is_at_the_store_it_names(client, paypal, trusted_agent):
+    order = post_order_at(client, paypal, "Ridgeline Outdoors")
+
+    assert order["merchant"] == "Ridgeline Outdoors"
+    assert merchant_rule(order)["passed"] is True
+    # the buyer sees the real store at PayPal, not ours
+    sent = sent_json(paypal, "/v2/checkout/orders")
+    assert sent["purchase_units"][0]["description"] == "Ridgeline Outdoors agent order"
+
+
+def test_an_agent_that_isnt_trusted_cant_name_the_store(client, paypal):
+    order = post_order_at(client, paypal, "Ridgeline Outdoors")
+
+    assert order["merchant"] is None
+    assert merchant_rule(order)["passed"] is False
+
+
+def test_an_order_with_no_store_is_still_at_our_own(client, paypal, trusted_agent):
+    order = post_order_at(client, paypal, None)
+
+    assert order["merchant"] is None
+    assert merchant_rule(order)["passed"] is False
+    sent = sent_json(paypal, "/v2/checkout/orders")
+    assert sent["purchase_units"][0]["description"] == "Fernwood Supply Co agent order"
+
+
+def test_a_store_name_that_is_too_long_or_empty_is_refused(client):
+    for bad in ["", "x" * 201]:
+        body = dict(ORDER_BODY)
+        body["merchant"] = bad
+        assert client.post("/orders", json=body).status_code == 422

@@ -2,6 +2,7 @@ import {
   CellStyleModule,
   ClientSideRowModelModule,
   ExternalFilterModule,
+  HighlightChangesModule,
   ModuleRegistry,
   QuickFilterModule,
   RowApiModule,
@@ -12,6 +13,7 @@ import {
   type ColDef,
   type IRowNode,
   type RowClassParams,
+  type RowClassRules,
   type RowClickedEvent,
   type RowDataUpdatedEvent,
 } from 'ag-grid-community'
@@ -26,13 +28,15 @@ import {
   DecisionCell,
   HeldRateCell,
   OrderCell,
+  ROW_LINK_ATTRIBUTE,
   ReasonCell,
   RiskCell,
   StatusCell,
   TotalCell,
+  type OrderGridContext,
 } from '../components/orderCells'
 import { buyerName, formatTime, summarizeItems } from '../lib/format'
-import { DECISION_LABELS, decisionKind, decisionMs, displayStatus, heldRateAgg, wasHeld } from '../lib/orderState'
+import { DECISION_LABELS, decisionKind, decisionMs, displayStatus, heldRateAgg, heldRateValue, statusLabel } from '../lib/orderState'
 import { usePolling } from '../lib/usePolling'
 import type { Order } from '../types'
 
@@ -47,6 +51,8 @@ const gridModules = [
   RowSelectionModule,
   RowStyleModule,
   CellStyleModule,
+  // the flash on a cell whose value changed between two polls
+  HighlightChangesModule,
   // Enterprise: group by agent, and the per-agent held rate
   RowGroupingModule,
 ]
@@ -82,6 +88,8 @@ const gridTheme = themeQuartz.withParams({
   // hover is drawn as an outline in index.css, not a fill
   rowHoverColor: 'transparent',
   selectedRowBackgroundColor: 'var(--primary-soft)',
+  // the wash on a cell whose value just changed (enableCellChangeFlash)
+  valueChangeValueHighlightBackgroundColor: 'var(--highlight)',
   accentColor: 'var(--focus)',
   wrapperBorder: false,
   wrapperBorderRadius: 0,
@@ -89,6 +97,17 @@ const gridTheme = themeQuartz.withParams({
   columnBorder: false,
   spacing: 7,
 })
+
+// the row's color says where the money is, the same four meanings as the Checkout Anything
+// Orders grid: amber on hold for a human, green captured, gray voided (a fixed order is a voided
+// one). everything here went through Check, so there is no "paid directly" row to leave plain.
+// the classes are in index.css
+const ROW_CLASS_RULES: RowClassRules<Order> = {
+  'row--needs-review': (params) => params.data?.review_state === 'needs_review',
+  'row--held': (params) => params.data?.status === 'authorized' && params.data?.review_state === 'needs_review',
+  'row--captured': (params) => params.data?.status === 'captured',
+  'row--voided': (params) => params.data?.status === 'voided',
+}
 
 type Filter = 'all' | 'needs_review' | 'auto' | 'human'
 
@@ -113,7 +132,7 @@ function matchesFilter(order: Order, filter: Filter): boolean {
 }
 
 // how urgent a status is, so sorting the Status column puts work-to-do on top
-const STATUS_ORDER = ['needs_review', 'created', 'authorized', 'failed', 'voided', 'captured']
+const STATUS_ORDER = ['needs_review', 'created', 'authorized', 'failed', 'fixed', 'voided', 'captured']
 
 // below this the grid only has room for about three columns, so it keeps the ones a merchant on a
 // phone actually needs: what was ordered, whether money is held, and how much
@@ -191,10 +210,13 @@ export function DashboardPage() {
       headerName: 'Status',
       colId: 'status',
       valueGetter: (params) => (params.data ? displayStatus(params.data) : ''),
+      // quick search finds "wrong size" too
+      getQuickFilterText: (params) => (params.data ? (statusLabel(params.data) ?? String(params.value)) : ''),
       comparator: (a: string, b: string) => STATUS_ORDER.indexOf(a) - STATUS_ORDER.indexOf(b),
       cellRenderer: StatusCell,
-      // wide enough for the longest chip, "Waiting on buyer"
-      width: narrow ? 150 : 160,
+      // wide enough for the longest chip, "Waiting on buyer", or "Fixed" with its link to the
+      // new order
+      width: narrow ? 170 : 215,
     }
 
     // on a phone, status comes right after the order so you can see what's held without scrolling
@@ -219,7 +241,8 @@ export function DashboardPage() {
     const heldColumn: ColDef<Order> = {
       headerName: 'Held by Check',
       colId: 'held',
-      valueGetter: (params) => (params.data ? (wasHeld(params.data) ? 1 : 0) : null),
+      // null for a fix's replacement order, which heldRateAgg then leaves out
+      valueGetter: (params) => (params.data ? heldRateValue(params.data) : null),
       aggFunc: heldRateAgg,
       cellRenderer: HeldRateCell,
       hide: !groupByAgent,
@@ -283,6 +306,8 @@ export function DashboardPage() {
       sortable: true,
       resizable: true,
       suppressMovable: true,
+      // a poll hands the grid fresh rows. any cell whose value is different now flashes
+      enableCellChangeFlash: true,
     }),
     [],
   )
@@ -300,10 +325,27 @@ export function DashboardPage() {
   }, [filter])
 
   const openOrder = useCallback((event: RowClickedEvent<Order>) => {
+    // a click on the "New order #12" link inside a row is for that link, not for this row
+    const target = event.event?.target
+    if (target instanceof Element && target.closest('[' + ROW_LINK_ATTRIBUTE + ']')) {
+      return
+    }
     if (event.data) {
       setSelectedId(event.data.id)
     }
   }, [])
+
+  // from a fixed order to the order that replaced it: scroll to the row, select it, open it
+  const goToOrder = useCallback((orderId: number) => {
+    const api = gridRef.current?.api
+    const node = api?.getRowNode(String(orderId))
+    if (api && node) {
+      api.ensureNodeVisible(node, 'middle')
+      node.setSelected(true)
+    }
+    setSelectedId(orderId)
+  }, [])
+  const gridContext = useMemo<OrderGridContext>(() => ({ goToOrder }), [goToOrder])
 
   useEffect(() => {
     // after a reset from the top bar, don't make the merchant wait for the next poll
@@ -452,6 +494,7 @@ export function DashboardPage() {
                 columnDefs={columnDefs}
                 defaultColDef={defaultColDef}
                 getRowId={(params) => String(params.data.id)}
+                context={gridContext}
                 autoGroupColumnDef={autoGroupColumnDef}
                 groupDefaultExpanded={-1}
                 suppressAggFuncInHeader
@@ -462,7 +505,8 @@ export function DashboardPage() {
                 isExternalFilterPresent={isExternalFilterPresent}
                 doesExternalFilterPass={doesExternalFilterPass}
                 rowSelection={{ mode: 'singleRow', checkboxes: false, enableClickSelection: true }}
-                rowClassRules={{ 'row--needs-review': (params) => params.data?.review_state === 'needs_review' }}
+                rowClassRules={ROW_CLASS_RULES}
+                animateRows
                 getRowClass={getRowClass}
                 onRowDataUpdated={onRowDataUpdated}
                 onRowClicked={openOrder}
@@ -481,7 +525,7 @@ export function DashboardPage() {
         )}
       </div>
 
-      {selectedOrder && <OrderPanel order={selectedOrder} onClose={closePanel} />}
+      {selectedOrder && <OrderPanel order={selectedOrder} onClose={closePanel} onGoToOrder={goToOrder} />}
     </section>
   )
 }

@@ -4,7 +4,7 @@
 import { useEffect, useRef } from 'react'
 import { compareMandate } from '../lib/compare'
 import { buyerName, describeItem, formatDateTime, formatDuration, formatMoney } from '../lib/format'
-import { DECISION_LABELS, RUBBER_STAMP_MS, decisionKind, displayStatus, isRubberStamp } from '../lib/orderState'
+import { DECISION_LABELS, RUBBER_STAMP_MS, decisionKind, displayStatus, isRubberStamp, statusLabel } from '../lib/orderState'
 import type { Order } from '../types'
 import { ReviewLinkBox } from './ReviewLinkBox'
 import { RiskBar } from './RiskBar'
@@ -13,9 +13,11 @@ import { StatusChip } from './StatusChip'
 interface OrderPanelProps {
   order: Order
   onClose: () => void
+  // jump to another order, for the link between a fixed order and its replacement
+  onGoToOrder: (orderId: number) => void
 }
 
-export function OrderPanel({ order, onClose }: OrderPanelProps) {
+export function OrderPanel({ order, onClose, onGoToOrder }: OrderPanelProps) {
   const closeButton = useRef<HTMLButtonElement>(null)
 
   useEffect(() => {
@@ -53,9 +55,27 @@ export function OrderPanel({ order, onClose }: OrderPanelProps) {
 
         <div className="panel__body">
           <div className="panel__status">
-            <StatusChip status={displayStatus(order)} />
+            <StatusChip status={displayStatus(order)} label={statusLabel(order)} />
             <span className={'decision decision--' + decisionKind(order)}>{DECISION_LABELS[decisionKind(order)]}</span>
           </div>
+          {order.replaced_by_order_id !== null && (
+            <p className="panel__fix-link">
+              The human accepted the suggested fix, so this order was voided and replaced by{' '}
+              <button type="button" className="row-link" onClick={() => onGoToOrder(order.replaced_by_order_id as number)}>
+                order #{order.replaced_by_order_id}
+              </button>
+              .
+            </p>
+          )}
+          {order.replaces_order_id !== null && (
+            <p className="panel__fix-link">
+              Placed when the human accepted the suggested fix for{' '}
+              <button type="button" className="row-link" onClick={() => onGoToOrder(order.replaces_order_id as number)}>
+                order #{order.replaces_order_id}
+              </button>
+              .
+            </p>
+          )}
 
           <section className="panel__section">
             <h3 className="eyebrow">They asked for</h3>

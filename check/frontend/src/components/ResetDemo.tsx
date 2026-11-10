@@ -25,7 +25,7 @@ export function ResetButton({ controls }: { controls: ResetControls }) {
   return (
     <button
       type="button"
-      className="topbar__link topbar__reset"
+      className="ca-header__tool"
       onClick={controls.ask}
       disabled={busy}
       aria-expanded={controls.state.step === 'confirming'}

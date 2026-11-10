@@ -5,6 +5,7 @@ import { scenarioBlocker } from './lib/demoScenarios'
 import { SEED_LABEL_PREFIX } from './lib/format'
 import { mockMandates, mockOrders, mockPlacedOrder } from './mocks'
 import type {
+  AcceptFixResult,
   ApprovalAction,
   DemoScenario,
   Dispute,
@@ -259,7 +260,7 @@ function openMockReview(token: string): void {
   order.approval = approval
 }
 
-function decideMockReview(token: string, action: ApprovalAction, clientDecisionMs: number): ReviewView {
+function decideMockReview(token: string, action: 'approve' | 'reject', clientDecisionMs: number): ReviewView {
   const order = findMockReviewOrder(token)
   if (usedMockTokens.has(token) || !isWaitingForReview(order)) {
     throw new ApiError(409, {
@@ -530,7 +531,7 @@ export async function markReviewOpened(token: string): Promise<void> {
   return request<void>(reviewPath(token) + '/opened', { method: 'POST' }, { withSession: false })
 }
 
-async function decideReview(token: string, action: ApprovalAction, decisionMs: number): Promise<ReviewView> {
+async function decideReview(token: string, action: 'approve' | 'reject', decisionMs: number): Promise<ReviewView> {
   // the backend wants a whole number that fits a Postgres int
   const clientMs = Math.min(Math.max(Math.round(decisionMs), 0), 2147483647)
   if (USE_MOCKS) {
@@ -538,6 +539,99 @@ async function decideReview(token: string, action: ApprovalAction, decisionMs: n
   }
   return request<ReviewView>(
     reviewPath(token) + '/' + action,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ decision_ms: clientMs }),
+    },
+    { withSession: false },
+  )
+}
+
+function acceptMockFix(token: string, clientDecisionMs: number): AcceptFixResult {
+  const order = findMockReviewOrder(token)
+  const fix = order.intent_check?.suggested_fix
+  if (usedMockTokens.has(token) || !isWaitingForReview(order)) {
+    throw new ApiError(409, {
+      message: 'This order was already decided.',
+      status: order.status,
+      review_state: order.review_state,
+    })
+  }
+  if (!fix) {
+    // same as the real endpoint: nothing moved, the link still works for approve or reject
+    throw new ApiError(409, { message: "There's no suggested fix for this order" })
+  }
+
+  // the original is voided, exactly like a reject, with the tap recorded as accept_fix
+  decideMockReview(token, 'reject', clientDecisionMs)
+  if (order.approval) {
+    order.approval.action = 'accept_fix'
+  }
+
+  let highestId = 0
+  for (const existing of mockStore) {
+    highestId = Math.max(highestId, existing.id)
+  }
+  // the fix came from the catalog and fits the mandate, so the mock always auto-captures it
+  const shipping = Number(order.shipping_amount ?? 0)
+  const replacement: OrderDetail = {
+    ...structuredClone(order),
+    id: highestId + 1,
+    paypal_order_id: 'MOCKORDER' + (highestId + 1),
+    authorization_id: 'MOCKAUTH' + (highestId + 1),
+    capture_id: 'MOCKCAP' + (highestId + 1),
+    void_result: null,
+    replaced_by_order_id: null,
+    replaces_order_id: order.id,
+    // the fix only names the item, so the mock can't say which size or color it swapped in
+    items: [{ ...order.items[0], name: fix.item, size: null, quantity: fix.quantity, unit_price: fix.price }],
+    total: (Number(fix.price) * fix.quantity + shipping).toFixed(2),
+    status: 'captured',
+    review_state: 'auto_approved',
+    authorization_expires_at: null,
+    created_at: new Date().toISOString(),
+    intent_check: order.intent_check
+      ? {
+          ...order.intent_check,
+          id: order.intent_check.id + 1000,
+          verdict: 'match',
+          risk_score: 4,
+          reason: 'Matches the mandate.',
+          mismatched_fields: [],
+          suggested_fix: null,
+          created_at: new Date().toISOString(),
+        }
+      : null,
+    approval: null,
+    decisions: [],
+    approvals: [],
+  }
+  mockStore.push(replacement)
+  order.replaced_by_order_id = replacement.id
+
+  return {
+    order: toReviewView(order),
+    replacement: {
+      id: replacement.id,
+      items: replacement.items,
+      total: replacement.total,
+      currency: replacement.currency,
+      status: replacement.status,
+      review_state: replacement.review_state,
+    },
+  }
+}
+
+// voids this order and places the suggested fix instead, on the same saved wallet. the answer has
+// both: the original (now voided) and how the new order turned out
+export async function acceptFix(token: string, decisionMs: number): Promise<AcceptFixResult> {
+  const clientMs = Math.min(Math.max(Math.round(decisionMs), 0), 2147483647)
+  if (USE_MOCKS) {
+    return mockDelay(acceptMockFix(token, clientMs))
+  }
+  return request<AcceptFixResult>(
+    reviewPath(token) + '/accept-fix',
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

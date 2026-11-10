@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react'
-import { NavLink, Outlet } from 'react-router'
+import { NavLink, Outlet, useLocation, useNavigate } from 'react-router'
 import { SESSION_EXPIRED_EVENT, USE_MOCKS, hasSession, logOut } from '../api'
-import { BrandMark } from './BrandMark'
+import { CONNECT_URL } from '../lib/appLinks'
+import { AppHeader, type HeaderLink, type Section } from './AppHeader'
 import { LoginForm } from './LoginForm'
 import { useResetDemo } from '../lib/useResetDemo'
 import { ResetButton, ResetStrip } from './ResetDemo'
@@ -33,40 +34,46 @@ export function MerchantLayout() {
 
   const loggedIn = session === 'in'
 
+  // the shared header. Check and Disputes are pages of this app. Connect and Orders are screens of
+  // the Checkout Anything app, which picks its screen from the hash
+  const navigate = useNavigate()
+  const location = useLocation()
+  const headerLinks: Record<Section, HeaderLink> = {
+    connect: { href: CONNECT_URL + '/#connect' },
+    orders: { href: CONNECT_URL + '/#orders' },
+    check: { href: '/dashboard', onNavigate: () => navigate('/dashboard') },
+    disputes: { href: '/disputes', onNavigate: () => navigate('/disputes') },
+  }
+  // everything here that isn't Disputes is part of Check, the place-order page included
+  const currentSection: Section = location.pathname.startsWith('/disputes') ? 'disputes' : 'check'
+
   return (
     <div className="shell">
-      <header className="topbar">
-        <div className="topbar__inner">
-          <NavLink to="/dashboard" className="brand">
-            <BrandMark />
-            <span className="brand__name">Checkout Anything</span>
-          </NavLink>
-          <span className="topbar__store">Fernwood Supply Co</span>
-          <nav className="topbar__nav" aria-label="Main">
+      <AppHeader
+        current={currentSection}
+        links={headerLinks}
+        tools={
+          <>
+            <span className="ca-header__note">Fernwood Supply Co</span>
             {loggedIn && (
               <>
-                <NavLink to="/dashboard" className="topbar__link">
-                  Orders
-                </NavLink>
-                <NavLink to="/place-order" className="topbar__link">
+                <NavLink to="/place-order" className="ca-header__tool">
                   Place order
-                </NavLink>
-                <NavLink to="/disputes" className="topbar__link">
-                  Disputes
                 </NavLink>
                 <ResetButton controls={reset} />
               </>
             )}
             {loggedIn && !USE_MOCKS && (
-              <button type="button" className="topbar__link topbar__logout" onClick={handleLogOut}>
+              <button type="button" className="ca-header__tool" onClick={handleLogOut}>
                 Log out
               </button>
             )}
-          </nav>
-          {USE_MOCKS && <span className="mock-flag">Sample data</span>}
-        </div>
+            {USE_MOCKS && <span className="mock-flag">Sample data</span>}
+          </>
+        }
+      >
         {loggedIn && <ResetStrip controls={reset} />}
-      </header>
+      </AppHeader>
       <main className="page">
         {loggedIn ? (
           <Outlet />

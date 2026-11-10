@@ -126,6 +126,17 @@ button:disabled {
 /* ---- AG Grid row feedback ---- */
 
 .ag-row.row-dim { color: var(--muted-foreground); }
+
+/* Orders grid: a row wears the color of where its money is. All from the theme's variables, so
+   dark mode follows. The Check dashboard uses the same four meanings (check/frontend). */
+.ag-row.row-held { background-color: color-mix(in srgb, var(--warn-soft) 70%, var(--card)); }
+.ag-row.row-captured { background-color: color-mix(in srgb, var(--ok-soft) 60%, var(--card)); }
+.ag-row.row-voided {
+  background-color: var(--muted);
+  color: var(--muted-foreground);
+}
+/* paid directly, never held by Check: the plain card, no tint */
+.ag-row.row-direct { background-color: var(--card); }
 .ag-row.row-clickable { cursor: pointer; }
 
 .spin-slow {
