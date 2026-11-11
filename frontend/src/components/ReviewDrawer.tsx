@@ -25,6 +25,18 @@ type Phase =
   | { kind: "ready"; link: ReviewLink }
   | { kind: "failed"; message: string }
 
+// the confirm page reads ?theme= before it paints (check/frontend/index.html), so the page in the
+// drawer wears this app's theme. only the framed copy, the buyer's link below stays as it is
+function inThisTheme(url: string): string {
+  try {
+    const framed = new URL(url)
+    framed.searchParams.set("theme", document.documentElement.classList.contains("dark") ? "dark" : "light")
+    return framed.toString()
+  } catch {
+    return url
+  }
+}
+
 function originOf(url: string): string | null {
   try {
     return new URL(url).origin
@@ -195,7 +207,7 @@ export function ReviewDrawer({
             <>
               <iframe
                 ref={frame}
-                src={phase.link.url}
+                src={inThisTheme(phase.link.url)}
                 title={"Confirm page for order " + order.id}
                 className="min-h-0 w-full flex-1 border-0 bg-background"
                 referrerPolicy="no-referrer"

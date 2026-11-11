@@ -8,7 +8,7 @@ import { useState, type ReactNode } from "react"
 
 import { cn } from "@/lib/utils"
 
-export const PILL_TONES = {
+const PILL_TONES = {
   ok: "bg-ok-soft text-ok",
   bad: "bg-bad-soft text-bad",
   warn: "bg-warn-soft text-warn",
