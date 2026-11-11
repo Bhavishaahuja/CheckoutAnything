@@ -1,16 +1,22 @@
+import { ArrowLeftRight, Check, CircleSlash, LoaderCircle, Sparkles, TriangleAlert, X } from 'lucide-react'
+import { motion } from 'motion/react'
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { useParams } from 'react-router'
 import { ApiError, acceptFix, approveReview, getReview, markReviewOpened, rejectReview } from '../api'
+import { Card, Pill } from '@/components/bits'
 import { BrandMark } from '../components/BrandMark'
-import { describeItem, formatDuration, formatMoney } from '../lib/format'
+import { Button } from '@/components/ui/button'
+import { formatDuration, formatEventDate, formatMoney, sizeLabel } from '../lib/format'
 import { tellParentReviewDecided } from '../lib/parentMessage'
 import { useAsync } from '../lib/useAsync'
-import type { AcceptFixResult, ApprovalAction, ReviewView } from '../types'
+import { cn } from '@/lib/utils'
+import type { AcceptFixResult, ApprovalAction, OrderItem, ReviewView } from '../types'
 
 // The human's mobile page, opened from a one-time review link on their phone. Shows what the
 // agent ordered next to what they asked for, and two big buttons: approve captures the money,
 // reject releases the hold. When Check found a fix in the catalog there is a third, Accept fix,
-// which swaps the order for the right one. Designed at 390px wide.
+// which swaps the order for the right one. Designed at 390px wide, and it also has to work at the
+// review drawer's ~480px inside the Checkout Anything app. Styled with that app's tokens.
 export function ConfirmPage() {
   const { token } = useParams()
 
@@ -35,7 +41,9 @@ function ConfirmReview({ token }: { token: string }) {
   if (review.status === 'loading') {
     return (
       <ConfirmFrame>
-        <p className="state">Loading your order...</p>
+        <p className="flex items-center justify-center gap-2 py-16 text-sm text-muted-foreground" role="status">
+          <LoaderCircle className="spin-slow size-4" aria-hidden /> Loading your order...
+        </p>
       </ConfirmFrame>
     )
   }
@@ -126,82 +134,174 @@ function Decide({ token, order }: { token: string; order: ReviewView }) {
   // no suggested fix from Check, no button. it also goes once the server says the fix is gone
   const fix = phase.kind === 'failed' && phase.fixGone ? null : (check?.suggested_fix ?? null)
 
+  const flagged = new Set(check?.mismatched_fields ?? [])
+  const blocked = phase.kind === 'failed' && !phase.canRetry
+
   return (
     <ConfirmFrame
       footer={
-        <div className="decide-bar">
+        <div className="flex flex-col gap-3">
           {phase.kind === 'failed' && (
-            <div className="decide-bar__error" role="alert">
-              <strong>{phase.title}</strong> {phase.message}
-            </div>
+            <p className="rounded-lg bg-bad-soft px-3 py-2 text-[13px] text-bad" role="alert">
+              <strong className="font-semibold">{phase.title}</strong> {phase.message}
+            </p>
           )}
-          {!(phase.kind === 'failed' && !phase.canRetry) && fix && (
-            <div className="decide-bar__fix">
-              <p className="decide-bar__fix-text">{fix.sentence}</p>
-              <button
-                type="button"
-                className="decide-button decide-button--fix"
+          {!blocked && fix && (
+            <div className="flex flex-col gap-2.5 rounded-xl border border-primary/25 bg-info-soft p-3">
+              <p className="flex items-start gap-2 text-sm font-medium">
+                <Sparkles className="mt-0.5 size-4 shrink-0 text-primary" aria-hidden />
+                {fix.sentence}
+              </p>
+              <Button
+                size="lg"
+                className="w-full text-[15px]"
                 onClick={() => decide('accept_fix')}
                 disabled={sending !== null}
               >
-                {sending === 'accept_fix' ? 'Swapping the order...' : 'Accept fix'}
-              </button>
+                {sending === 'accept_fix' ? (
+                  <>
+                    <LoaderCircle className="spin-slow" /> Swapping the order...
+                  </>
+                ) : (
+                  <>
+                    <ArrowLeftRight /> Accept fix
+                  </>
+                )}
+              </Button>
             </div>
           )}
-          {!(phase.kind === 'failed' && !phase.canRetry) && (
-            <div className="decide-bar__buttons">
-              <button
-                type="button"
-                className="decide-button decide-button--reject"
+          {!blocked && (
+            <div className="grid grid-cols-[2fr_3fr] gap-2.5">
+              <Button
+                size="lg"
+                variant="danger"
+                className="text-[15px]"
                 onClick={() => decide('reject')}
                 disabled={sending !== null}
               >
                 {sending === 'reject' ? 'Rejecting...' : 'Reject'}
-              </button>
-              <button
-                type="button"
-                className="decide-button decide-button--approve"
+              </Button>
+              <Button
+                size="lg"
+                variant="ok"
+                className="text-[15px]"
                 onClick={() => decide('approve')}
                 disabled={sending !== null}
               >
                 {sending === 'approve' ? 'Approving...' : 'Approve ' + total}
-              </button>
+              </Button>
             </div>
           )}
         </div>
       }
     >
-      <p className="eyebrow">Your agent wants to buy from {order.merchant || OWN_STORE}</p>
-      <ul className="item-list">
-        {order.items.map((item, index) => (
-          <li key={index}>
-            {item.quantity > 1 && <span className="mono">{item.quantity} x </span>}
-            {describeItem(item)}
-          </li>
-        ))}
-      </ul>
-      <p className="confirm__total">{total}</p>
-      {order.shipping_amount !== null && Number(order.shipping_amount) > 0 && (
-        <p className="confirm__shipping">Includes {formatMoney(order.shipping_amount, order.currency)} shipping</p>
-      )}
-
-      <p className="eyebrow">You asked for</p>
-      <blockquote className="quote">{order.mandate.raw_request}</blockquote>
-
-      <div className={'why why--' + (check ? check.verdict : 'unknown')}>
-        <p className="why__label">Why we're asking you</p>
-        <p className="why__reason">
-          {check
-            ? check.reason
-            : "We couldn't save why this order was flagged. Compare the two above before you decide."}
+      <Card className="p-4">
+        <p className="text-[13px] text-muted-foreground">
+          Your agent wants to buy from{' '}
+          <Field flagged={flagged.has('merchant')}>{order.merchant || OWN_STORE}</Field>
         </p>
+        <ul className="mt-2 flex flex-col gap-1">
+          {order.items.map((item, index) => (
+            <li key={index} className="text-[15px] leading-snug font-medium">
+              <ItemLine item={item} flagged={flagged} />
+            </li>
+          ))}
+        </ul>
+        <p className="mt-3 text-3xl font-semibold tracking-tight tabular-nums">
+          <Field flagged={flagged.has('price') || flagged.has('currency')}>{total}</Field>
+        </p>
+        {order.shipping_amount !== null && Number(order.shipping_amount) > 0 && (
+          <p className="mt-0.5 text-[13px] text-muted-foreground">
+            Includes {formatMoney(order.shipping_amount, order.currency)} shipping
+          </p>
+        )}
+      </Card>
+
+      <Card className="p-4">
+        <p className="text-[13px] text-muted-foreground">You asked for</p>
+        <blockquote className="mt-1.5 border-l-2 border-primary pl-3 text-[15px] leading-relaxed">
+          {order.mandate.raw_request}
+        </blockquote>
+      </Card>
+
+      <div
+        className={cn(
+          'flex gap-2.5 rounded-xl p-4',
+          check ? 'bg-warn-soft text-warn' : 'bg-muted text-muted-foreground',
+        )}
+      >
+        <TriangleAlert className="mt-0.5 size-4 shrink-0" aria-hidden />
+        <div>
+          <p className="text-xs font-medium tracking-wide uppercase opacity-90">Why we're asking you</p>
+          <p className="mt-1 text-[15px] leading-snug font-semibold">
+            {check
+              ? check.reason
+              : "We couldn't save why this order was flagged. Compare the two above before you decide."}
+          </p>
+        </div>
       </div>
 
-      <p className="confirm__hint">
+      <p className="text-[13px] leading-relaxed text-muted-foreground">
         Approve pays for the order. Reject cancels it and you won't be charged.
         {fix && ' Accept fix cancels this order and places the suggested one instead.'}
       </p>
     </ConfirmFrame>
+  )
+}
+
+// which check fields point at which part of an item line
+const NAME_FIELDS = ['item', 'extra_item', 'substitution', 'instructions_in_order']
+
+// "Ridgeline trail runner, slate, size women's 9", with the part Check flagged marked in warn.
+// the same words as describeItem, split up so one part can stand out
+function ItemLine({ item, flagged }: { item: OrderItem; flagged: Set<string> }) {
+  let nameFlagged = false
+  for (const field of NAME_FIELDS) {
+    if (flagged.has(field)) {
+      nameFlagged = true
+    }
+  }
+  const parts: { key: string; text: string; flagged: boolean }[] = []
+  parts.push({ key: 'name', text: item.name, flagged: nameFlagged })
+  if (item.color) {
+    parts.push({ key: 'color', text: item.color, flagged: flagged.has('color') })
+  }
+  if (item.size) {
+    parts.push({ key: 'size', text: sizeLabel(item.size), flagged: flagged.has('size') })
+  }
+  if (item.model) {
+    parts.push({ key: 'model', text: 'model ' + item.model, flagged: flagged.has('model') })
+  }
+  if (item.event_date) {
+    parts.push({ key: 'date', text: formatEventDate(item.event_date), flagged: flagged.has('event_date') })
+  }
+  return (
+    <>
+      {item.quantity > 1 && (
+        <Field flagged={flagged.has('quantity')}>
+          <span className="font-mono">{item.quantity} x </span>
+        </Field>
+      )}
+      {parts.map((part, index) => (
+        <span key={part.key}>
+          {index > 0 && ', '}
+          <Field flagged={part.flagged}>{part.text}</Field>
+        </span>
+      ))}
+    </>
+  )
+}
+
+// a value Check flagged: warn tint and underline, plus words for screen readers
+function Field({ flagged, children }: { flagged: boolean; children: ReactNode }) {
+  if (!flagged) {
+    return <>{children}</>
+  }
+  return (
+    <mark className="rounded bg-warn-soft px-0.5 text-warn underline decoration-warn/60 decoration-2 underline-offset-4">
+      {children}
+      <span className="sr-only"> (doesn't match what you asked for)</span>
+    </mark>
   )
 }
 
@@ -211,50 +311,79 @@ const OWN_STORE = 'Fernwood Supply Co'
 function Done({ action, order, decisionMs }: { action: ApprovalAction; order: ReviewView; decisionMs: number }) {
   const approved = action === 'approve'
   return (
-    <div className="done" role="status">
-      <span className={'done__icon done__icon--' + (approved ? 'approved' : 'rejected')} aria-hidden="true">
-        {approved ? (
-          <svg width="28" height="28" viewBox="0 0 28 28">
-            <path d="M7 14.5l4.5 4.5L21 9.5" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" />
-          </svg>
-        ) : (
-          <svg width="28" height="28" viewBox="0 0 28 28">
-            <path d="M9 9l10 10M19 9L9 19" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" />
-          </svg>
-        )}
-      </span>
-      <h1 className="done__title">{approved ? 'Approved' : 'Rejected'}</h1>
-      <p className="done__text">
+    <Outcome
+      tone={approved ? 'ok' : 'bad'}
+      icon={approved ? <Check strokeWidth={3} /> : <X strokeWidth={3} />}
+      title={approved ? 'Approved' : 'Rejected'}
+      decisionMs={decisionMs}
+    >
+      <p className="text-[15px] text-muted-foreground">
         {approved
           ? 'You paid ' + formatMoney(order.total, order.currency) + '. Your order is on its way.'
           : "The order is cancelled and the hold is released. You won't be charged."}
       </p>
-      <p className="done__time">You decided in {formatDuration(Math.round(decisionMs))}.</p>
-      <p className="muted">You can close this page.</p>
-    </div>
+    </Outcome>
+  )
+}
+
+// the end screens share a shape: an icon that pops in, a title, what happened, the time taken
+function Outcome({
+  tone,
+  icon,
+  title,
+  decisionMs,
+  children,
+}: {
+  tone: 'ok' | 'bad' | 'info'
+  icon: ReactNode
+  title: string
+  decisionMs: number
+  children: ReactNode
+}) {
+  const iconTone = { ok: 'bg-ok-soft text-ok', bad: 'bg-bad-soft text-bad', info: 'bg-info-soft text-primary' }[tone]
+  return (
+    <Card className="flex flex-col items-center gap-3 px-5 py-8 text-center" >
+      <div role="status" className="contents">
+        <motion.span
+          className={cn('flex size-14 items-center justify-center rounded-full [&_svg]:size-7', iconTone)}
+          initial={{ scale: 0.4, opacity: 0 }}
+          animate={{ scale: 1, opacity: 1 }}
+          transition={{ type: 'spring', stiffness: 420, damping: 20 }}
+          aria-hidden="true"
+        >
+          {icon}
+        </motion.span>
+        <h1 className="text-2xl font-semibold tracking-tight">{title}</h1>
+        {children}
+        <p className="text-[13px] text-muted-foreground">
+          You decided in <span className="font-medium text-foreground tabular-nums">{formatDuration(Math.round(decisionMs))}</span>.
+        </p>
+        <p className="text-[13px] text-muted-foreground">You can close this page.</p>
+      </div>
+    </Card>
   )
 }
 
 // what the replacement order's two state fields mean for the human, in their words
-function replacementOutcome(replacement: AcceptFixResult['replacement']): { label: string; tone: string; text: string } {
+function replacementOutcome(replacement: AcceptFixResult['replacement']): { label: string; tone: 'ok' | 'warn'; text: string } {
   const total = formatMoney(replacement.total, replacement.currency)
   if (replacement.status === 'captured') {
     return {
       label: 'Auto-captured',
-      tone: 'captured',
+      tone: 'ok',
       text: 'It matches what you asked for, so it went through on its own. You paid ' + total + '.',
     }
   }
   if (replacement.review_state === 'needs_review') {
     return {
       label: 'Needs review',
-      tone: 'review',
+      tone: 'warn',
       text: "Something about the new order still needs a look, so it is on hold. You won't be charged " + total + ' unless it is approved.',
     }
   }
   return {
     label: 'On hold',
-    tone: 'authorized',
+    tone: 'warn',
     text: total + " is on hold for it. You haven't been charged yet.",
   }
 }
@@ -263,36 +392,20 @@ function Fixed({ result, decisionMs }: { result: AcceptFixResult; decisionMs: nu
   const replacement = result.replacement
   const outcome = replacementOutcome(replacement)
   return (
-    <div className="done" role="status">
-      <span className="done__icon done__icon--fixed" aria-hidden="true">
-        <svg width="28" height="28" viewBox="0 0 28 28">
-          <path
-            d="M8 11h11l-3.5-3.5M20 17H9l3.5 3.5"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2.4"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          />
-        </svg>
-      </span>
-      <h1 className="done__title">Fix accepted</h1>
-      <p className="done__text">The first order is cancelled and its hold is released.</p>
-      <div className={'done__outcome done__outcome--' + outcome.tone}>
-        <p className="done__outcome-label">New order: {outcome.label}</p>
-        <ul className="done__outcome-items">
+    <Outcome tone="info" icon={<ArrowLeftRight strokeWidth={2.5} />} title="Fix accepted" decisionMs={decisionMs}>
+      <p className="text-[15px] text-muted-foreground">The first order is cancelled and its hold is released.</p>
+      <div className="w-full rounded-xl border border-border bg-background p-3.5 text-left">
+        <Pill tone={outcome.tone}>New order: {outcome.label}</Pill>
+        <ul className="mt-2.5 flex flex-col gap-1 text-[15px] font-medium">
           {replacement.items.map((item, index) => (
             <li key={index}>
-              {item.quantity > 1 && <span className="mono">{item.quantity} x </span>}
-              {describeItem(item)}
+              <ItemLine item={item} flagged={new Set()} />
             </li>
           ))}
         </ul>
-        <p>{outcome.text}</p>
+        <p className="mt-1.5 text-[13px] text-muted-foreground">{outcome.text}</p>
       </div>
-      <p className="done__time">You decided in {formatDuration(Math.round(decisionMs))}.</p>
-      <p className="muted">You can close this page.</p>
-    </div>
+    </Outcome>
   )
 }
 
@@ -402,22 +515,44 @@ function LoadError({ error }: { error: Error }) {
 
 function Notice({ tone, title, children }: { tone: 'error' | 'muted'; title: string; children: ReactNode }) {
   return (
-    <div className={'notice notice--' + tone} role={tone === 'error' ? 'alert' : 'status'}>
-      <h1 className="notice__title">{title}</h1>
-      <p>{children}</p>
-    </div>
+    <Card className="flex flex-col items-center gap-3 px-5 py-8 text-center">
+      <div className="contents" role={tone === 'error' ? 'alert' : 'status'}>
+        <span
+          className={cn(
+            'flex size-12 items-center justify-center rounded-full [&_svg]:size-6',
+            tone === 'error' ? 'bg-bad-soft text-bad' : 'bg-muted text-muted-foreground',
+          )}
+          aria-hidden="true"
+        >
+          {tone === 'error' ? <TriangleAlert /> : <CircleSlash />}
+        </span>
+        <h1 className="text-xl font-semibold tracking-tight">{title}</h1>
+        <p className="text-[15px] text-muted-foreground">{children}</p>
+      </div>
+    </Card>
   )
 }
 
+// the page around every state: the brand on top, one column of cards, and the decision bar
+// pinned to the bottom so the buttons are always under the thumb
 function ConfirmFrame({ children, footer }: { children: ReactNode; footer?: ReactNode }) {
   return (
-    <div className="confirm">
-      <header className="confirm__head">
-        <BrandMark size={24} />
-        <span>Checkout Anything</span>
+    <div className="flex min-h-dvh flex-col bg-background text-foreground">
+      <header className="border-b border-border bg-card">
+        <div className="mx-auto flex h-14 w-full max-w-lg items-center gap-2 px-4">
+          <BrandMark size={24} />
+          <span className="text-[15px] font-semibold tracking-tight">Checkout Anything</span>
+          <Pill tone="info" className="ml-auto">
+            Check
+          </Pill>
+        </div>
       </header>
-      <main className="confirm__body">{children}</main>
-      {footer}
+      <main className="mx-auto flex w-full max-w-lg flex-1 flex-col gap-3 px-4 py-4">{children}</main>
+      {footer && (
+        <div className="sticky bottom-0 border-t border-border bg-card/95 backdrop-blur-sm">
+          <div className="mx-auto w-full max-w-lg px-4 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))]">{footer}</div>
+        </div>
+      )}
     </div>
   )
 }

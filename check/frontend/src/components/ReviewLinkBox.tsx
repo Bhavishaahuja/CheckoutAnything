@@ -7,8 +7,14 @@
 import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router'
 import { USE_MOCKS, createReviewLink } from '../api'
+import { ErrorNote } from '@/components/bits'
+import { Button } from '@/components/ui/button'
 import { formatDateTime } from '../lib/format'
 import type { ReviewLink } from '../types'
+
+// a link that looks like the outline Button
+const OUTLINE_LINK =
+  'inline-flex h-9 items-center justify-center rounded-lg border border-border bg-card px-3.5 text-sm font-medium whitespace-nowrap transition-colors hover:bg-muted'
 
 type LinkState =
   | { status: 'idle' }
@@ -54,35 +60,33 @@ export function ReviewLinkBox({ orderId }: { orderId: number }) {
   if (state.status === 'ready') {
     const url = confirmUrl(state.link.review_token)
     return (
-      <div className="review-link">
-        <label className="review-link__label" htmlFor={'review-link-' + orderId}>
+      <div className="flex flex-col gap-2 rounded-xl border border-border bg-background p-3">
+        <label className="text-[13px] font-medium" htmlFor={'review-link-' + orderId}>
           Send this link to the shopper
         </label>
         <input
           id={'review-link-' + orderId}
-          className="review-link__url"
+          className="h-9 w-full min-w-0 rounded-lg border border-border bg-card px-3 font-mono text-xs outline-none focus:border-primary"
           readOnly
           value={url}
           onFocus={(event) => event.target.select()}
         />
-        <div className="review-link__actions">
-          <button type="button" className="primary-button" onClick={() => copy(url)}>
-            {copied ? 'Copied' : 'Copy link'}
-          </button>
+        <div className="flex gap-2">
+          <Button onClick={() => copy(url)}>{copied ? 'Copied' : 'Copy link'}</Button>
           {USE_MOCKS ? (
             // mock links live in this tab's memory, so open them here rather than in a new tab
-            <Link className="secondary-button" to={'/confirm/' + encodeURIComponent(state.link.review_token)}>
+            <Link className={OUTLINE_LINK} to={'/confirm/' + encodeURIComponent(state.link.review_token)}>
               Open
             </Link>
           ) : (
-            <a className="secondary-button" href={url} target="_blank" rel="noreferrer">
+            <a className={OUTLINE_LINK} href={url} target="_blank" rel="noreferrer">
               Open
             </a>
           )}
         </div>
-        <p className="review-link__note">
+        <p className="text-xs text-muted-foreground">
           Works once, until {formatDateTime(state.link.expires_at)}. Making a new link turns this one off.{' '}
-          <button type="button" className="link-button" onClick={create}>
+          <button type="button" className="font-medium text-primary underline-offset-2 hover:underline" onClick={create}>
             Make a new link
           </button>
         </p>
@@ -91,20 +95,11 @@ export function ReviewLinkBox({ orderId }: { orderId: number }) {
   }
 
   return (
-    <div className="review-link">
-      <button
-        type="button"
-        className="primary-button review-link__create"
-        onClick={create}
-        disabled={state.status === 'creating'}
-      >
+    <div className="flex flex-col gap-2">
+      <Button className="self-start" onClick={create} disabled={state.status === 'creating'}>
         {state.status === 'creating' ? 'Making link...' : 'Get review link'}
-      </button>
-      {state.status === 'error' && (
-        <p className="form-error" role="alert">
-          Couldn't make a link: {state.message}
-        </p>
-      )}
+      </Button>
+      {state.status === 'error' && <ErrorNote>Couldn't make a link: {state.message}</ErrorNote>}
     </div>
   )
 }

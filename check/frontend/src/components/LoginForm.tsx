@@ -3,7 +3,10 @@
 // session token is (see api.ts).
 
 import { useState, type FormEvent } from 'react'
+import { LockKeyhole } from 'lucide-react'
 import { logIn } from '../api'
+import { Card, ErrorNote } from '@/components/bits'
+import { Button } from '@/components/ui/button'
 
 interface LoginFormProps {
   onLoggedIn: () => void
@@ -30,36 +33,39 @@ export function LoginForm({ onLoggedIn, expired = false }: LoginFormProps) {
   }
 
   return (
-    <div className="login">
-      <h1 className="page__title">Log in</h1>
-      <p className="page__lede">
-        {expired
-          ? 'Your session ran out. Log in again to keep going.'
-          : 'Fernwood Supply Co staff only. Agent orders and review links live behind this.'}
-      </p>
-      <form className="card place-order__panel login__form" onSubmit={submit}>
-        <label className="field-label" htmlFor="demo-password">
-          Merchant password
-        </label>
-        <input
-          id="demo-password"
-          className="field"
-          type="password"
-          autoComplete="current-password"
-          required
-          autoFocus
-          value={password}
-          onChange={(event) => setPassword(event.target.value)}
-        />
-        {error && (
-          <p className="form-error" role="alert">
-            {error}
-          </p>
-        )}
-        <button className="primary-button" type="submit" disabled={submitting}>
-          {submitting ? 'Logging in...' : 'Log in'}
-        </button>
-      </form>
+    <div className="mx-auto flex max-w-sm flex-col gap-4 py-10">
+      <div className="flex flex-col items-center gap-2 text-center">
+        <span className="flex size-11 items-center justify-center rounded-full bg-info-soft text-primary">
+          <LockKeyhole className="size-5" aria-hidden />
+        </span>
+        <h1 className="text-xl font-semibold tracking-tight">Log in</h1>
+        <p className="text-sm text-pretty text-muted-foreground">
+          {expired
+            ? 'Your session ran out. Log in again to keep going.'
+            : 'Fernwood Supply Co staff only. Agent orders and review links live behind this.'}
+        </p>
+      </div>
+      <Card className="p-4">
+        <form className="flex flex-col gap-3" onSubmit={submit}>
+          <label className="text-[13px] font-medium" htmlFor="demo-password">
+            Merchant password
+          </label>
+          <input
+            id="demo-password"
+            className="h-10 rounded-lg border border-border bg-background px-3 text-sm outline-none focus:border-primary"
+            type="password"
+            autoComplete="current-password"
+            required
+            autoFocus
+            value={password}
+            onChange={(event) => setPassword(event.target.value)}
+          />
+          {error && <ErrorNote>{error}</ErrorNote>}
+          <Button type="submit" size="lg" disabled={submitting}>
+            {submitting ? 'Logging in...' : 'Log in'}
+          </Button>
+        </form>
+      </Card>
     </div>
   )
 }

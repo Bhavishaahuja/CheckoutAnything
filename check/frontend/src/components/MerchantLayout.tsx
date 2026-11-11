@@ -1,9 +1,12 @@
+import { FlaskConical } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router'
 import { SESSION_EXPIRED_EVENT, USE_MOCKS, hasSession, logOut } from '../api'
 import { CONNECT_URL } from '../lib/appLinks'
 import { AppHeader, type HeaderLink, type Section } from './AppHeader'
 import { LoginForm } from './LoginForm'
+import { Pill } from '@/components/bits'
+import { AnimatedThemeToggler } from '@/components/magicui/animated-theme-toggler'
 import { useResetDemo } from '../lib/useResetDemo'
 import { ResetButton, ResetStrip } from './ResetDemo'
 
@@ -48,7 +51,7 @@ export function MerchantLayout() {
   const currentSection: Section = location.pathname.startsWith('/disputes') ? 'disputes' : 'check'
 
   return (
-    <div className="shell">
+    <div className="min-h-dvh bg-background text-foreground">
       <AppHeader
         current={currentSection}
         links={headerLinks}
@@ -68,13 +71,19 @@ export function MerchantLayout() {
                 Log out
               </button>
             )}
-            {USE_MOCKS && <span className="mock-flag">Sample data</span>}
+            {USE_MOCKS && (
+              <Pill tone="warn" className="hidden sm:inline-flex">
+                <FlaskConical className="size-3.5" /> Sample data
+              </Pill>
+            )}
+            {/* the same toggle as the Checkout Anything app, and the same saved "theme" key */}
+            <AnimatedThemeToggler className="flex size-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground [&_svg]:size-4" />
           </>
         }
       >
         {loggedIn && <ResetStrip controls={reset} />}
       </AppHeader>
-      <main className="page">
+      <main className="mx-auto w-full max-w-[1400px] px-4 py-6">
         {loggedIn ? (
           <Outlet />
         ) : (

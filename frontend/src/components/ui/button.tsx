@@ -12,6 +12,8 @@ const buttonVariants = cva(
         outline: "border border-border bg-card hover:bg-muted",
         ghost: "hover:bg-muted",
         danger: "bg-bad text-white hover:opacity-90 dark:text-background",
+        // a go-ahead that moves money, like Check's Approve
+        ok: "bg-ok text-white hover:opacity-90 dark:text-background",
       },
       size: {
         default: "h-9 px-3.5",

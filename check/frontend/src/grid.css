@@ -1,0 +1,87 @@
+/* The dashboard grid's row colors, flash and group rows. Not in the legacy layer: AG Grid's theme
+   CSS isn't layered, so these have to be unlayered too to win over it, the same as in
+   frontend/src/index.css. */
+
+.grid-wrap {
+  /* AG Grid needs a minimum width for all its columns, so it scrolls inside the card on phones */
+  min-width: 0;
+}
+
+.grid-wrap .ag-row {
+  cursor: pointer;
+}
+
+.grid-wrap .ag-cell {
+  display: flex;
+  align-items: center;
+}
+
+/* a thin left rule on rows that need a human, so they stand out without shouting */
+/* impeccable-disable-next-line side-tab -- status cue for held rows, intentional */
+.grid-wrap .row--needs-review .ag-cell:first-child {
+  box-shadow: inset 3px 0 0 var(--review);
+}
+
+/* a row wears the color of where its money is: amber on hold for a human, green captured, gray
+   voided. the same meanings as the Checkout Anything Orders grid, from this app's own tokens */
+/* the same mixes as .row-held, .row-captured and .row-voided in frontend/src/index.css */
+.grid-wrap .ag-row.row--held {
+  background-color: color-mix(in srgb, var(--warn-soft) 70%, var(--card));
+}
+
+.grid-wrap .ag-row.row--captured {
+  background-color: color-mix(in srgb, var(--ok-soft) 60%, var(--card));
+}
+
+.grid-wrap .ag-row.row--voided {
+  background-color: var(--muted);
+  color: var(--muted-foreground);
+}
+
+/* a row that just changed status flashes its new color, then fades back to its resting tint.
+   stronger than the tint, or the flash wouldn't show on a row that is already colored. FLASH_MS in
+   DashboardPage.tsx matches the animation length */
+.grid-wrap .row--flash {
+  animation: row-flash 2.4s ease-out;
+}
+
+.grid-wrap .row--flash-needs_review {
+  --flash-color: color-mix(in srgb, var(--authorized) 32%, var(--surface));
+}
+
+.grid-wrap .row--flash-authorized,
+.grid-wrap .row--flash-created {
+  --flash-color: color-mix(in srgb, var(--authorized) 32%, var(--surface));
+}
+
+.grid-wrap .row--flash-captured {
+  --flash-color: color-mix(in srgb, var(--captured) 32%, var(--surface));
+}
+
+.grid-wrap .row--flash-fixed,
+.grid-wrap .row--flash-voided {
+  --flash-color: color-mix(in srgb, var(--voided) 32%, var(--surface));
+}
+
+.grid-wrap .row--flash-failed {
+  --flash-color: color-mix(in srgb, var(--failed) 32%, var(--surface));
+}
+
+@keyframes row-flash {
+  0%,
+  40% {
+    background-color: var(--flash-color);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .grid-wrap .row--flash {
+    animation-duration: 0.01s;
+  }
+}
+
+.grid-wrap .ag-row-group {
+  background: var(--surface-sunk);
+  font-weight: 600;
+}
+

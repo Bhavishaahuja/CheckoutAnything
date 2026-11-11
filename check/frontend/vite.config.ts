@@ -1,3 +1,5 @@
+import path from 'node:path'
+import tailwindcss from '@tailwindcss/vite'
 import react from '@vitejs/plugin-react'
 import { defineConfig, loadEnv } from 'vite'
 
@@ -22,7 +24,11 @@ export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), 'VITE_')
   const headers = { 'Content-Security-Policy': frameAncestors(env.VITE_CONNECT_URL) }
   return {
-    plugins: [react()],
+    // tailwind and the @ alias match the Checkout Anything app (frontend/vite.config.ts)
+    plugins: [react(), tailwindcss()],
+    resolve: {
+      alias: { '@': path.resolve(import.meta.dirname, 'src') },
+    },
     server: { headers },
     preview: { headers },
   }

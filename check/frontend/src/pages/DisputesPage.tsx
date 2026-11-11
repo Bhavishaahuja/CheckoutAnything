@@ -6,6 +6,9 @@ import {
   submitDisputeEvidence,
   syncDisputes,
 } from '../api'
+import { ErrorNote } from '@/components/bits'
+import { Button } from '@/components/ui/button'
+import { PageHead, StateCard } from '../components/pageBits'
 import { describeItem, formatDateTime, formatDuration, formatMoney } from '../lib/format'
 import { useAsync } from '../lib/useAsync'
 import type { Dispute, DisputeEvidence, DisputeSyncResult } from '../types'
@@ -104,40 +107,26 @@ export function DisputesPage() {
   }
 
   return (
-    <section className="disputes">
-      <div className="page__head">
-        <div>
-          <h1 className="page__title">Disputes</h1>
-          <p className="page__lede">
-            When a buyer disputes a captured order, Checkout Anything answers with what they asked for and who released the money.
-          </p>
-        </div>
-        <button type="button" className="secondary-button" onClick={runSync} disabled={syncing}>
-          {syncing ? 'Checking PayPal...' : 'Check PayPal for disputes'}
-        </button>
-      </div>
+    <section className="disputes flex flex-col gap-4">
+      <PageHead
+        title="Disputes"
+        lede="When a buyer disputes a captured order, Checkout Anything answers with what they asked for and who released the money."
+        actions={
+          <Button variant="outline" onClick={runSync} disabled={syncing}>
+            {syncing ? 'Checking PayPal...' : 'Check PayPal for disputes'}
+          </Button>
+        }
+      />
 
-      {syncError && (
-        <p className="state state--error" role="alert">
-          Couldn't check PayPal: {syncError}
-        </p>
-      )}
+      {syncError && <ErrorNote>Couldn't check PayPal: {syncError}</ErrorNote>}
       {syncResult && <SyncSummary result={syncResult} />}
 
-      {disputes.status === 'loading' && (
-        <div className="card">
-          <p className="state">Loading disputes...</p>
-        </div>
-      )}
+      {disputes.status === 'loading' && <StateCard kind="loading">Loading disputes...</StateCard>}
       {disputes.status === 'error' && (
-        <div className="card">
-          <p className="state state--error">Couldn't load disputes: {disputes.error.message}</p>
-        </div>
+        <StateCard kind="error">Couldn't load disputes: {disputes.error.message}</StateCard>
       )}
       {disputes.status === 'ready' && disputes.data.length === 0 && (
-        <div className="card">
-          <p className="state">No disputes yet. Check PayPal to look for new ones.</p>
-        </div>
+        <StateCard kind="empty">No disputes yet. Check PayPal to look for new ones.</StateCard>
       )}
       {disputes.status === 'ready' && disputes.data.length > 0 && (
         <ul className="dispute-list">
@@ -224,17 +213,11 @@ function EvidencePanel({ disputeId, onFiled }: { disputeId: number; onFiled: () 
 
   if (state.status === 'loading') {
     return (
-      <div className="card dispute-panel">
-        <p className="state">Building the evidence and drafting a summary. The first look takes a few seconds.</p>
-      </div>
+      <StateCard kind="loading">Building the evidence and drafting a summary. The first look takes a few seconds.</StateCard>
     )
   }
   if (state.status === 'error') {
-    return (
-      <div className="card dispute-panel">
-        <p className="state state--error">Couldn't build the evidence: {state.message}</p>
-      </div>
-    )
+    return <StateCard kind="error">Couldn't build the evidence: {state.message}</StateCard>
   }
 
   const { dispute, packet, summary } = state.evidence
@@ -282,7 +265,7 @@ function EvidencePanel({ disputeId, onFiled }: { disputeId: number; onFiled: () 
   }
 
   return (
-    <div className="card dispute-panel">
+    <div className="dispute-panel rounded-xl border border-border bg-card">
       <p className="eyebrow">1. What the buyer asked for, before the order</p>
       <blockquote className="dispute-panel__quote">"{mandate.raw_request}"</blockquote>
       <dl className="dispute-facts">
@@ -345,11 +328,7 @@ function EvidencePanel({ disputeId, onFiled }: { disputeId: number; onFiled: () 
       <p className="dispute-panel__summary">{summary || 'No summary saved.'}</p>
       <p className="muted">Filed as the notes, with the four parts above attached as a PDF.</p>
 
-      {actionError && (
-        <p className="form-error" role="alert">
-          {actionError}
-        </p>
-      )}
+      {actionError && <ErrorNote>{actionError}</ErrorNote>}
 
       {dispute.evidence_submitted ? (
         <p className="dispute-panel__filed">
@@ -359,26 +338,24 @@ function EvidencePanel({ disputeId, onFiled }: { disputeId: number; onFiled: () 
       ) : confirming ? (
         <div className="dispute-panel__actions">
           <p className="dispute-panel__warn">PayPal takes evidence once. Send this summary and PDF now?</p>
-          <button type="button" className="secondary-button" onClick={() => setConfirming(false)} disabled={busy !== null}>
+          <Button variant="ghost" onClick={() => setConfirming(false)} disabled={busy !== null}>
             Cancel
-          </button>
-          <button type="button" className="primary-button" onClick={submit} disabled={busy !== null}>
+          </Button>
+          <Button onClick={submit} disabled={busy !== null}>
             {busy === 'submit' ? 'Filing...' : 'Yes, file it'}
-          </button>
+          </Button>
         </div>
       ) : (
         <div className="dispute-panel__actions">
-          <button type="button" className="secondary-button" onClick={redraft} disabled={!canAct}>
+          <Button variant="outline" onClick={redraft} disabled={!canAct}>
             {busy === 'redraft' ? 'Redrafting...' : 'Redraft summary'}
-          </button>
-          <button
-            type="button"
-            className="primary-button"
+          </Button>
+          <Button
             onClick={() => setConfirming(true)}
             disabled={!canAct || dispute.status !== 'WAITING_FOR_SELLER_RESPONSE'}
           >
             File with PayPal
-          </button>
+          </Button>
           {dispute.status !== 'WAITING_FOR_SELLER_RESPONSE' && (
             <p className="muted">PayPal only takes evidence while the dispute is waiting on you.</p>
           )}
