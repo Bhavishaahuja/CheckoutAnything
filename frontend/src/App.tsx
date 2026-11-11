@@ -115,6 +115,11 @@ export default function App() {
       .catch(() => {})
   }, [])
 
+  // the Agent sidebar and the Connect chips show live counts, so read them fresh on the way in
+  useEffect(() => {
+    if (tab === "agent" || tab === "connect") refreshStores()
+  }, [tab, refreshStores])
+
   // while something is connecting, keep the store chips fresh
   const anyConnecting = stores.some((store) => store.status === "connecting")
   useEffect(() => {
@@ -222,6 +227,7 @@ export default function App() {
             claudeReady={config ? config.claude_configured : true}
             checkReady={config ? config.check_configured : false}
             onOrdersChanged={bumpOrders}
+            onStoresChanged={refreshStores}
             onGoToConnect={() => goTo("connect")}
           />
         </div>

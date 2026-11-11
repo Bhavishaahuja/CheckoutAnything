@@ -2,7 +2,7 @@
 
 import { ArrowRight, ExternalLink, Link2, Store as StoreIcon } from "lucide-react"
 import { AnimatePresence } from "motion/react"
-import { useMemo, useState, type FormEvent } from "react"
+import { useCallback, useMemo, useState, type FormEvent } from "react"
 
 import { Card, ErrorNote, Pill, StoreStatusPill } from "@/components/bits"
 import { CatalogGrid } from "@/components/CatalogGrid"
@@ -69,6 +69,13 @@ export function ConnectPage({
   const [openItemId, setOpenItemId] = useState<string | null>(null)
 
   const run = useRun(activeStoreId, onStoresChanged)
+  // every saved change in the grid (a publish above all) also refetches the store list, so the
+  // "N of M live" chips here and in the Agent sidebar never lag behind what an agent can buy
+  const runReload = run.reload
+  const reloadWithStores = useCallback(async () => {
+    await runReload()
+    onStoresChanged()
+  }, [runReload, onStoresChanged])
   const connecting = run.status === "connecting"
   const repairing = run.rows.some((row) => row.status === "repairing")
   const openRow = openItemId ? run.rows.find((row) => row.item_id === openItemId) || null : null
@@ -315,7 +322,7 @@ export function ConnectPage({
                 storeError={run.error}
                 selectedItemId={openItemId}
                 onPickItem={setOpenItemId}
-                reload={run.reload}
+                reload={reloadWithStores}
                 onConnectDemo={firstDemoUrl && !starting ? connectDemo : undefined}
               />
             </div>

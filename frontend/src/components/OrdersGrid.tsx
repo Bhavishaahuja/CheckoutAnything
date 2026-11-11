@@ -35,6 +35,7 @@ import { ColumnsMenu } from "@/components/grid/ColumnsMenu"
 import { createOverlayStore, GridOverlay, type OverlayStore } from "@/components/grid/GridOverlay"
 import { CountRoll, POP } from "@/components/grid/motion"
 import { Button } from "@/components/ui/button"
+import { CHECK_URL } from "@/lib/appLinks"
 import { checkNumber, clockTime, decisionTime, money } from "@/lib/format"
 import { FindCell, FindText, useGridFind, type FindStore } from "@/lib/gridFind"
 import { flashGridCells, flashGridRow } from "@/lib/gridFlash"
@@ -423,19 +424,40 @@ export function OrdersGrid({
     []
   )
   const { setTerm } = find
+  // right after Reset demo our own table is empty while Check holds the seed orders. say that,
+  // with Check's real count, instead of a bare "No orders yet" that reads like the reset broke
+  const checkTotal = checkOn && checkStats ? checkStats.check_total_orders : null
   useEffect(() => {
-    overlay.set({
-      loading: { title: "Loading orders..." },
-      empty: {
+    let empty
+    if (checkTotal !== null && checkTotal !== undefined && checkTotal > 0) {
+      empty = {
+        icon: <ReceiptText />,
+        title: "No agent purchases yet",
+        hint:
+          "Check holds " +
+          checkTotal +
+          (checkTotal === 1 ? " earlier order" : " earlier orders") +
+          " from the demo agents.",
+        actionLabel: "Open the Check dashboard",
+        onAction: () => {
+          window.location.href = CHECK_URL + "/dashboard"
+        },
+      }
+    } else {
+      empty = {
         icon: <ReceiptText />,
         title: "No orders yet",
         hint: "Ask the shopping agent to buy something from a connected store, or use Test buy on a verified item.",
         actionLabel: "Send an agent shopping",
         onAction: onGoToAgent,
-      },
+      }
+    }
+    overlay.set({
+      loading: { title: "Loading orders..." },
+      empty,
       noMatch: { title: "No order matches that search", actionLabel: "Clear the search", onAction: () => setTerm("") },
     })
-  }, [overlay, onGoToAgent, setTerm])
+  }, [overlay, onGoToAgent, setTerm, checkTotal])
 
   // our id to Check's number, for the rows that point at each other (an accepted fix)
   const numberOf = useCallback(

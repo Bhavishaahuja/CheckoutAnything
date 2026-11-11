@@ -4,10 +4,13 @@
 #   POST /demo/reset puts the demo back to the same starting point every time, in the background:
 #     1. voids every open hold at PayPal (refused up front if a human opened one in the last 10
 #        minutes, or has a payment going through)
-#     2. deletes every order and mandate that isn't protected: the last seed, old test runs,
-#        manual testing, /place-order orders. protected means DEMO_PROTECTED_PAYPAL_ORDER_IDS
-#        names it, or it has a dispute on it, so POST /disputes/sync still finds the dispute
-#     3. places the seed again through the real agent path, see demo_seed.py
+#     2. deletes every order and mandate that isn't protected, with their check results,
+#        decisions and disputes: the last seed, old test runs, manual testing, /place-order
+#        orders. protected means PROTECTED_ORDER_IDS names its Check order id. that's how the
+#        order the sandbox dispute is on stays, with its dispute row, so the Disputes tab has it
+#     3. places the seed again through the real agent path, see demo_seed.py. a seed order for
+#        the same item at the same store as a kept order is skipped, so the grid doesn't show
+#        two blanket orders telling the same story
 #   GET /demo/reset says how far it got. backend/scripts/seed_demo.py --reset calls both.
 
 import enum
@@ -25,7 +28,8 @@ from sqlalchemy.orm import sessionmaker
 
 from backend.app import catalog, demo_seed
 from backend.app.auth import require_merchant
-from backend.app.config import STORE_NAME, get_settings, protected_paypal_order_ids
+from backend.app.config import STORE_NAME, get_settings
+from backend.app.config import protected_order_ids as protected_order_ids_setting
 from backend.app.demo_seed import SEED_LABEL_PREFIX  # noqa: F401 (seed_demo.py reads it here)
 from backend.app.intent.rules import as_utc, normalize_merchant
 from backend.app.models import (
@@ -370,12 +374,15 @@ class ResetStatus(BaseModel):
     error: str | None = None
     started_at: datetime | None = None
     finished_at: datetime | None = None
-    # kept: the dispute's order, and anything else DEMO_PROTECTED_PAYPAL_ORDER_IDS names
+    # kept: the orders PROTECTED_ORDER_IDS names that are really there, the dispute's order
     protected_order_ids: list[int] = []
     voided_holds: int = 0
     # so the merchant can match them up with PayPal's records
     voided_order_ids: list[int] = []
     deleted_orders: int = 0
+    deleted_disputes: int = 0
+    # seed orders left out because a kept order already tells that story, by name
+    skipped_seed_orders: list[str] = []
     deleted_mandates: int = 0
     # "Opened, deciding" left behind on a kept order, with nobody deciding any more
     cleared_reviews: int = 0
@@ -434,15 +441,48 @@ reset_job = ResetJob()
 
 
 def protected_order_ids(session):
-    # orders a reset keeps, whatever else it deletes: the ones DEMO_PROTECTED_PAYPAL_ORDER_IDS
-    # names, and any order with a dispute saved on it, so POST /disputes/sync still finds it
-    paypal_ids = protected_paypal_order_ids(get_settings())
+    # orders a reset keeps, whatever else it deletes: the ones PROTECTED_ORDER_IDS names that are
+    # really in the database. nothing else is kept, not even an order with a dispute on it: an old
+    # test order's dispute goes with the order, so it stops turning up in the grid
+    wanted = protected_order_ids_setting(get_settings())
     kept = set()
-    if paypal_ids:
-        query = select(Order.id).where(Order.paypal_order_id.in_(paypal_ids))
+    if wanted:
+        query = select(Order.id).where(Order.id.in_(wanted))
         kept.update(session.scalars(query).all())
-    kept.update(session.scalars(select(Dispute.order_id)).all())
     return kept
+
+
+def item_key(store, item_name):
+    # "Wool Camp Blanket" at "Fernwood & Thistle Goods", whatever the case or the add-ons.
+    # "Sourdough Loaf + Sliced" is the same loaf as "Sourdough Loaf"
+    name = (item_name or "").split("+")[0]
+    return (normalize_merchant(store or ""), " ".join(name.casefold().split()))
+
+
+def seed_scenarios_without_duplicates(session, kept_ids):
+    # returns (scenarios to place, names of the ones skipped). a kept order is the real version
+    # of a seed story (the protected dispute order is a held blanket the human approved), so the
+    # seed order for the same item at the same store would just be a confusing second copy
+    kept_items = set()
+    if kept_ids:
+        for order in session.scalars(select(Order).where(Order.id.in_(kept_ids))).all():
+            store = order.merchant or order.mandate.merchant
+            for item in order.items or []:
+                kept_items.add(item_key(store, item.get("name")))
+
+    placing = []
+    skipped = []
+    for scenario in demo_seed.SEED_ORDERS:
+        store = scenario.get("order_at", scenario["store"])
+        duplicate = False
+        for item in scenario["items"]:
+            if item_key(store, item["name"]) in kept_items:
+                duplicate = True
+        if duplicate:
+            skipped.append(scenario["name"])
+        else:
+            placing.append(scenario)
+    return placing, skipped
 
 
 def wipe_order_ids(session):
@@ -557,7 +597,8 @@ def delete_demo_rows(session):
     # mandate no kept order points at. refuses while any of those orders still has an open hold,
     # so deleting a row can't leave an authorization at PayPal that nothing knows about. captures
     # stay at PayPal, this only forgets them here.
-    # returns (orders deleted, mandates deleted, undecided reviews cleared on kept orders)
+    # returns (orders deleted, mandates deleted, disputes deleted, undecided reviews cleared on
+    # kept orders)
     kept_ids = protected_order_ids(session)
     order_ids = wipe_order_ids(session)
 
@@ -586,6 +627,11 @@ def delete_demo_rows(session):
     # an accepted fix links two orders to each other. let go of every link first, so no database
     # has to work out which of a pair it's allowed to delete first
     session.execute(update(Order).values(replaced_by_order_id=None, replaces_order_id=None))
+    # a dispute on a deleted order goes with it. the dispute stays at PayPal, it's just not ours
+    # to show any more, and a later sync only looks at the orders that are left
+    deleted_disputes = session.execute(
+        delete(Dispute).where(Dispute.order_id.in_(order_ids))
+    ).rowcount
     session.execute(delete(Approval).where(Approval.order_id.in_(order_ids)))
     session.execute(delete(Decision).where(Decision.order_id.in_(order_ids)))
     session.execute(delete(Order).where(Order.id.in_(order_ids)))
@@ -597,7 +643,7 @@ def delete_demo_rows(session):
             delete(Approval).where(Approval.order_id.in_(kept_ids), Approval.action.is_(None))
         ).rowcount
     session.commit()
-    return len(order_ids), len(mandate_ids), cleared
+    return len(order_ids), len(mandate_ids), deleted_disputes, cleared
 
 
 def run_reset(session_factory, paypal, claude, job):
@@ -607,7 +653,10 @@ def run_reset(session_factory, paypal, claude, job):
     try:
         session = session_factory()
         try:
-            job.update(protected_order_ids=sorted(protected_order_ids(session)))
+            kept_ids = protected_order_ids(session)
+            job.update(protected_order_ids=sorted(kept_ids))
+            scenarios, skipped = seed_scenarios_without_duplicates(session, kept_ids)
+            job.update(skipped_seed_orders=skipped, orders_total=len(scenarios))
             session.rollback()
 
             voided_ids = []
@@ -620,15 +669,17 @@ def run_reset(session_factory, paypal, claude, job):
                 job.update(voided_holds=len(voided_ids), voided_order_ids=list(voided_ids))
 
             job.update(step="Clearing out the old demo orders")
-            deleted_orders, deleted_mandates, cleared = delete_demo_rows(session)
+            deleted_orders, deleted_mandates, deleted_disputes, cleared = delete_demo_rows(session)
             job.update(deleted_orders=deleted_orders, deleted_mandates=deleted_mandates,
-                       cleared_reviews=cleared)
+                       deleted_disputes=deleted_disputes, cleared_reviews=cleared)
         finally:
             session.close()
 
         job.update(step="Placing seed orders through Check, 0 of "
-                   + str(len(demo_seed.SEED_ORDERS)) + " done")
-        demo_seed.place_seed_orders(session_factory, paypal, claude, on_done=job.add_order)
+                   + str(len(scenarios)) + " done")
+        demo_seed.place_seed_orders(
+            session_factory, paypal, claude, on_done=job.add_order, scenarios=scenarios
+        )
         job.update(state="done", step=None, finished_at=utc_now())
     except ResetBlocked as error:
         message = error.detail.get("message") if isinstance(error.detail, dict) else error.detail
@@ -676,6 +727,10 @@ def reset_demo(request: Request, session: DbSession, paypal: PayPal, claude: Cla
 
     if not reset_job.try_start():
         raise HTTPException(status_code=409, detail="A reset is already running")
+    # in the first answer, not just once the thread gets to it: Checkout Anything's own reset
+    # reads it straight away to keep its row for the protected order
+    reset_job.update(protected_order_ids=sorted(protected_order_ids(session)))
+    session.rollback()
 
     # the thread gets its own sessions on the same database as this request
     session_factory = sessionmaker(bind=session.get_bind(), expire_on_commit=False)

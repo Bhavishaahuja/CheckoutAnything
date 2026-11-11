@@ -686,7 +686,10 @@ def test_the_sloppy_agent_buys_the_next_size_over(world, check):
         assert check.sent_orders[0]["items"][0]["unit_price"] == "160.00"
 
         # and the agent was told it might not get the size it picked
-        assert "what was actually bought" in world.agent_claude.requests[0]["system"]
+        system = world.agent_claude.requests[0]["system"]
+        assert '"asked_for" is what the shopper asked for' in system
+        # the shopper's request is theirs, the order is the agent's
+        assert '"You asked for the Medium Wool Camp Blanket, but the order I placed is' in system
 
 
 def test_the_sloppy_agent_turns_the_base_item_into_the_first_variant(world, check):
@@ -802,3 +805,16 @@ def test_check_payment_follows_a_decision_made_after_the_buy(world, check):
     output = response.json()["steps"][0]["output"]
     assert output["status"] == "captured"
     assert "hold_reason" not in output
+
+
+def test_the_agent_prompt_keeps_you_and_i_straight():
+    # the agent once said "I asked for the Medium Wool Camp Blanket" about the shopper's request
+    from backend.app import agent
+
+    prompts = agent.SYSTEM_PROMPT + agent.CHECK_PROMPT + agent.SLOPPY_PROMPT
+    assert 'Their request is always "you asked for" (never "I asked for")' in prompts
+    assert "held for the merchant" not in prompts
+    assert "held for the merchant" not in agent.STATE_SUMMARIES[agent.HELD]
+    assert "\N{EM DASH}" not in prompts
+    # every example sentence the agent might copy talks to the shopper as "you"
+    assert "until you confirm the order" in prompts

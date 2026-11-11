@@ -143,6 +143,9 @@ services:
         sync: false
       - key: DEMO_VAULT_ID
         sync: false
+      # Check order ids Reset demo keeps, with their dispute, e.g. 41. see docs/demo-dispute.md
+      - key: PROTECTED_ORDER_IDS
+        sync: false
       - key: FRONTEND_ORIGINS
         sync: false
       - key: PAYPAL_BASE_URL

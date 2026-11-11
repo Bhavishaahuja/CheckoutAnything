@@ -623,7 +623,7 @@ Success is a `201` with the order object plus `decisions` and `approvals`, like 
 Merchant only: the dashboard's session, or the merchant key, which is what `backend/scripts/seed_demo.py --reset` sends. Puts the demo back to the same starting point, in the background. No body.
 
 1. Voids every order that still has an open hold at PayPal.
-2. Deletes every order, mandate, check result and approval that isn't protected. Protected means `DEMO_PROTECTED_PAYPAL_ORDER_IDS` names its PayPal order id, or it has a synced dispute. A protected order and its dispute stay, and any "Opened, deciding" review left on one is cleared.
+2. Deletes every order, mandate, check result, approval and dispute row that isn't protected. Protected means `PROTECTED_ORDER_IDS` names its Check order id. A protected order and its dispute stay, and any "Opened, deciding" review left on one is cleared. A seed order for the same item at the same store as a protected order is skipped (`skipped_seed_orders`).
 3. Places the seed (`backend/app/demo_seed_orders.py`) as the agents `Checkout Anything` and `Errand Runner`, through the same route code as `POST /mandates` and `POST /orders`. Seed orders' mandates have a `buyer_label` starting with `seed-demo:`. Held ones are approved or rejected by the seed: the approval has `decided_by: "demo seed"`, no `opened_at` and no `decision_ms`, and the rubber-stamp watch leaves it out.
 
 Success is a `202` with the status below, `state: "running"`. Poll `GET /demo/reset` for progress.

@@ -60,6 +60,11 @@ jobs:
         working-directory: frontend
         run: npm ci
 
+      # the small pure helpers, run straight from TypeScript (Node 22 strips the types)
+      - name: Unit tests
+        working-directory: frontend
+        run: node --test tests/*.test.ts
+
       # tsc runs as part of the build
       - name: Build
         working-directory: frontend

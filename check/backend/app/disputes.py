@@ -18,6 +18,7 @@
 # The packet only holds what Leash itself recorded. The summary is a draft for the merchant to
 # read first: GET .../evidence saves it, and submit sends exactly that saved text.
 
+import json
 import logging
 from datetime import datetime, timezone
 
@@ -303,6 +304,8 @@ def build_evidence_packet(dispute):
         "order": {
             "id": order.id,
             "store": order_store(order, mandate),
+            # the shopping agent the order came from, by the name its API key has at Check
+            "agent_name": order.agent_name,
             "items": order.items,
             "total": money(order.total),
             "shipping_amount": money(order.shipping_amount),
@@ -330,8 +333,12 @@ def packet_lines(packet):
     ]
     mandate = packet["mandate"]
     lines.append("  Buyer's words: \"" + str(mandate["raw_request"]) + "\"")
-    lines.append("  Price cap: " + str(mandate["max_price"])
-                 + (" (up to)" if mandate["max_price_inclusive"] else " (under)"))
+    if mandate["max_price"] is None:
+        # the buyer set no cap. "None (up to)" reads like a cap of nothing
+        lines.append("  Price cap: none set")
+    else:
+        lines.append("  Price cap: " + str(mandate["max_price"])
+                     + (" (up to)" if mandate["max_price_inclusive"] else " (under)"))
     lines.append("  Store: " + str(mandate["merchant"]))
     lines.append("  Expires: " + str(mandate["expires_at"]))
     lines.append("  Created: " + str(mandate["created_at"]))
@@ -344,6 +351,8 @@ def packet_lines(packet):
     lines.append("2. What was ordered")
     lines.append("  Order " + str(order["id"]) + " at " + str(order["store"]) + ", placed "
                  + str(order["created_at"]))
+    if order.get("agent_name"):
+        lines.append("  Placed by the buyer's shopping agent: " + str(order["agent_name"]))
     for item in order["items"] or []:
         parts = [str(item.get("name"))]
         if item.get("color"):
@@ -420,7 +429,27 @@ def draft_summary(client, packet):
     leaked = leaked_field_names(summary, packet)
     if leaked:
         raise SummaryFailed("Summary used internal field names: " + ", ".join(leaked))
+    wrong_names = wrong_names_in(summary, packet)
+    if wrong_names:
+        raise SummaryFailed("Summary used names that aren't ours: " + ", ".join(wrong_names))
     return summary
+
+
+# what the product used to be called, and Check's own built-in demo store. a summary for a
+# Checkout Anything order that says either would tell PayPal's reviewer about a merchant and a
+# checker that had nothing to do with it (the first filed dispute said "Leash checked the order")
+OLD_NAMES = ["Leash", STORE_NAME]
+
+
+def wrong_names_in(summary, packet):
+    # an old name is only fine when the records themselves really say it, e.g. an order that
+    # was placed at Check's own demo store
+    packet_text = json.dumps(packet, default=str).casefold()
+    found = []
+    for name in OLD_NAMES:
+        if name.casefold() in summary.casefold() and name.casefold() not in packet_text:
+            found.append(name)
+    return found
 
 
 def packet_field_names(value, found=None):

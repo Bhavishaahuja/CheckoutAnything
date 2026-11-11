@@ -562,6 +562,55 @@ def test_a_summary_that_leaks_a_field_name_is_a_502(client, db_sessions, claude,
     assert saved_dispute(db_sessions, dispute_id).evidence_summary is None
 
 
+def test_the_packet_and_the_pdf_name_the_shopping_agent(client, db_sessions):
+    with db_sessions() as session:
+        order = session.get(Order, 1)
+        order.merchant = "Fernwood & Thistle Goods"
+        order.agent_name = "Checkout Anything"
+        session.commit()
+    dispute_id = add_dispute_row(db_sessions)
+    packet = client.get("/disputes/" + str(dispute_id) + "/evidence").json()["packet"]
+    assert packet["order"]["agent_name"] == "Checkout Anything"
+    lines = disputes.packet_lines(packet)
+    assert "  Placed by the buyer's shopping agent: Checkout Anything" in lines
+    assert "order.agent_name" in dispute_prompt.SYSTEM_PROMPT
+
+
+@pytest.mark.parametrize("wrong", ["Leash checked the order", "sold by Fernwood Supply Co"])
+def test_a_summary_with_an_old_name_is_a_502(client, db_sessions, claude, wrong):
+    # the first dispute filed said "Leash checked the order". a Connect store's order must never
+    # go out naming the old codename or Check's own demo store
+    with db_sessions() as session:
+        order = session.get(Order, 1)
+        order.merchant = "Fernwood & Thistle Goods"
+        order.mandate.merchant = "Fernwood & Thistle Goods"
+        order.mandate.raw_request = "A wool camp blanket from Fernwood & Thistle Goods"
+        session.commit()
+    dispute_id = add_dispute_row(db_sessions)
+    claude.text = "The buyer asked for a blanket. " + wrong + " before any money was taken."
+
+    response = client.get("/disputes/" + str(dispute_id) + "/evidence")
+
+    assert response.status_code == 502
+    assert saved_dispute(db_sessions, dispute_id).evidence_summary is None
+
+
+def test_no_price_cap_reads_as_none_set(client, db_sessions):
+    with db_sessions() as session:
+        session.get(Order, 1).mandate.max_price = None
+        session.commit()
+    dispute_id = add_dispute_row(db_sessions)
+    packet = client.get("/disputes/" + str(dispute_id) + "/evidence").json()["packet"]
+    lines = disputes.packet_lines(packet)
+    assert "  Price cap: none set" in lines
+
+
+def test_the_demo_store_name_is_fine_when_the_order_really_is_there():
+    packet = {"order": {"store": "Fernwood Supply Co"}}
+    assert disputes.wrong_names_in("Fernwood Supply Co sold it.", packet) == []
+    assert disputes.wrong_names_in("Leash checked it.", packet) == ["Leash"]
+
+
 def test_plain_english_words_from_the_packet_are_fine():
     packet = {"intent_check": {"verdict": "match", "risk_score": 10, "watch_mode": "normal"}}
     summary = (

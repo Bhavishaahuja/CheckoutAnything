@@ -238,12 +238,50 @@ def get_order(session, order_id):
     return session.get(Order, order_id)
 
 
-def wipe_everything(session):
-    # /demo/reset. only forgets things here, orders and captures stay at PayPal
-    session.execute(delete(Order))
+def wipe_everything(session, keep_check_order_ids=None):
+    # /demo/reset. only forgets things here, orders and captures stay at PayPal.
+    # keep_check_order_ids are the orders Check's own reset keeps (its PROTECTED_ORDER_IDS, the
+    # order the sandbox dispute is on). our row for one stays too, so the Orders tab still shows
+    # it, and so does its store row until relink_kept_orders moves it to the reconnected store.
+    # returns {our order id: the old store's URL} for the kept ones
+    keep_check_order_ids = set(keep_check_order_ids or [])
+    kept = {}
+    kept_store_ids = set()
+    if keep_check_order_ids:
+        query = select(Order).where(Order.check_order_id.in_(keep_check_order_ids))
+        for order in session.execute(query).scalars():
+            store = session.get(Store, order.store_id)
+            kept[order.id] = store.source_url if store is not None else None
+            kept_store_ids.add(order.store_id)
+
+    session.execute(delete(Order).where(Order.id.not_in(list(kept))))
     session.execute(delete(ItemReview))
     session.execute(delete(ColumnLabel))
     session.execute(delete(VerificationRun))
     session.execute(delete(StoreSpecRow))
-    session.execute(delete(Store))
+    session.execute(delete(Store).where(Store.id.not_in(list(kept_store_ids))))
+    session.commit()
+    return kept
+
+
+def relink_kept_orders(session, kept, new_store_for_url, new_store_ids):
+    # after the reset has started connecting the demo stores again: each kept order moves to the
+    # new store for its old store's page, then the old store rows go. new_store_for_url(url) is
+    # the new store's id, or None when the reset didn't reconnect that page. an order like that
+    # can't show without a store, so our row goes (Check still has the order)
+    if not kept:
+        return
+    for order_id, old_url in kept.items():
+        order = session.get(Order, order_id)
+        new_store_id = new_store_for_url(old_url) if old_url else None
+        if new_store_id is None:
+            session.delete(order)
+        else:
+            order.store_id = new_store_id
+    session.flush()
+    in_use = set(session.execute(select(Order.store_id)).scalars())
+    for store_id in set(session.execute(select(Store.id)).scalars()):
+        # only the old stores the kept orders were holding on to. the new ones are connecting
+        if store_id not in in_use and store_id not in new_store_ids:
+            session.delete(session.get(Store, store_id))
     session.commit()

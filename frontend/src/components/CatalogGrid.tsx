@@ -20,7 +20,7 @@ import type {
   SuppressKeyboardEventParams,
 } from "ag-grid-community"
 import { AgGridReact, type CustomCellRendererProps } from "ag-grid-react"
-import { Check, Download, PanelRightOpen, Redo2, RotateCcw, Store as StoreIcon, TriangleAlert, Undo2, Upload } from "lucide-react"
+import { Check, CloudOff, Download, PanelRightOpen, Redo2, RotateCcw, Store as StoreIcon, TriangleAlert, Undo2, Upload } from "lucide-react"
 import { AnimatePresence, motion } from "motion/react"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 
@@ -35,6 +35,7 @@ import { Button } from "@/components/ui/button"
 import { api } from "@/lib/api"
 import { dayStamp, money, shortDateTime, slugify } from "@/lib/format"
 import { flashGridRow } from "@/lib/gridFlash"
+import { planPublish } from "@/lib/publishPlan"
 import { useGridLayout } from "@/lib/gridState"
 import { calmTheme } from "@/lib/gridTheme"
 import type { CatalogRow, FlagField, ItemPatch, ReviewResponse, StoreStatus } from "@/lib/types"
@@ -732,33 +733,29 @@ export function CatalogGrid({
 
   const byId = useMemo(() => new Map(rows.map((row) => [row.item_id, row])), [rows])
   const selected = selectedIds.map((id) => byId.get(id)).filter((row): row is CatalogRow => Boolean(row))
-  const toPublish = selected.filter((row) => !row.published)
-  const stillAmber = toPublish.filter((row) => openFlagCount(row) > 0)
   const needsLook = rows.reduce((total, row) => total + openFlagCount(row), 0)
   const flaggedTotal = rows.reduce((total, row) => total + Object.keys(row.flags).length, 0)
-  const takeOffline = selected.length > 0 && toPublish.length === 0
+  // Publish only ever publishes. live rows that are ticked are left alone, and taking them
+  // offline is the separate Take offline button. see lib/publishPlan.ts
+  const plan = planPublish(
+    selected.map((row) => ({ item_id: row.item_id, published: row.published, openFlags: openFlagCount(row) })),
+    editable
+  )
+  const publishHint = plan.hint
 
-  let publishHint: string | null = null
-  if (editable && selected.length === 0) publishHint = "Tick rows to publish them."
-  if (stillAmber.length > 0) {
-    publishHint =
-      stillAmber.length +
-      (stillAmber.length === 1 ? " selected item still has" : " selected items still have") +
-      " amber cells. Confirm or fix them first."
-  }
-
-  const publish = async () => {
+  const sendPublish = async (published: boolean) => {
     if (storeId === null || !gridApi) return
-    const ids = (takeOffline ? selected : toPublish).map((row) => row.item_id)
+    const ids = published ? plan.publishIds : plan.offlineIds
+    if (ids.length === 0) return
     setPublishing(true)
     await enqueue(
-      () => api.publishItems(storeId, ids, !takeOffline),
-      takeOffline ? ids.length + " taken offline" : ids.length + " published to PayPal"
+      () => api.publishItems(storeId, ids, published),
+      published ? ids.length + " published to PayPal" : ids.length + " taken offline"
     )
     setPublishing(false)
     if (gridApi.isDestroyed()) return
     gridApi.deselectAll()
-    if (!takeOffline) {
+    if (published) {
       for (const id of ids) flashGridRow(gridApi, wrapper.current, id, "ok")
     }
   }
@@ -856,39 +853,44 @@ export function CatalogGrid({
 
           {editable && (
             <div className="flex items-center gap-2">
-              <Press disabled={publishing || selected.length === 0 || stillAmber.length > 0}>
+              <Press disabled={publishing || !plan.canPublish}>
                 <Button
                   size="sm"
-                  variant={takeOffline ? "outline" : "default"}
-                  disabled={publishing || selected.length === 0 || stillAmber.length > 0}
+                  disabled={publishing || !plan.canPublish}
                   aria-describedby={publishHint ? "publish-hint" : undefined}
                   // the rolling number shows two digits for a moment, the name never does
-                  aria-label={takeOffline ? "Take " + selected.length + " offline" : toPublish.length > 0 ? "Publish " + toPublish.length + " to PayPal" : "Publish to PayPal"}
-                  onClick={() => void publish()}
+                  aria-label={plan.publishIds.length > 0 ? "Publish " + plan.publishIds.length + " to PayPal" : "Publish to PayPal"}
+                  onClick={() => void sendPublish(true)}
                 >
                   <motion.span className="flex" animate={publishing ? { y: [0, -3, 0] } : { y: 0 }} transition={publishing ? { duration: 0.6, repeat: Infinity } : POP}>
                     <Upload />
                   </motion.span>
-                  {takeOffline ? (
-                    <>Take <CountRoll value={selected.length} /> offline</>
-                  ) : toPublish.length > 0 ? (
-                    <>Publish <CountRoll value={toPublish.length} /> to PayPal</>
-                  ) : (
-                    "Publish to PayPal"
-                  )}
+                  {plan.publishIds.length > 0 ? <>Publish <CountRoll value={plan.publishIds.length} /> to PayPal</> : "Publish to PayPal"}
                 </Button>
               </Press>
+              {plan.canTakeOffline && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={publishing}
+                  aria-label={"Take " + plan.offlineIds.length + " offline"}
+                  onClick={() => void sendPublish(false)}
+                >
+                  <CloudOff />
+                  Take <CountRoll value={plan.offlineIds.length} /> offline
+                </Button>
+              )}
               <AnimatePresence mode="wait" initial={false}>
                 {publishHint && (
                   <motion.span
-                    key={stillAmber.length > 0 ? "blocked" : "hint"}
+                    key={plan.stillAmber > 0 ? "blocked" : "hint"}
                     id="publish-hint"
                     initial={{ opacity: 0, x: -6 }}
                     // a blocked publish gets a small shake, the "not yet" gesture
-                    animate={stillAmber.length > 0 ? { opacity: 1, x: [0, -4, 4, -2, 2, 0] } : { opacity: 1, x: 0 }}
+                    animate={plan.stillAmber > 0 ? { opacity: 1, x: [0, -4, 4, -2, 2, 0] } : { opacity: 1, x: 0 }}
                     exit={{ opacity: 0 }}
-                    transition={{ duration: stillAmber.length > 0 ? 0.4 : 0.18 }}
-                    className={cn("text-xs", stillAmber.length > 0 ? "font-medium text-warn" : "text-muted-foreground")}
+                    transition={{ duration: plan.stillAmber > 0 ? 0.4 : 0.18 }}
+                    className={cn("text-xs", plan.stillAmber > 0 ? "font-medium text-warn" : "text-muted-foreground")}
                   >
                     {publishHint}
                   </motion.span>

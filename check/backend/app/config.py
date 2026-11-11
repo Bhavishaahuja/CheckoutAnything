@@ -60,12 +60,11 @@ class Settings(BaseSettings):
     # the saved sandbox wallet POST /demo/orders pays with, from spikes/.vault_token.json. without
     # one PayPal waits on a buyer, so there's no hold and nothing to check. left empty, that's a 503
     demo_vault_id: str = ""
-    # PayPal order ids Reset demo never voids or deletes, comma-separated. the default is the
-    # captured order the sandbox dispute is on: it's an old week1-e2e order with no agent name, so
-    # without this the reset would sweep it up with the other old test runs, and POST
-    # /disputes/sync would have nothing to find the dispute through. an order with a dispute
-    # saved on it is kept too, whatever this says
-    demo_protected_paypal_order_ids: str = "25136698AG394644B"
+    # Check order ids Reset demo keeps, comma-separated, like "41" or "41,42". a kept order stays
+    # with its mandate, check result, decision and dispute: nothing on it is voided, deleted or
+    # placed again. it's how the order the sandbox dispute is on survives every reset. left empty,
+    # nothing is kept, and an order with a dispute goes like any other stray order
+    protected_order_ids: str = ""
 
     database_url: str = "postgresql+psycopg://postgres:postgres@localhost:5432/leash"
 
@@ -110,12 +109,18 @@ def store_naming_agents(settings):
     return names
 
 
-def protected_paypal_order_ids(settings):
+def protected_order_ids(settings):
+    # PROTECTED_ORDER_IDS as a set of ints. a typo is logged and skipped rather than stopping the
+    # API: a bad id should cost one kept order, not the whole deploy
     ids = set()
-    for paypal_order_id in settings.demo_protected_paypal_order_ids.split(","):
-        paypal_order_id = paypal_order_id.strip()
-        if paypal_order_id:
-            ids.add(paypal_order_id)
+    for order_id in settings.protected_order_ids.split(","):
+        order_id = order_id.strip().lstrip("#")
+        if not order_id:
+            continue
+        if not order_id.isdigit():
+            logger.warning("Ignoring %r in PROTECTED_ORDER_IDS, it isn't an order id", order_id)
+            continue
+        ids.add(int(order_id))
     return ids
 
 
