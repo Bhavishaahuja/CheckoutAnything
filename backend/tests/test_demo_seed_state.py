@@ -9,12 +9,14 @@ from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 
 from backend.app import review, shop
 from backend.app.check_client import CheckError
 from backend.app.db import create_tables, new_session
 from backend.app.demo import load_fixture
 from backend.app.events import bus
+from backend.app.models import Order, Store
 from backend.app.orders import check_items, price_order
 from backend.app.spec import parse_spec
 from backend.tests.fakes import FakeCheck
@@ -121,6 +123,54 @@ def test_check_saying_no_stops_the_reset_before_anything_is_wiped(replay_world, 
         # the store is still here
         ids = [store["id"] for store in client.get("/stores").json()["stores"]]
         assert ids == [store_id]
+
+
+def test_the_order_check_protects_keeps_its_row_here(replay_world, check, publish_bakery):
+    # the order the sandbox dispute is on came through the agent path, so we have a row for it.
+    # Check keeps it (PROTECTED_ORDER_IDS), and the Orders tab has to keep showing it
+    with TestClient(replay_world.app) as client:
+        old_store_id, _store = connect_store(
+            client, "https://stores.example/fernwood-thistle-goods/"
+        )
+        session = new_session()
+        try:
+            for check_order_id in (41, 42):
+                session.add(Order(
+                    store_id=old_store_id, item_id="wool-camp-blanket", variant_id="large",
+                    description="Wool Camp Blanket (Large)", quantity=1, total="146.00",
+                    status="captured", created_by="agent", check_order_id=check_order_id,
+                    review_state="approved", check_verdict="mismatch",
+                ))
+            session.commit()
+        finally:
+            session.close()
+
+        def reset_keeping_41():
+            check.resets += 1
+            return {"state": "running", "protected_order_ids": [41]}
+
+        check.reset_demo = reset_keeping_41
+        reset_and_wait(client)
+
+        session = new_session()
+        try:
+            rows = list(session.execute(select(Order)).scalars())
+            assert [row.check_order_id for row in rows] == [41]
+            fernwood = session.get(Store, rows[0].store_id)
+            # moved to the reconnected Fernwood, the old store row is gone
+            assert fernwood.id != old_store_id
+            assert fernwood.merchant_name == "Fernwood & Thistle Goods"
+            assert session.get(Store, old_store_id) is None
+        finally:
+            session.close()
+
+        names = []
+        for store in client.get("/stores").json()["stores"]:
+            names.append(store["merchant_name"])
+        assert sorted(names) == ["Fernwood & Thistle Goods", "Hollowbrook Bakery"]
+        listed = client.get("/orders").json()["orders"]
+        assert len(listed) == 1
+        assert listed[0]["store_name"] == "Fernwood & Thistle Goods"
 
 
 def test_reset_without_check_still_resets_the_stores():

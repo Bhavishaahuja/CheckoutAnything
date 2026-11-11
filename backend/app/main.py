@@ -637,13 +637,26 @@ def create_app(settings=None, paypal=None, ai_factory=None, fetch=None, agent_cl
                     ) from error
                 raise check_failure(error) from error
 
-        shop.wipe_everything(session)
+        # the orders Check keeps (PROTECTED_ORDER_IDS, the order the dispute is on) keep their row
+        # here too, so the Orders tab still shows them after the reset
+        protected = []
+        if isinstance(check_reset, dict):
+            protected = check_reset.get("protected_order_ids") or []
+        kept = shop.wipe_everything(session, protected)
         bus.clear()
 
         started = []
+        new_store_by_page = {}
         for url in demo_store_urls(RESET_STORE_SLUGS):
             store = begin_connect(session, url, mode)
             started.append({"store_id": store.id, "url": url})
+            new_store_by_page[same_page_key(url)] = store.id
+
+        def new_store_for_url(old_url):
+            return new_store_by_page.get(same_page_key(old_url))
+
+        new_store_ids = set(new_store_by_page.values())
+        shop.relink_kept_orders(session, kept, new_store_for_url, new_store_ids)
         return {"mode": mode, "stores": started, "check_reset": check_reset}
 
     return app
