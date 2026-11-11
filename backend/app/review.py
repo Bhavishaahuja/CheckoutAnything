@@ -18,6 +18,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 
 from backend.app import models
+from backend.app.demo import slug_for_url
 from backend.app.models import ColumnLabel, ItemReview, StoreSpecRow, VerificationRun
 from backend.app.spec import SpecError, parse_item, parse_spec, spec_to_json
 from backend.app.verifier import PRICE_REGEX, STRUCK_REGEX, paypal_check
@@ -35,6 +36,11 @@ CATEGORIES = [
     "Services",
     "Other",
 ]
+
+# demo stores whose verified items all go live as soon as they connect, flagged ones included,
+# so the agent's starter prompts work right after Reset demo. the flags on them count as
+# looked at. the other demo stores keep their flags, they're the ones the review is shown on
+PUBLISHED_ON_CONNECT = {"hollowbrook-bakery"}
 
 MAX_STOCK = 1_000_000
 MAX_LABEL_LENGTH = 40
@@ -233,16 +239,27 @@ def ensure_reviews(session, store, spec):
     runs = store_runs(session, store.id)
     flags = compute_flags(spec, spec_history(session, store.id), runs)
     latest = latest_runs(runs)
+    publish_all = slug_for_url(store.source_url or "") in PUBLISHED_ON_CONNECT
     position = max((row.position for row in rows.values()), default=-1) + 1
     for item in missing:
         run = latest.get(item.id)
         verified = item.available and run is not None and run.ok
+        item_flags = flags.get(item.id) or {}
+        # nothing to look at means it can go live on its own
+        published = verified and not item_flags
+        resolved = {}
+        if publish_all and verified:
+            # a demo store that goes live whole: its flags are marked as looked at, so the
+            # publish rule (every flag resolved) holds for it too
+            for field in item_flags:
+                resolved[field] = {"by": "demo"}
+            published = True
         session.add(ItemReview(
             store_id=store.id,
             item_id=item.id,
             position=position,
-            # nothing to look at means it can go live on its own
-            published=verified and not flags.get(item.id),
+            published=published,
+            resolved_fields=json.dumps(resolved, sort_keys=True),
         ))
         position += 1
     try:

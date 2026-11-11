@@ -247,7 +247,8 @@ class ShoppingAgent:
                 "store_id": store["id"],
                 "name": store["merchant_name"],
                 "url": store["source_url"],
-                "verified_items": store["counts"]["verified"],
+                # what it can actually buy there: verified and published by the merchant
+                "live_items": store["counts"]["live"],
             })
         return stores
 

@@ -82,6 +82,8 @@ export interface Counts {
   verified: number
   failed: number
   unavailable: number
+  // verified and published, so an agent can buy it. only GET /stores sends it
+  live?: number
 }
 
 export type StoreStatus = "connecting" | "live" | "failed"

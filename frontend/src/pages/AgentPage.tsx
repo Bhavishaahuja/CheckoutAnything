@@ -25,6 +25,18 @@ interface Turn {
 
 const STEP_REVEAL_MS = 650
 
+// how many of a store's items an agent can buy. an older API sends no live count, then verified
+function liveCount(store: Store): number {
+  return store.counts.live ?? store.counts.verified
+}
+
+// "4 live", or "1 of 4 live" while some verified items wait for the merchant
+function liveLabel(store: Store): string {
+  const live = liveCount(store)
+  if (live === store.counts.verified) return live + " live"
+  return live + " of " + store.counts.verified + " live"
+}
+
 function text(value: unknown): string {
   if (value === null || value === undefined) return ""
   return String(value)
@@ -37,13 +49,13 @@ function StepCard({ step }: { step: AgentStep }) {
 
   if (step.tool === "list_stores") {
     icon = <StoreIcon />
-    const found = Array.isArray(output.stores) ? (output.stores as { name: string; verified_items: number }[]) : []
+    const found = Array.isArray(output.stores) ? (output.stores as { name: string; live_items: number }[]) : []
     summary = (
       <div className="flex flex-wrap items-center gap-1.5">
         <span className="text-muted-foreground">{found.length} live {found.length === 1 ? "store" : "stores"}</span>
         {found.map((store) => (
           <Pill key={store.name} tone="muted">
-            {store.name} · {store.verified_items}
+            {store.name} · {store.live_items} live
           </Pill>
         ))}
       </div>
@@ -153,9 +165,12 @@ export function AgentPage({
   const liveStores = stores.filter((store) => store.status === "live")
   const busy = turns.some((turn) => turn.pending || (turn.answer !== null && turn.shown < turn.answer.steps.length))
 
-  const suggestions = ["Get me a half sourdough loaf, sliced, from Hollowbrook Bakery."]
+  // only stores with something the agent can buy, so no starter prompt is a dead end
+  const suggestions: string[] = []
   for (const store of liveStores) {
-    if (!store.merchant_name.includes("Hollowbrook")) suggestions.push("What can I buy at " + store.merchant_name + "?")
+    if (liveCount(store) === 0) continue
+    if (store.merchant_name.includes("Hollowbrook")) suggestions.unshift("Get me a half sourdough loaf, sliced, from Hollowbrook Bakery.")
+    else suggestions.push("What can I buy at " + store.merchant_name + "?")
   }
 
   // reveal the tool calls of the newest answer one by one
@@ -347,7 +362,7 @@ export function AgentPage({
                     <span className="size-2 shrink-0 rounded-full bg-ok" />
                     <span className="truncate font-medium">{store.merchant_name}</span>
                   </span>
-                  <span className="shrink-0 text-xs text-muted-foreground tabular-nums">{store.counts.verified} items</span>
+                  <span className="shrink-0 text-xs text-muted-foreground tabular-nums">{liveLabel(store)}</span>
                 </li>
               ))}
             </ul>
