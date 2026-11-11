@@ -37,6 +37,17 @@ function liveLabel(store: Store): string {
   return live + " of " + store.counts.verified + " live"
 }
 
+// check_payment's status, in words
+const PAYMENT_STATES: Record<string, string> = {
+  authorized_held_for_review: "Authorized, held for review",
+  authorized: "Authorized",
+  auto_captured: "Auto-captured",
+  captured: "Captured",
+  voided: "Voided",
+  failed: "Failed",
+  unknown: "Not our order",
+}
+
 function text(value: unknown): string {
   if (value === null || value === undefined) return ""
   return String(value)
@@ -112,7 +123,22 @@ function StepCard({ step }: { step: AgentStep }) {
     }
   } else if (step.tool === "check_payment") {
     icon = <ListChecks />
-    summary = <span className="text-muted-foreground">PayPal says: {text(output.status) || "see details"}</span>
+    // Check's state of the money is the headline, PayPal's own order status is the small print
+    const state = text(output.status)
+    const held = state === "authorized_held_for_review"
+    const tone = held ? "warn" : state === "captured" || state === "auto_captured" ? "ok" : state === "voided" || state === "failed" ? "muted" : "info"
+    summary = (
+      <div className="flex flex-col gap-1">
+        <div className="flex flex-wrap items-center gap-1.5">
+          <Pill tone={tone}>{PAYMENT_STATES[state] || state || "Unknown"}</Pill>
+          {output.paypal_order_status ? (
+            <span className="text-xs text-muted-foreground">PayPal order status: {text(output.paypal_order_status)}</span>
+          ) : null}
+        </div>
+        {output.summary ? <span className="text-muted-foreground">{text(output.summary)}</span> : null}
+        {held && output.hold_reason ? <span className="text-warn">Held: {text(output.hold_reason)}</span> : null}
+      </div>
+    )
   }
 
   if (step.is_error) {

@@ -387,6 +387,10 @@ def test_the_agent_buys_through_the_same_code_and_reports_its_steps(world):
         assert bought["total"] == "12.00"
         assert answer["orders"][0]["created_by"] == "agent"
         assert world.checked == [bought["paypal_order_id"]]
+        # paid directly, no Check: the payment state is captured, PayPal's status rides along
+        checked = answer["steps"][3]["output"]
+        assert checked["status"] == "captured"
+        assert checked["paypal_order_status"] == "COMPLETED"
         assert "12.00" in answer["reply"]
 
         # each tool result went back to Claude in one user message
