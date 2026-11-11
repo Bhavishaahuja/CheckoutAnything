@@ -427,7 +427,7 @@ export function DashboardPage() {
         {orders.status === 'ready' && orders.data.length > 0 && (
           <>
             <div className="flex min-h-12 flex-wrap items-center gap-x-3 gap-y-2 border-b border-border px-4 py-2">
-              <div className="flex rounded-lg bg-muted p-0.5" role="group" aria-label="Filter orders">
+              <div className="flex max-w-full flex-wrap rounded-lg bg-muted p-0.5" role="group" aria-label="Filter orders">
                 {FILTERS.map((option) => (
                   <button
                     key={option.id}
