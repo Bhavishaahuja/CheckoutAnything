@@ -61,7 +61,7 @@ export function formatEventDate(isoDate: string): string {
   return eventDateFormatter.format(new Date(year, month - 1, day))
 }
 
-function sizeLabel(size: string): string {
+export function sizeLabel(size: string): string {
   // agents sometimes send "size women's 9" already, and "size size women's 9" reads like a bug
   if (size.trim().toLowerCase().startsWith('size')) {
     return size.trim()

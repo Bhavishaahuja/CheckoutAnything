@@ -5,13 +5,21 @@
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#1d3fd0" />
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link
-      rel="stylesheet"
-      href="https://fonts.googleapis.com/css2?family=Geist:wght@400..700&family=Geist+Mono:wght@400..600&family=Schibsted+Grotesk:wght@400..800&family=IBM+Plex+Mono:wght@400;500;600&family=Newsreader:ital,opsz,wght@1,6..72,400;1,6..72,500&display=swap"
-    />
     <title>Checkout Anything</title>
+    <script>
+      // set the theme before first paint so there is no flash, the same way as the Checkout
+      // Anything app (same "theme" key). ?theme=dark|light comes from that app's review drawer,
+      // so the confirm page in the drawer follows the app around it. it isn't saved
+      try {
+        var asked = new URLSearchParams(window.location.search).get("theme");
+        var saved = localStorage.getItem("theme");
+        var dark;
+        if (asked === "dark" || asked === "light") dark = asked === "dark";
+        else if (saved) dark = saved === "dark";
+        else dark = window.matchMedia("(prefers-color-scheme: dark)").matches;
+        if (dark) document.documentElement.classList.add("dark");
+      } catch (e) {}
+    </script>
   </head>
   <body>
     <div id="root"></div>
