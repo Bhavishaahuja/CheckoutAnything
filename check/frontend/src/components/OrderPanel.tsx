@@ -46,7 +46,13 @@ export function OrderPanel({ order, onClose, onGoToOrder }: OrderPanelProps) {
               {buyerName(order.mandate.buyer_label)}'s agent order
             </h2>
           </div>
-          <button ref={closeButton} type="button" className="icon-button" onClick={onClose} aria-label="Close">
+          <button
+            ref={closeButton}
+            type="button"
+            className="flex size-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground"
+            onClick={onClose}
+            aria-label="Close"
+          >
             <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true">
               <path d="M4 4l10 10M14 4L4 14" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
             </svg>

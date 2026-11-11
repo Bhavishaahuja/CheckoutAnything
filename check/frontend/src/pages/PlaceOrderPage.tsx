@@ -1,4 +1,8 @@
+import { LoaderCircle } from 'lucide-react'
 import { useState } from 'react'
+import { Card } from '@/components/bits'
+import { cn } from '@/lib/utils'
+import { PageHead, StateCard } from '../components/pageBits'
 import { ApiError, listMandates, placeDemoOrder } from '../api'
 import { ReviewLinkBox } from '../components/ReviewLinkBox'
 import { StatusChip, type DisplayStatus } from '../components/StatusChip'
@@ -21,13 +25,8 @@ function isExpiredSession(error: unknown): boolean {
 // mid-page, api.ts tells the layout and it swaps this page for the login form.
 export function PlaceOrderPage() {
   return (
-    <section className="place-order">
-      <div className="page__head">
-        <div>
-          <h1 className="page__title">Place a demo order</h1>
-          <p className="page__lede">Stands in for the shopping agent. Every order is a real sandbox hold.</p>
-        </div>
-      </div>
+    <section className="mx-auto flex max-w-3xl flex-col gap-4">
+      <PageHead title="Place a demo order" lede="Stands in for the shopping agent. Every order is a real sandbox hold." />
 
       <PlaceOrderForm />
     </section>
@@ -38,25 +37,13 @@ function PlaceOrderForm() {
   const mandates = useAsync(loadMandates)
 
   if (mandates.status === 'loading') {
-    return (
-      <div className="card">
-        <p className="state">Loading mandates...</p>
-      </div>
-    )
+    return <StateCard kind="loading">Loading mandates...</StateCard>
   }
   if (mandates.status === 'error') {
-    return (
-      <div className="card">
-        <p className="state state--error">Couldn't load mandates: {mandates.error.message}</p>
-      </div>
-    )
+    return <StateCard kind="error">Couldn't load mandates: {mandates.error.message}</StateCard>
   }
   if (mandates.data.length === 0) {
-    return (
-      <div className="card">
-        <p className="state">No mandates yet. Run the seed script or create one first.</p>
-      </div>
-    )
+    return <StateCard kind="empty">No mandates yet. Run the seed script or create one first.</StateCard>
   }
 
   return <ScenarioPicker mandates={mandates.data} />
@@ -111,14 +98,14 @@ function ScenarioPicker({ mandates }: ScenarioPickerProps) {
   }
 
   return (
-    <div className="place-order__stack">
-      <div className="card place-order__panel">
-        <label className="field-label" htmlFor="demo-mandate">
+    <div className="flex flex-col gap-4">
+      <Card className="flex flex-col gap-2 p-4">
+        <label className="text-[13px] font-medium" htmlFor="demo-mandate">
           Mandate
         </label>
         <select
           id="demo-mandate"
-          className="field"
+          className="h-10 w-full min-w-0 rounded-lg border border-border bg-background px-3 text-sm outline-none focus:border-primary disabled:opacity-60"
           value={mandate.id}
           disabled={placing !== null}
           onChange={(event) => chooseMandate(Number(event.target.value))}
@@ -129,22 +116,28 @@ function ScenarioPicker({ mandates }: ScenarioPickerProps) {
             </option>
           ))}
         </select>
-        <p className="place-order__rules">{summarizeMandate(mandate)}</p>
-      </div>
+        <p className="text-[13px] text-muted-foreground">{summarizeMandate(mandate)}</p>
+      </Card>
 
-      <div className="scenario-grid">
+      <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2 lg:grid-cols-3">
         {SCENARIOS.map((scenario) => {
           const blocker = scenarioBlocker(mandate, scenario.id)
           return (
             <button
               key={scenario.id}
               type="button"
-              className="scenario-button"
+              className={cn(
+                'flex min-h-24 flex-col items-start gap-1 rounded-xl border border-border bg-card p-4 text-left transition-colors',
+                'hover:border-primary hover:bg-info-soft disabled:hover:border-border',
+                blocker !== null ? 'bg-muted text-muted-foreground disabled:hover:bg-muted' : 'disabled:hover:bg-card',
+                placing === scenario.id && 'border-primary bg-info-soft',
+              )}
               disabled={placing !== null || blocker !== null}
               onClick={() => place(scenario.id)}
             >
-              <span className="scenario-button__title">{scenario.title}</span>
-              <span className="scenario-button__note">
+              <span className="text-[15px] font-semibold tracking-tight">{scenario.title}</span>
+              <span className="flex items-center gap-1.5 text-[13px] text-muted-foreground">
+                {placing === scenario.id && <LoaderCircle className="spin-slow size-3.5" aria-hidden />}
                 {placing === scenario.id ? 'Placing...' : (blocker ?? scenario.description)}
               </span>
             </button>
@@ -152,17 +145,11 @@ function ScenarioPicker({ mandates }: ScenarioPickerProps) {
         })}
       </div>
 
-      <div aria-live="polite">
+      <div aria-live="polite" className="flex flex-col gap-4">
         {placing && (
-          <div className="card">
-            <p className="state">Placing the hold and checking the order. This can take around 30 seconds.</p>
-          </div>
+          <StateCard kind="loading">Placing the hold and checking the order. This can take around 30 seconds.</StateCard>
         )}
-        {error && (
-          <div className="card">
-            <p className="state state--error">{error}</p>
-          </div>
-        )}
+        {error && <StateCard kind="error">{error}</StateCard>}
         {result && <ResultCard order={result} />}
       </div>
     </div>
@@ -191,46 +178,47 @@ function displayStatus(order: PlacedOrder): DisplayStatus {
 function ResultCard({ order }: { order: PlacedOrder }) {
   const status = displayStatus(order)
   const check = order.intent_check
+  // colored by verdict like the side panel, so a clean match doesn't read as a warning
+  const verdictTone = !check ? 'text-muted-foreground' : check.verdict === 'match' ? 'text-ok' : 'text-warn'
 
   return (
-    <div className="card place-order__panel result-card">
-      <div className="result-card__head">
-        <span className="mono">Order #{order.id}</span>
+    <Card className="flex flex-col gap-3 p-4">
+      <div className="flex items-center justify-between gap-2">
+        <span className="font-mono text-[13px] text-muted-foreground">Order #{order.id}</span>
         <StatusChip status={status} />
       </div>
 
-      {/* colored by verdict like the side panel, so a clean match doesn't read as a warning */}
-      <p className={'result-card__reason ' + (check ? 'verdict-text--' + check.verdict : 'reason')}>
+      <p className={cn('text-[15px] leading-snug font-semibold', verdictTone)}>
         {check ? check.reason : 'No check result on this order.'}
       </p>
 
       {check && (
-        <dl className="result-card__facts">
-          <div>
-            <dt>Verdict</dt>
-            <dd className="result-card__verdict">{check.verdict}</dd>
+        <dl className="grid grid-cols-3 gap-2">
+          <div className="rounded-lg bg-muted px-3 py-2">
+            <dt className="text-xs text-muted-foreground">Verdict</dt>
+            <dd className="text-sm font-medium capitalize">{check.verdict}</dd>
           </div>
-          <div>
-            <dt>Risk score</dt>
-            <dd>{check.risk_score ?? 'None'}</dd>
+          <div className="rounded-lg bg-muted px-3 py-2">
+            <dt className="text-xs text-muted-foreground">Risk score</dt>
+            <dd className="text-sm font-medium tabular-nums">{check.risk_score ?? 'None'}</dd>
           </div>
-          <div>
-            <dt>Total</dt>
-            <dd>{formatMoney(order.total, order.currency)}</dd>
+          <div className="rounded-lg bg-muted px-3 py-2">
+            <dt className="text-xs text-muted-foreground">Total</dt>
+            <dd className="text-sm font-medium tabular-nums">{formatMoney(order.total, order.currency)}</dd>
           </div>
         </dl>
       )}
 
-      <ul className="result-card__items">
+      <ul className="flex flex-col gap-0.5 text-sm">
         {order.items.map((item, index) => (
           <li key={index}>{describeItem(item)}</li>
         ))}
       </ul>
-      {order.merchant && <p className="muted">At {order.merchant}</p>}
+      {order.merchant && <p className="text-[13px] text-muted-foreground">At {order.merchant}</p>}
 
       {status === 'needs_review' && (
         <ReviewLinkBox key={order.id} orderId={order.id} />
       )}
-    </div>
+    </Card>
   )
 }
