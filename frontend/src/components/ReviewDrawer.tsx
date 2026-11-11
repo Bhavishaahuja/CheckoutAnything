@@ -11,6 +11,7 @@ import { useCallback, useEffect, useRef, useState, type FormEvent } from "react"
 import { CopyId, ErrorNote } from "@/components/bits"
 import { Button } from "@/components/ui/button"
 import { api, ApiError } from "@/lib/api"
+import { checkNumber } from "@/lib/format"
 import type { Order, ReviewLink } from "@/lib/types"
 
 // what the confirm page posts to its parent window (check/frontend/src/lib/parentMessage.ts)
@@ -141,7 +142,7 @@ export function ReviewDrawer({
       <motion.aside
         role="dialog"
         aria-modal="true"
-        aria-label={"Review order " + order.id}
+        aria-label={"Review order " + (checkNumber(order) ?? "")}
         className="fixed inset-y-0 right-0 z-50 flex w-full max-w-[440px] flex-col border-l border-border bg-card shadow-2xl"
         initial={{ x: "100%" }}
         animate={{ x: 0 }}
@@ -150,7 +151,7 @@ export function ReviewDrawer({
       >
         <header className="flex shrink-0 items-center gap-3 border-b border-border px-4 py-2">
           <div className="min-w-0 flex-1">
-            <h2 className="truncate text-[15px] font-semibold tracking-tight">Review order {order.id}</h2>
+            <h2 className="truncate text-[15px] font-semibold tracking-tight">Review order {checkNumber(order)}</h2>
             <p className="truncate text-xs text-muted-foreground">
               {order.description}
               {order.store_name ? " at " + order.store_name : ""}
@@ -208,7 +209,7 @@ export function ReviewDrawer({
               <iframe
                 ref={frame}
                 src={inThisTheme(phase.link.url)}
-                title={"Confirm page for order " + order.id}
+                title={"Confirm page for order " + (checkNumber(order) ?? "")}
                 className="min-h-0 w-full flex-1 border-0 bg-background"
                 referrerPolicy="no-referrer"
               />

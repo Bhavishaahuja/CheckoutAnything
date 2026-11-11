@@ -28,6 +28,7 @@ def test_check_stats_returns_only_the_watch_fields():
             "fast_streak": 3,
             "fast_threshold_ms": 2000,
             "median_decision_ms": 1400,
+            "check_total_orders": 7,
         }
 
 

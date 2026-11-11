@@ -35,7 +35,7 @@ import { ColumnsMenu } from "@/components/grid/ColumnsMenu"
 import { createOverlayStore, GridOverlay, type OverlayStore } from "@/components/grid/GridOverlay"
 import { CountRoll, POP } from "@/components/grid/motion"
 import { Button } from "@/components/ui/button"
-import { clockTime, decisionTime, money } from "@/lib/format"
+import { checkNumber, clockTime, decisionTime, money } from "@/lib/format"
 import { FindCell, FindText, useGridFind, type FindStore } from "@/lib/gridFind"
 import { flashGridCells, flashGridRow } from "@/lib/gridFlash"
 import { useGridLayout } from "@/lib/gridState"
@@ -116,6 +116,9 @@ interface GridContext {
   openReview: (orderId: number) => void
   // scroll to another order's row and light it up
   goToOrder: (orderId: number) => void
+  // Check's number for one of our orders, like "#45", by our own id. the grid shows Check's
+  // numbers everywhere so they match the Check dashboard
+  numberOf: (orderId: number) => string
 }
 
 type CellProps = CustomCellRendererProps<OrderRow, unknown, GridContext>
@@ -159,7 +162,7 @@ function ItemCell({ data, node, context }: CellProps) {
       ) : (
         <span className="flex min-w-0 flex-col justify-center leading-tight">
           {name}
-          <span className="truncate text-xs text-muted-foreground">The fix for order {data.replaces_order_id}</span>
+          <span className="truncate text-xs text-muted-foreground">The fix for order {context.numberOf(data.replaces_order_id)}</span>
         </span>
       )}
     </span>
@@ -198,10 +201,10 @@ function StatusBody({ data, context }: { data: OrderRow; context: GridContext })
         <button
           type="button"
           onClick={() => context.goToOrder(newId)}
-          aria-label={"Go to the new order, number " + newId}
+          aria-label={"Go to the new order, " + context.numberOf(newId)}
           className="inline-flex h-11 items-center gap-1 text-xs font-medium whitespace-nowrap text-primary hover:underline"
         >
-          New order {newId} <ArrowRight className="size-3" />
+          New order {context.numberOf(newId)} <ArrowRight className="size-3" />
         </button>
       </span>
     )
@@ -322,7 +325,7 @@ function ReviewCell({ data, context }: CellProps) {
           transition={POP}
           type="button"
           onClick={() => context.openReview(data.id)}
-          aria-label={"Review order " + data.id}
+          aria-label={"Review order " + (checkNumber(data) ?? "")}
           className="inline-flex h-11 items-center rounded-lg bg-primary px-3.5 text-[13px] font-medium text-primary-foreground hover:opacity-90"
         >
           Review
@@ -434,9 +437,20 @@ export function OrdersGrid({
     })
   }, [overlay, onGoToAgent, setTerm])
 
+  // our id to Check's number, for the rows that point at each other (an accepted fix)
+  const numberOf = useCallback(
+    (orderId: number) => {
+      for (const row of rows) {
+        if (row.id === orderId) return checkNumber(row) ?? ""
+      }
+      return ""
+    },
+    [rows]
+  )
+
   const context = useMemo<GridContext>(
-    () => ({ overlay, find: find.store, checkOn, reviewLinks, openReview: onOpenReview, goToOrder }),
-    [overlay, find.store, checkOn, reviewLinks, onOpenReview, goToOrder]
+    () => ({ overlay, find: find.store, checkOn, reviewLinks, openReview: onOpenReview, goToOrder, numberOf }),
+    [overlay, find.store, checkOn, reviewLinks, onOpenReview, goToOrder, numberOf]
   )
 
   useEffect(() => {
@@ -514,6 +528,17 @@ export function OrdersGrid({
         headerClass: "group-order",
         marryChildren: true,
         children: [
+          {
+            // Check's number, the same one the Check dashboard shows. a dash for a test buy that
+            // was paid directly and never went through Check
+            headerName: "#",
+            colId: "check_number",
+            valueGetter: (params) => params.data?.check_order_id ?? null,
+            valueFormatter: (params) => (params.value === null || params.value === undefined ? "-" : "#" + params.value),
+            cellClass: "tabular-nums text-muted-foreground",
+            width: 76,
+            hide: !checkOn,
+          },
           {
             headerName: "Store",
             colId: "store",

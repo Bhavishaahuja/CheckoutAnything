@@ -9,6 +9,7 @@ import { NumberTicker } from "@/components/magicui/number-ticker"
 import { OrdersGrid, type OrderRow } from "@/components/OrdersGrid"
 import { ReviewDrawer } from "@/components/ReviewDrawer"
 import { api } from "@/lib/api"
+import { CHECK_URL } from "@/lib/appLinks"
 import type { AgentHeldRate, CheckStats } from "@/lib/types"
 
 const POLL_MS = 3000
@@ -147,6 +148,12 @@ export function OrdersPage({
     }
   }
 
+  // the orders here that went through Check, so they are among Check's own count
+  let inCheck = 0
+  for (const row of rows) {
+    if (row.check_order_id !== null) inCheck += 1
+  }
+
   return (
     <div className="mx-auto flex max-w-[1400px] flex-col gap-5 px-4 py-6">
       <div>
@@ -157,6 +164,16 @@ export function OrdersPage({
           {checkOn &&
             " An agent's order is held first and checked against what the buyer asked for: a clean match is captured, anything off waits for the buyer."}
         </p>
+        {checkOn && checkStats && checkStats.check_total_orders !== null && (
+          // Check also has the orders from its own demo page, so its dashboard shows more. say so,
+          // with the real counts, instead of leaving the two numbers to look like a mismatch
+          <p className="mt-1.5 text-[13px] text-muted-foreground">
+            Agent purchases from your stores. {inCheck} here, {checkStats.check_total_orders} total in Check.{" "}
+            <a href={CHECK_URL + "/dashboard"} className="font-medium text-primary underline-offset-2 hover:underline">
+              Open the Check dashboard
+            </a>
+          </p>
+        )}
       </div>
 
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
