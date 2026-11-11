@@ -73,11 +73,36 @@ def create_mandate(body: MandateCreate, session: DbSession, client: AnthropicCli
     return mandate
 
 
-@router.get("", response_model=list[MandateOut], dependencies=[Depends(require_merchant)])
+class MandateListItem(MandateOut):
+    # which of the catalog scenarios (wrong_size, substitution, wrong_model, wrong_date)
+    # POST /demo/orders can really build for this mandate. /place-order greys out the rest
+    catalog_scenarios: list[str] = []
+
+
+@router.get(
+    "", response_model=list[MandateListItem], dependencies=[Depends(require_merchant)]
+)
 def list_mandates(session: DbSession, limit: int = 50):
+    # imported here, not at the top: demo imports demo_seed, and demo_seed imports this file
+    from backend.app import catalog, demo
+
     limit = max(1, min(limit, 200))
     query = select(Mandate).order_by(Mandate.created_at.desc(), Mandate.id.desc()).limit(limit)
-    return session.scalars(query).all()
+    mandates = session.scalars(query).all()
+
+    # one catalog query per category, not one per mandate
+    rows_by_category = {}
+    listed = []
+    for mandate in mandates:
+        category = catalog.normalize_category(mandate.rules.get("category"))
+        if category not in rows_by_category:
+            rows_by_category[category] = catalog.load_category(session, category)
+        item = MandateListItem.model_validate(mandate)
+        item.catalog_scenarios = demo.possible_catalog_scenarios(
+            mandate, rows_by_category[category]
+        )
+        listed.append(item)
+    return listed
 
 
 @router.get(

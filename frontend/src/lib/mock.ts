@@ -815,7 +815,13 @@ export const mockApi: Api = {
   },
 
   async listStores() {
-    return stores.map((target) => copy(target.store))
+    // like the API: a store that failed without verifying anything gets no chip
+    const listed = []
+    for (const target of stores) {
+      if (target.store.status === "failed" && target.store.counts.verified === 0) continue
+      listed.push(copy(target.store))
+    }
+    return listed
   },
 
   async connectStore(url, mode) {

@@ -8,15 +8,28 @@
 import re
 from datetime import date
 
+from decimal import Decimal
+
 from sqlalchemy import select
 
+from backend.app.intent.rules import normalize_merchant
 from backend.app.models import CatalogItem
+from backend.app.store_catalogs import STORE_CATALOGS
 
 # the parser is told to use exactly these as a mandate's category when the request fits one,
 # which is how a mandate finds its rows here. see prompts/mandate.py
 CATEGORIES = ["sneakers", "groceries", "electronics", "event tickets", "subscription"]
 
 NUMBER_IN_SIZE = re.compile(r"\d+(?:\.\d+)?")
+
+# sizes in words, smallest first. "S" and "Small" are the same size
+WORD_SIZE_RANKS = {
+    "xs": 0, "x-small": 0, "extra small": 0, "extra-small": 0,
+    "s": 1, "small": 1,
+    "m": 2, "medium": 2,
+    "l": 3, "large": 3,
+    "xl": 4, "x-large": 4, "extra large": 4, "extra-large": 4,
+}
 
 
 def normalize_category(category):
@@ -68,6 +81,142 @@ def size_number(size):
     if found is None:
         return None
     return float(found.group(0))
+
+
+# ---- the sizes an item really comes in, and what each one costs ----
+# the item lives in one of two places: a Connect store's catalog (store_catalogs.py) when the
+# mandate names one of those stores, or Check's own catalog_items for the old categories.
+# either way it comes out as a list of {"label", "unit_price", "available"}, empty when we don't
+# know the item
+
+
+def item_sizes(merchant, item_name, rules, catalog_rows):
+    store_item = find_store_item(merchant, item_name)
+    if store_item is not None:
+        sizes = []
+        for size in store_item["sizes"]:
+            sizes.append({
+                "label": size["label"],
+                "unit_price": Decimal(size["unit_price"]),
+                "available": store_item["available"],
+            })
+        return sizes
+
+    # Check's catalog has a row per variant. keep the rows for this product in the color, model
+    # and date the mandate asked for, the size is the one thing left to vary
+    wanted_color = (rules.get("color") or "").strip().casefold()
+    wanted_model = (rules.get("model") or "").strip().casefold()
+    wanted_date = parse_event_date(rules.get("event_date"))
+    sizes = []
+    for row in catalog_rows:
+        if not same_product(row.name, item_name):
+            continue
+        if wanted_color and row.color and row.color.casefold() != wanted_color:
+            continue
+        if wanted_model and row.model and row.model.casefold() != wanted_model:
+            continue
+        if wanted_date is not None and row.event_date and row.event_date != wanted_date:
+            continue
+        sizes.append({
+            "label": row.size,
+            "unit_price": Decimal(str(row.price)),
+            "available": row.in_stock,
+        })
+    return sizes
+
+
+def find_store_item(merchant, item_name):
+    # only when the mandate names the store. the same blanket at "any store" has no price we know
+    wanted_store = normalize_merchant(merchant)
+    if not wanted_store or not item_name:
+        return None
+    for store in STORE_CATALOGS:
+        if normalize_merchant(store["store"]) != wanted_store:
+            continue
+        # the exact name first, so "Sourdough Loaf" can't land on some other loaf
+        for item in store["items"]:
+            if item["name"].casefold() == item_name.strip().casefold():
+                return item
+        for item in store["items"]:
+            if same_product(item["name"], item_name):
+                return item
+    return None
+
+
+def price_of_size(sizes, wanted_size):
+    # the real price of the size the mandate asked for, None when we can't tell which one that is
+    if not sizes:
+        return None
+
+    # one price for every size (sneakers, a mug), so the size doesn't matter
+    first_price = sizes[0]["unit_price"]
+    one_price = True
+    for size in sizes:
+        if size["unit_price"] != first_price:
+            one_price = False
+    if one_price:
+        return first_price
+
+    if not wanted_size or not str(wanted_size).strip():
+        # no size named means the item as listed, which is the first size on the page
+        return first_price
+    for size in sizes:
+        if same_size(size["label"], wanted_size):
+            return size["unit_price"]
+    return None
+
+
+def same_size(label, wanted_size):
+    if not label or not wanted_size:
+        return False
+    if clean_size(label) == clean_size(wanted_size):
+        return True
+    label_rank = word_size_rank(label)
+    if label_rank is not None and label_rank == word_size_rank(wanted_size):
+        return True
+    label_number = size_number(label)
+    return label_number is not None and label_number == size_number(wanted_size)
+
+
+def clean_size(size):
+    # "Size M " and "m" are both "m"
+    text = " ".join(str(size).casefold().split())
+    if text.startswith("size "):
+        text = text[len("size "):]
+    return text
+
+
+def word_size_rank(size):
+    # where a word size sits from XS to XL. None for "9", "64 oz" or "Half loaf"
+    if not size:
+        return None
+    return WORD_SIZE_RANKS.get(clean_size(size))
+
+
+def next_word_size(sizes, wanted_size):
+    # the next size up that the store really has. the biggest one gets the next size down, so a
+    # Large blanket still has a wrong size to send
+    wanted_rank = word_size_rank(wanted_size)
+    if wanted_rank is None:
+        return None
+
+    next_up = None
+    next_down = None
+    for size in sizes:
+        if not size["available"]:
+            continue
+        rank = word_size_rank(size["label"])
+        if rank is None or rank == wanted_rank:
+            continue
+        if rank > wanted_rank:
+            if next_up is None or rank < word_size_rank(next_up["label"]):
+                next_up = size
+        else:
+            if next_down is None or rank > word_size_rank(next_down["label"]):
+                next_down = size
+    if next_up is not None:
+        return next_up
+    return next_down
 
 
 def substitute_for(rows, wanted_item):

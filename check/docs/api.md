@@ -243,7 +243,7 @@ Calling this again makes a new token and kills the old one. That's how to recove
 
 ### `GET /mandates?limit=50`
 
-A list of mandates, newest first, in the same shape as `GET /mandates/{id}`. `limit` is capped at 200.
+A list of mandates, newest first, in the same shape as `GET /mandates/{id}`, plus `catalog_scenarios`: which of `wrong_size`, `substitution`, `wrong_model` and `wrong_date` `POST /demo/orders` can build for that mandate. `limit` is capped at 200.
 
 ### `GET /mandates/{id}`
 
@@ -595,17 +595,17 @@ Merchant only. Builds an order from a mandate's rules and runs it through the sa
 
 | `scenario` | What it builds | Refused when the mandate has |
 |---|---|---|
-| `clean` | Matching item and attributes, about 80% of the cap ($50.00 if there's no cap), same store | No item, or values that can't make a valid order |
+| `clean` | Matching item and attributes, about 80% of the cap, same store. With no cap, the item's real catalog price ($50.00 if the catalog doesn't have it) | No item, or values that can't make a valid order |
 | `wrong_color` | The same, with a different color | No item, or no color |
 | `over_cap` | The same, about 15% over the cap | No item, or no cap |
 | `wrong_store` | The same, at a different fictional store | No item, or no store |
-| `wrong_size` | The same, in the nearest other size the catalog stocks (9 becomes 8.5) | No item, no size, or no other size in the catalog |
+| `wrong_size` | The same, in another size the catalog stocks. Number sizes get the nearest one (9 becomes 8.5) at the same total. Word sizes (XS, S, M, L, XL, or Small, Medium, Large) get the next size up, or down from the biggest, at that size's real price | No item, no size, or no other size in the catalog |
 | `substitution` | Another in-stock product from the same catalog category, like almond milk for oat milk | No item, or nothing else in the category |
 | `wrong_model` | The same, the other model at the same catalog price | No item, no model, or no other model in the catalog |
 | `wrong_date` | The same event on the nearest other date in the catalog | No item, no event date, or no other date in the catalog |
-| `wrong_quantity` | One more unit for the same total, so the cap doesn't catch it first | No item, or values that can't make a valid order |
+| `wrong_quantity` | One more unit at the item's real catalog price, which can go over the cap (then the price rule holds it). For an item with no catalog price, one more unit for the same total | No item, or values that can't make a valid order |
 
-The four catalog scenarios (`wrong_size`, `substitution`, `wrong_model`, `wrong_date`) pick the wrong variant from the store's catalog, found by the mandate's `rules.category`: `sneakers`, `groceries`, `electronics`, `event tickets` or `subscription`. A mandate in any other category gets a `422` for those four.
+The four catalog scenarios (`wrong_size`, `substitution`, `wrong_model`, `wrong_date`) pick the wrong variant from the store's catalog, found by the mandate's `rules.category`: `sneakers`, `groceries`, `electronics`, `event tickets` or `subscription`. A mandate whose `merchant` is one of the Connect demo stores (Fernwood & Thistle Goods, Hollowbrook Bakery, Quill & Pipkin Studio) gets its item's sizes and prices from that store's catalog instead (`backend/app/store_catalogs.py`), which is how the Wool Camp Blanket gets a wrong size. Anything else gets a `422` for those four. `GET /mandates` says which of the four each mandate can run, in `catalog_scenarios`.
 
 Success is a `201` with the order object plus `decisions` and `approvals`, like `GET /orders/{id}`. The verdict, risk score and reason are in `intent_check`, which can be `null`. "Needs review" is `review_state`, not `status`: that order has `status: "authorized"` and `review_state: "needs_review"`.
 

@@ -7,6 +7,8 @@ export type EventType =
   | "fetch.done"
   | "extract.started"
   | "extract.done"
+  // Claude's spec failed validation. the real reason, for the log. an "error" follows
+  | "extract.rejected"
   | "item.checking"
   | "item.verified"
   | "item.failed"
@@ -19,6 +21,7 @@ export const EVENT_TYPES: EventType[] = [
   "fetch.done",
   "extract.started",
   "extract.done",
+  "extract.rejected",
   "item.checking",
   "item.verified",
   "item.failed",

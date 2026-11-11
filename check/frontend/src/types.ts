@@ -55,6 +55,9 @@ export interface MandateSummary {
   merchant: string | null
   expires_at: string | null
   created_at: string
+  // GET /mandates only: the catalog scenarios (wrong_size, substitution, wrong_model, wrong_date)
+  // POST /demo/orders can really build for this mandate. missing in mocks and on older APIs
+  catalog_scenarios?: DemoScenario[]
 }
 
 export interface RuleResult {

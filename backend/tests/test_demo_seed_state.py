@@ -192,3 +192,49 @@ def test_no_seed_order_is_at_quill_and_pipkin():
         assert "Quill" not in order["store"]
         assert "Quill" not in order.get("order_at", "")
         assert "Quill" not in order["request"]
+
+
+# ---- Check's copy of the store catalogs (/place-order prices from it) ----
+
+STORE_CATALOGS_FILE = (
+    Path(__file__).resolve().parents[2] / "check" / "backend" / "app" / "store_catalogs.py"
+)
+
+
+def load_store_catalogs():
+    # plain data with no imports, like the seed orders
+    spec = importlib.util.spec_from_file_location("store_catalogs", STORE_CATALOGS_FILE)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.STORE_CATALOGS
+
+
+def test_checks_store_catalogs_match_the_real_stores():
+    for store in load_store_catalogs():
+        spec = fixture_spec(store["slug"])
+        assert store["store"] == spec.merchant.name
+
+        # every item the store sells, no more and no fewer
+        listed_ids = []
+        for item in store["items"]:
+            listed_ids.append(item["item_id"])
+        real_ids = []
+        for item in spec.items:
+            real_ids.append(item.id)
+        assert listed_ids == real_ids, store["slug"]
+
+        for listed in store["items"]:
+            real = spec.find_item(listed["item_id"])
+            assert listed["name"] == real.name
+            assert listed["available"] == real.available
+
+            # the first size is the item's own price, the rest are its variants in order
+            sizes = listed["sizes"]
+            assert sizes[0]["unit_price"] == real.unit_price, real.id
+            # the page only names the first size in its price line, so it has to be in there
+            if sizes[0]["label"] is not None:
+                assert sizes[0]["label"].casefold() in real.source_quote.casefold(), real.id
+            variants = []
+            for variant in real.variants:
+                variants.append({"label": variant.label, "unit_price": variant.unit_price})
+            assert sizes[1:] == variants, real.id

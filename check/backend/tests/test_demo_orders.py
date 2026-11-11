@@ -18,7 +18,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from backend.app import demo, mandates, orders
+from backend.app import catalog, demo, mandates, orders
 from backend.app.config import get_settings
 from backend.app.db import Base, get_session
 from backend.app.demo import DemoScenario, ScenarioNotPossible, build_demo_order
@@ -229,10 +229,31 @@ def test_null_quantity_means_one():
     assert demo_order.items[0].quantity == 1
 
 
-def test_no_cap_still_builds_a_clean_order():
+def test_no_cap_and_no_catalog_price_still_builds_a_clean_order():
+    # trail runners aren't in any catalog, so this is the one place the fixed price is left
     demo_order = build_demo_order(make_mandate(max_price=None), DemoScenario.clean)
 
     assert total_of(demo_order) == Decimal("50.00")
+
+
+@pytest.mark.parametrize(
+    ("category", "total"),
+    [
+        ("sneakers", "64.00"),
+        ("groceries", "4.99"),
+        ("electronics", "79.00"),
+        # two tickets
+        ("event tickets", "50.00"),
+        ("subscription", "29.00"),
+    ],
+)
+def test_no_cap_clean_order_uses_the_real_catalog_price(category, total):
+    mandate = catalog_mandate(category)
+    mandate.max_price = None
+
+    demo_order = build_demo_order(mandate, DemoScenario.clean, catalog_for(category))
+
+    assert total_of(demo_order) == Decimal(total)
 
 
 def test_clean_item_name_comes_from_the_mandate_and_reads_like_a_product_line():
@@ -747,29 +768,40 @@ def test_wrong_date_is_the_same_event_the_next_day():
 
 
 @pytest.mark.parametrize(
-    ("category", "clean_quantity", "wrong_quantity"),
+    ("category", "clean_quantity", "wrong_quantity", "unit_price"),
     [
-        ("subscription", 1, 2),
-        ("event tickets", 2, 3),
+        ("subscription", 1, 2, "29.00"),
+        ("event tickets", 2, 3, "25.00"),
     ],
 )
-def test_wrong_quantity_is_one_more_for_the_same_money(category, clean_quantity, wrong_quantity):
+def test_wrong_quantity_is_one_more_at_the_real_catalog_price(
+    category, clean_quantity, wrong_quantity, unit_price
+):
     clean = build_for(category, DemoScenario.clean)
 
     wrong = build_for(category, DemoScenario.wrong_quantity)
 
     assert clean.items[0].quantity == clean_quantity
     assert wrong.items[0].quantity == wrong_quantity
+    # what the store really charges, not the clean total spread thinner
+    assert wrong.items[0].unit_price == Decimal(unit_price)
+    assert total_of(wrong) == Decimal(unit_price) * wrong_quantity
+
+
+@pytest.mark.parametrize(("max_price", "quantity"), [("120.00", 1), ("100.00", 3), (None, 2)])
+def test_wrong_quantity_without_a_catalog_price_is_one_more_for_the_same_money(
+    max_price, quantity
+):
+    # trail runners aren't in any catalog, so there's no real price to keep to
+    clean = build_demo_order(make_mandate(max_price, quantity=quantity), DemoScenario.clean)
+
+    wrong = build_demo_order(
+        make_mandate(max_price, quantity=quantity), DemoScenario.wrong_quantity
+    )
+
+    assert wrong.items[0].quantity == quantity + 1
     # a third of a total can be a cent short, never over. over could trip the cap
     assert total_of(clean) - Decimal("0.02") <= total_of(wrong) <= total_of(clean)
-
-
-def test_wrong_quantity_unit_price_still_looks_like_a_price():
-    # $28 for one month becomes $14 each for two, not $2.33 each for twelve
-    wrong = build_for("subscription", DemoScenario.wrong_quantity).items[0]
-
-    assert wrong.quantity == 2
-    assert wrong.unit_price == Decimal("14.00")
 
 
 def test_wrong_quantity_needs_no_catalog():
@@ -871,7 +903,6 @@ def test_clean_catalog_order_auto_captures(client, catalog_mandate_ids, paypal, 
         ("groceries", "substitution", "substitution"),
         ("electronics", "wrong_model", "model"),
         ("event tickets", "wrong_date", "event_date"),
-        ("subscription", "wrong_quantity", "quantity"),
     ],
 )
 def test_catalog_scenarios_hold_for_review_and_never_capture(
@@ -933,3 +964,209 @@ def test_twelve_months_at_the_catalog_price_trips_the_price_cap(
     assert response.status_code == 201
     assert response.json()["review_state"] == "needs_review"
     assert claude.calls == 0
+
+
+# ---- a Connect store's item: the Wool Camp Blanket at Fernwood & Thistle Goods ----
+# its sizes and prices come from store_catalogs.py, not the catalog_items table
+
+
+def blanket_mandate(size="small", max_price="130.00", quantity=1):
+    # the way the parser turns "A small Wool Camp Blanket from Fernwood & Thistle Goods, up to
+    # $130" into rules. no category: it's not one of Check's own
+    rules = {"item": "Wool Camp Blanket", "size": size, "color": None, "model": None,
+             "event_date": None, "quantity": quantity, "currency": "USD", "category": None}
+    return Mandate(
+        buyer_label="Sam",
+        raw_request="A " + str(size) + " Wool Camp Blanket from Fernwood & Thistle Goods.",
+        rules=rules,
+        max_price=Decimal(max_price) if max_price is not None else None,
+        max_price_inclusive=True,
+        merchant="Fernwood & Thistle Goods",
+    )
+
+
+@pytest.mark.parametrize(("size", "total"), [("small", "85.00"), ("Medium", "120.00"),
+                                            ("L", "160.00"), (None, "85.00")])
+def test_no_cap_clean_blanket_is_the_real_price_of_its_size(size, total):
+    demo_order = build_demo_order(blanket_mandate(size, max_price=None), DemoScenario.clean, [])
+
+    assert total_of(demo_order) == Decimal(total)
+
+
+def test_a_capped_clean_blanket_is_still_80_percent_of_the_cap():
+    demo_order = build_demo_order(blanket_mandate("small"), DemoScenario.clean, [])
+
+    assert total_of(demo_order) == Decimal("104.00")
+
+
+@pytest.mark.parametrize(
+    ("size", "wrong_size", "unit_price"),
+    [
+        ("small", "Medium", "120.00"),
+        ("S", "Medium", "120.00"),
+        ("Medium", "Large", "160.00"),
+        ("size M", "Large", "160.00"),
+        # nothing bigger than Large, so the next size down
+        ("large", "Medium", "120.00"),
+    ],
+)
+def test_wrong_size_on_a_word_size_is_the_next_size_over_at_its_real_price(
+    size, wrong_size, unit_price
+):
+    demo_order = build_demo_order(blanket_mandate(size), DemoScenario.wrong_size, [])
+
+    item = demo_order.items[0]
+    assert item.size == wrong_size
+    assert item.unit_price == Decimal(unit_price)
+    assert item.name == "Wool Camp Blanket"
+    assert demo_order.merchant == "Fernwood & Thistle Goods"
+
+
+def test_wrong_size_on_a_word_size_skips_sizes_the_store_doesnt_stock():
+    sizes = [
+        {"label": "Small", "unit_price": Decimal("85.00"), "available": True},
+        {"label": "Medium", "unit_price": Decimal("120.00"), "available": False},
+        {"label": "XL", "unit_price": Decimal("190.00"), "available": True},
+    ]
+
+    assert catalog.next_word_size(sizes, "small")["label"] == "XL"
+
+
+def test_word_sizes_order_from_xs_to_xl():
+    ranks = []
+    for size in ["XS", "S", "Small", "M", "Medium", "L", "Large", "XL"]:
+        ranks.append(catalog.word_size_rank(size))
+    assert ranks == [0, 1, 1, 2, 2, 3, 3, 4]
+    assert catalog.word_size_rank("9") is None
+    assert catalog.word_size_rank("Half loaf") is None
+
+
+def test_wrong_size_on_a_word_size_at_an_unknown_store_refuses():
+    mandate = blanket_mandate("small")
+    mandate.merchant = "Some Other Shop"
+
+    with pytest.raises(ScenarioNotPossible, match="isn't for anything in the store's catalog"):
+        build_demo_order(mandate, DemoScenario.wrong_size, [])
+
+
+def test_wrong_size_on_an_item_that_comes_one_size_refuses():
+    mandate = blanket_mandate("small")
+    mandate.rules["item"] = "Enamel Camp Mug"
+
+    with pytest.raises(ScenarioNotPossible, match="no other size"):
+        build_demo_order(mandate, DemoScenario.wrong_size, [])
+
+
+def test_two_medium_blankets_are_charged_the_real_price():
+    # "one more than asked for" at $120 each, not 2 for the price of one
+    for max_price in ["130.00", None]:
+        demo_order = build_demo_order(
+            blanket_mandate("Medium", max_price=max_price), DemoScenario.wrong_quantity, []
+        )
+
+        item = demo_order.items[0]
+        assert item.quantity == 2
+        assert item.size == "Medium"
+        assert item.unit_price == Decimal("120.00")
+        assert total_of(demo_order) == Decimal("240.00")
+
+
+@pytest.mark.parametrize(
+    ("mandate", "rows", "possible"),
+    [
+        (blanket_mandate("small"), [], ["wrong_size"]),
+        # no size named, nothing to get wrong
+        (blanket_mandate(None), [], []),
+        (catalog_mandate("sneakers"), catalog_for("sneakers"), ["wrong_size"]),
+        (catalog_mandate("groceries"), catalog_for("groceries"), ["substitution"]),
+        (catalog_mandate("electronics"), catalog_for("electronics"), ["wrong_model"]),
+        (catalog_mandate("event tickets"), catalog_for("event tickets"), ["wrong_date"]),
+        (catalog_mandate("subscription"), catalog_for("subscription"), []),
+        (make_mandate(), [], []),
+    ],
+)
+def test_possible_catalog_scenarios_are_the_ones_the_builder_builds(mandate, rows, possible):
+    assert demo.possible_catalog_scenarios(mandate, rows) == possible
+
+
+def test_wrong_quantity_over_the_cap_is_held_by_the_price_rule(client, catalog_mandate_ids, paypal):
+    # two months of Pantry Box at the real $29 is $58, over the $35 cap. the rule holds it first
+    order = place(client, catalog_mandate_ids["subscription"], "wrong_quantity").json()
+
+    assert order["review_state"] == "needs_review"
+    assert order["intent_check"]["checked_by"] == "rules"
+    assert order["intent_check"]["reason"] == "Order is $58.00, mandate cap is $35.00"
+    assert paypal.captured == []
+
+
+# ---- the blanket through the route ----
+
+
+@pytest.fixture
+def blanket_ids(sessions):
+    ids = {}
+    with sessions() as session:
+        for name, mandate in [
+            ("small capped", blanket_mandate("small", "130.00")),
+            ("small no cap", blanket_mandate("small", None)),
+            ("medium capped", blanket_mandate("Medium", "130.00")),
+            ("medium no cap", blanket_mandate("Medium", None)),
+        ]:
+            session.add(mandate)
+            session.flush()
+            ids[name] = mandate.id
+        session.commit()
+    return ids
+
+
+@pytest.mark.parametrize(("name", "total"), [("small capped", "104.00"),
+                                            ("small no cap", "85.00")])
+def test_clean_blanket_auto_captures(client, blanket_ids, paypal, name, total):
+    order = place(client, blanket_ids[name], "clean").json()
+
+    assert order["review_state"] == "auto_approved"
+    assert order["total"] == total
+
+
+def test_wrong_size_blanket_is_a_real_medium_held_by_claude(client, blanket_ids, paypal):
+    order = place(client, blanket_ids["small capped"], "wrong_size").json()
+
+    assert order["items"][0]["size"] == "Medium"
+    assert order["total"] == "120.00"
+    assert order["review_state"] == "needs_review"
+    # $120 is under the $130 cap, so it's the size that holds it
+    assert order["intent_check"]["checked_by"] == "ai"
+    assert order["intent_check"]["mismatched_fields"] == ["size"]
+    assert paypal.captured == []
+
+
+def test_two_medium_blankets_capped_at_130_are_held_by_the_price_rule(client, blanket_ids):
+    order = place(client, blanket_ids["medium capped"], "wrong_quantity").json()
+
+    assert order["total"] == "240.00"
+    assert order["review_state"] == "needs_review"
+    assert order["intent_check"]["checked_by"] == "rules"
+    assert order["intent_check"]["reason"] == "Order is $240.00, mandate cap is $130.00"
+
+
+def test_two_medium_blankets_with_no_cap_are_held_for_the_quantity(client, blanket_ids):
+    order = place(client, blanket_ids["medium no cap"], "wrong_quantity").json()
+
+    assert order["total"] == "240.00"
+    assert order["review_state"] == "needs_review"
+    assert order["intent_check"]["checked_by"] == "ai"
+    assert order["intent_check"]["mismatched_fields"] == ["quantity"]
+
+
+def test_list_mandates_says_which_catalog_scenarios_each_one_can_run(
+    client, catalog_mandate_ids, blanket_ids
+):
+    listed = client.get("/mandates", headers=MERCHANT_HEADERS).json()
+
+    possible = {}
+    for mandate in listed:
+        possible[mandate["id"]] = mandate["catalog_scenarios"]
+    assert possible[blanket_ids["small capped"]] == ["wrong_size"]
+    assert possible[catalog_mandate_ids["sneakers"]] == ["wrong_size"]
+    assert possible[catalog_mandate_ids["groceries"]] == ["substitution"]
+    assert possible[catalog_mandate_ids["subscription"]] == []

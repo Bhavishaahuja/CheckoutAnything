@@ -61,8 +61,9 @@ logger = logging.getLogger(__name__)
 
 CLEAN_SHARE_OF_CAP = Decimal("0.80")
 OVER_CAP_SHARE_OF_CAP = Decimal("1.15")
-# a fixed, ordinary price for a mandate with no cap, where 80% of it means nothing. the shopper set
-# no limit, so any price passes the rule and this number doesn't affect the verdict
+# a mandate with no cap gets the item's real catalog price. this is only for an item we don't
+# have a price for: the shopper set no limit, so any price passes the rule and this number
+# doesn't affect the verdict
 PRICE_WITHOUT_CAP = Decimal("50.00")
 # shipping stays out of it, so the percentages above are exactly what the price rule compares
 DEMO_SHIPPING = Decimal("0.00")
@@ -99,8 +100,18 @@ class DemoScenario(str, enum.Enum):
     substitution = "substitution"
     wrong_model = "wrong_model"
     wrong_date = "wrong_date"
-    # no catalog needed: one more unit for the same money
+    # one more unit, at the real unit price when the catalog has one
     wrong_quantity = "wrong_quantity"
+
+
+# the ones the catalog decides. GET /mandates says which of these each mandate can run, so the
+# page's buttons can't disagree with build_demo_order
+CATALOG_SCENARIOS = [
+    DemoScenario.wrong_size,
+    DemoScenario.substitution,
+    DemoScenario.wrong_model,
+    DemoScenario.wrong_date,
+]
 
 
 class DemoOrderCreate(BaseModel):
@@ -125,7 +136,8 @@ def build_demo_order(mandate, scenario, catalog_rows=None):
     # no database and no PayPal in here, just the mandate's rules turned into an order. each
     # scenario starts from the same matching order and breaks exactly one thing.
     # catalog_rows is the catalog for the mandate's category (catalog.load_category), the
-    # scenarios that need a real sibling variant pick it from there
+    # scenarios that need a real sibling variant pick it from there. a mandate at one of the
+    # Connect stores gets its sizes and prices from store_catalogs.py instead
     if catalog_rows is None:
         catalog_rows = []
     rules = mandate.rules
@@ -142,7 +154,11 @@ def build_demo_order(mandate, scenario, catalog_rows=None):
     # same fallback as the parser: a shopper who didn't say how many wants one
     quantity = rules.get("quantity") or 1
     merchant = mandate.merchant
-    target_total = clean_total(mandate)
+    # the sizes the item really comes in and the real price of the one asked for. empty and None
+    # when we don't know the item
+    sizes = catalog.item_sizes(merchant, item_name, rules, catalog_rows)
+    catalog_unit_price = catalog.price_of_size(sizes, size)
+    target_total = clean_total(mandate, catalog_unit_price, quantity)
     rounding = ROUND_DOWN
 
     if scenario == DemoScenario.wrong_color:
@@ -162,10 +178,22 @@ def build_demo_order(mandate, scenario, catalog_rows=None):
     elif scenario == DemoScenario.wrong_size:
         if not size:
             raise ScenarioNotPossible("This mandate doesn't name a size to get wrong")
-        require_catalog(catalog_rows)
-        size = catalog.other_size(catalog_rows, size)
-        if size is None:
-            raise ScenarioNotPossible("The catalog has no other size of this")
+        if catalog.word_size_rank(size) is not None:
+            # Small, Medium, Large: the next size over that the store really has, at its own
+            # price. a Medium blanket costs more than a Small one, and the order should say so
+            if not sizes:
+                raise ScenarioNotPossible("This mandate isn't for anything in the store's catalog")
+            next_size = catalog.next_word_size(sizes, size)
+            if next_size is None:
+                raise ScenarioNotPossible("The catalog has no other size of this")
+            size = next_size["label"]
+            target_total = next_size["unit_price"] * quantity
+        else:
+            # number sizes (sneakers) work the way they always have: nearest size, same total
+            require_catalog(catalog_rows)
+            size = catalog.other_size(catalog_rows, size)
+            if size is None:
+                raise ScenarioNotPossible("The catalog has no other size of this")
     elif scenario == DemoScenario.substitution:
         require_catalog(catalog_rows)
         substitute = catalog.substitute_for(catalog_rows, item_name)
@@ -187,11 +215,16 @@ def build_demo_order(mandate, scenario, catalog_rows=None):
         if event_date is None:
             raise ScenarioNotPossible("The catalog has no other date for this event")
     elif scenario == DemoScenario.wrong_quantity:
-        # the same money as the clean order spread over one more unit. a total that grew would
-        # trip the price cap first, and then this would be testing the rule and not Claude.
-        # one more and not a dozen, so the unit price still looks like a real price on camera
-        clean_unit_price = (target_total / quantity).quantize(CENT, rounding=ROUND_DOWN)
-        target_total = clean_unit_price * quantity
+        if catalog_unit_price is not None:
+            # one more at the price the store really charges. if that goes over the cap, the
+            # price rule holds it before Claude does, and that's fine: it's still held
+            target_total = catalog_unit_price * (quantity + 1)
+        else:
+            # no real price to keep to, so the same money as the clean order spread over one more
+            # unit. then the total can't trip the cap and the test is about Claude.
+            # one more and not a dozen, so the unit price still looks like a real price on camera
+            clean_unit_price = (target_total / quantity).quantize(CENT, rounding=ROUND_DOWN)
+            target_total = clean_unit_price * quantity
         quantity += 1
 
     unit_price = (target_total / quantity).quantize(CENT, rounding=rounding)
@@ -230,10 +263,26 @@ def product_name(item):
     return name[0].upper() + name[1:]
 
 
-def clean_total(mandate):
-    if mandate.max_price is None:
-        return PRICE_WITHOUT_CAP
-    return Decimal(str(mandate.max_price)) * CLEAN_SHARE_OF_CAP
+def clean_total(mandate, catalog_unit_price=None, quantity=1):
+    if mandate.max_price is not None:
+        return Decimal(str(mandate.max_price)) * CLEAN_SHARE_OF_CAP
+    # no cap: what the store really charges, when we know it
+    if catalog_unit_price is not None:
+        return catalog_unit_price * quantity
+    return PRICE_WITHOUT_CAP
+
+
+def possible_catalog_scenarios(mandate, catalog_rows):
+    # the catalog scenarios build_demo_order would really build for this mandate. it's asked, not
+    # worked out a second time, so the page's buttons can't drift from it
+    possible = []
+    for scenario in CATALOG_SCENARIOS:
+        try:
+            build_demo_order(mandate, scenario, catalog_rows)
+        except ScenarioNotPossible:
+            continue
+        possible.append(scenario.value)
+    return possible
 
 
 def different_color(color):

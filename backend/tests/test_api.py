@@ -107,10 +107,12 @@ def world():
 
 
 def wait_until_done(client, store_id):
+    # the store's own view, not GET /stores: a store that failed without verifying anything
+    # isn't listed there
     for _ in range(200):
-        for store in client.get("/stores").json()["stores"]:
-            if store["id"] == store_id and store["status"] != "connecting":
-                return store
+        store = client.get("/stores/" + str(store_id) + "/spec").json()["store"]
+        if store["status"] != "connecting":
+            return store
         time.sleep(0.02)
     raise AssertionError("The connect run never finished")
 
@@ -287,6 +289,78 @@ def test_a_page_that_cant_be_fetched_fails_out_loud(world):
         assert events[-1]["type"] == "error"
         assert "404" in events[-1]["message"]
         assert client.get("/stores/" + str(store_id) + "/catalog").status_code == 409
+
+
+def nothing_for_sale(world, slug="quill-pipkin-studio"):
+    # what Claude sends back for example.com: a spec with no items, which validation refuses
+    empty = copy.deepcopy(SPECS[slug])
+    empty["items"] = []
+    world.spec_overrides[slug] = empty
+    return "https://stores.example/" + slug + "/"
+
+
+def test_a_page_with_nothing_for_sale_gets_a_friendly_error(world):
+    url = nothing_for_sale(world)
+    with TestClient(world.app) as client:
+        store_id, store = connect_store(client, url)
+
+        assert store["status"] == "failed"
+        # the merchant sees a sentence, not pydantic
+        assert store["error"] == connect.NO_PRODUCTS_MESSAGE
+        assert "List should have" not in store["error"]
+
+        events = read_events(client, store_id)
+        assert events[-1]["type"] == "error"
+        assert events[-1]["message"] == connect.NO_PRODUCTS_MESSAGE
+        # the real reason is still in the Live steps log, right before it
+        assert events[-2]["type"] == "extract.rejected"
+        assert "items: List should have at least 1 item" in events[-2]["message"]
+
+
+def test_any_other_spec_rejection_is_friendly_too(world):
+    broken = copy.deepcopy(SPECS["quill-pipkin-studio"])
+    broken["items"][0]["unit_price"] = "forty dollars"
+    world.spec_overrides["quill-pipkin-studio"] = broken
+    with TestClient(world.app) as client:
+        store_id, store = connect_store(client, "https://stores.example/quill-pipkin-studio/")
+
+        assert store["error"] == connect.UNREADABLE_SPEC_MESSAGE
+        events = read_events(client, store_id)
+        assert events[-2]["type"] == "extract.rejected"
+        assert "unit_price" in events[-2]["message"]
+
+
+def test_a_store_that_never_verified_anything_gets_no_chip(world):
+    with TestClient(world.app) as client:
+        live_id, _store = connect_store(client)
+        failed_id, _store = connect_store(client, nothing_for_sale(world))
+        fetch_failed_id, _store = connect_store(client, "https://stores.example/not-a-store/")
+
+        listed = []
+        for store in client.get("/stores").json()["stores"]:
+            listed.append(store["id"])
+        assert listed == [live_id]
+        # still there for its own run view
+        assert client.get("/stores/" + str(failed_id) + "/spec").status_code == 200
+        assert client.get("/stores/" + str(fetch_failed_id) + "/spec").status_code == 200
+
+
+def test_reset_demo_deletes_failed_stores_too(world):
+    with TestClient(world.app) as client:
+        failed_url = nothing_for_sale(world)
+        connect_store(client, failed_url)
+
+        response = client.post("/demo/reset", json={})
+        assert response.status_code == 202, response.text
+        wait_for_runs()
+
+        # by URL, not id: the database can hand the old id to a store the reset connects
+        with new_session() as session:
+            left = []
+            for store in session.query(Store).all():
+                left.append(store.source_url)
+        assert failed_url not in left
+        assert len(left) == len(response.json()["stores"])
 
 
 def test_a_store_where_nothing_verifies_is_not_live(world):

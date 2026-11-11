@@ -8,7 +8,7 @@ import json
 import threading
 
 EVENT_TYPES = {
-    "fetch.started", "fetch.done", "extract.started", "extract.done",
+    "fetch.started", "fetch.done", "extract.started", "extract.done", "extract.rejected",
     "item.checking", "item.verified", "item.failed", "item.repairing",
     "store.ready", "error",
 }

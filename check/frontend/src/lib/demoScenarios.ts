@@ -9,7 +9,8 @@ export interface ScenarioInfo {
 }
 
 export const SCENARIOS: ScenarioInfo[] = [
-  { id: 'clean', title: 'Clean order', description: 'Matches the mandate, 80% of the cap' },
+  // the cap part is swapped in by scenarioDescription, only when the mandate has one
+  { id: 'clean', title: 'Clean order', description: 'Matches the mandate' },
   { id: 'wrong_color', title: 'Wrong color', description: 'Right item, different color' },
   { id: 'over_cap', title: 'Over the cap', description: 'Right item, 15% over the cap' },
   { id: 'wrong_store', title: 'Wrong store', description: 'Right item, a different store' },
@@ -17,11 +18,21 @@ export const SCENARIOS: ScenarioInfo[] = [
   { id: 'substitution', title: 'Substitution', description: 'Something else from the same aisle' },
   { id: 'wrong_model', title: 'Wrong model', description: 'The other model, same price' },
   { id: 'wrong_date', title: 'Wrong date', description: 'Same event, a different day' },
-  { id: 'wrong_quantity', title: 'Wrong quantity', description: 'One more, same total' },
+  { id: 'wrong_quantity', title: 'Wrong quantity', description: 'One more than asked for' },
 ]
 
-// which catalog scenarios each category can actually run. mirrors the rows the catalog migration
-// adds (backend/migrations/versions/b91d6e2f4a73_add_catalog_items.py): only sneakers come in
+// a clean order costs 80% of the cap when there is one. with no cap it's the item's real price
+export function scenarioDescription(mandate: MandateSummary, scenario: ScenarioInfo): string {
+  if (scenario.id === 'clean' && mandate.max_price !== null) {
+    return 'Matches the mandate, 80% of the cap'
+  }
+  return scenario.description
+}
+
+// which catalog scenarios each category can actually run. the API says so per mandate now
+// (catalog_scenarios on GET /mandates, worked out by build_demo_order itself), and that's what the
+// buttons go by. this table is only for mocks and an API too old to send it. it mirrors the rows
+// the catalog migration adds (backend/migrations/versions/b91d6e2f4a73_add_catalog_items.py): only sneakers come in
 // several sizes, only groceries have something to swap in, and so on. if the catalog changes,
 // change this too, or a button stays enabled and the click comes back as a 422
 const CATALOG_SCENARIOS: Record<string, DemoScenario[]> = {
@@ -67,6 +78,14 @@ export function scenarioBlocker(mandate: MandateSummary, scenario: DemoScenario)
   }
 
   const noOtherVariant = NO_OTHER_VARIANT[scenario]
+  if (noOtherVariant && Array.isArray(mandate.catalog_scenarios)) {
+    // the backend tried it, so this is exactly what POST /demo/orders will do. a Connect store's
+    // item (the Wool Camp Blanket) gets its sizes from the store's catalog, not the table below
+    if (!mandate.catalog_scenarios.includes(scenario)) {
+      return noOtherVariant
+    }
+    return null
+  }
   if (noOtherVariant) {
     const possible = CATALOG_SCENARIOS[catalogCategory(mandate.rules.category)]
     if (!possible) {
