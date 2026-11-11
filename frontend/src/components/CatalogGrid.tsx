@@ -65,12 +65,62 @@ function openFlagCount(row: CatalogRow) {
 }
 
 // the small check on an amber cell: "I looked, this is right"
+//
+// It confirms on the press, not the click, and with native listeners on the button itself. AG Grid
+// listens for mousedown on the cell natively, so React's stopPropagation (which runs at the root,
+// after those) can't keep it from focusing or selecting the cell. Doing that re-renders the cell,
+// and the click that should follow then lands on a new button, which is why the first click used
+// to only focus the cell. Stopping it here, on the press, means one click always confirms
 function ConfirmButton({ row, colId, context }: { row: CatalogRow; colId: string; context: CatalogContext }) {
   const flag = flagForColumn(row, colId)
-  if (!flag || flag.resolved || !context.editable) return null
+  const button = useRef<HTMLButtonElement>(null)
+  // the latest values for the native listeners below, which are only attached once
+  const confirm = useRef<() => void>(() => {})
+  useEffect(() => {
+    confirm.current = () => {
+      if (flag) context.confirmFlag(row.item_id, flag.field)
+    }
+  })
+  const show = Boolean(flag) && !flag!.resolved && context.editable
+
+  useEffect(() => {
+    const element = button.current
+    if (!element) return
+    // the press already confirmed, so the click that comes after it must not do it again
+    let pressed = false
+    const onPress = (event: PointerEvent) => {
+      event.stopPropagation()
+      if (event.button !== 0) return
+      // keeps focus where it is, so the grid doesn't move to the cell
+      event.preventDefault()
+      pressed = true
+      confirm.current()
+    }
+    const stop = (event: Event) => event.stopPropagation()
+    const onClick = (event: MouseEvent) => {
+      event.stopPropagation()
+      // a click with no press before it: the keyboard or a screen reader
+      if (!pressed) confirm.current()
+      pressed = false
+    }
+    element.addEventListener("pointerdown", onPress)
+    element.addEventListener("mousedown", stop)
+    element.addEventListener("click", onClick)
+    element.addEventListener("dblclick", stop)
+    return () => {
+      element.removeEventListener("pointerdown", onPress)
+      element.removeEventListener("mousedown", stop)
+      element.removeEventListener("click", onClick)
+      element.removeEventListener("dblclick", stop)
+    }
+  }, [show])
+
+  if (!show || !flag) return null
   return (
     <motion.button
-      initial={{ scale: 0, opacity: 0 }}
+      ref={button}
+      // no pop-in: a cell AG Grid re-renders mid-click must not start the button at scale 0
+      initial={false}
       animate={{ scale: 1, opacity: 1 }}
       whileHover={{ scale: 1.12 }}
       whileTap={{ scale: 0.82 }}
@@ -79,11 +129,6 @@ function ConfirmButton({ row, colId, context }: { row: CatalogRow; colId: string
       tabIndex={-1}
       aria-label={"Confirm the " + FIELD_WORDS[flag.field] + " of " + row.name + " is right"}
       title="Looks right (Shift+Enter)"
-      onClick={(event) => {
-        event.stopPropagation()
-        context.confirmFlag(row.item_id, flag.field)
-      }}
-      onDoubleClick={(event) => event.stopPropagation()}
       className="ml-auto flex size-6 shrink-0 items-center justify-center rounded-md border border-warn/40 bg-card text-warn hover:bg-warn hover:text-card"
     >
       <Check className="size-3.5" strokeWidth={3} />

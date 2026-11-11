@@ -254,6 +254,17 @@ def decision_record(order, check):
     }
 
 
+def order_store(order, mandate):
+    # the store the order was really placed at. orders from Checkout Anything that came in before
+    # their store was passed along have no merchant, but their mandate names the store the buyer
+    # picked. only an order with neither is at Check's own built-in demo store
+    if order.merchant:
+        return order.merchant
+    if mandate.merchant:
+        return mandate.merchant
+    return STORE_NAME
+
+
 def build_evidence_packet(dispute):
     # only Leash's own records, so every line in it can be shown to come from somewhere.
     # buyer_label stays out: it's our nickname for the shopper, not evidence
@@ -291,8 +302,7 @@ def build_evidence_packet(dispute):
         },
         "order": {
             "id": order.id,
-            # null means our own store, see Order.merchant
-            "store": order.merchant or STORE_NAME,
+            "store": order_store(order, mandate),
             "items": order.items,
             "total": money(order.total),
             "shipping_amount": money(order.shipping_amount),

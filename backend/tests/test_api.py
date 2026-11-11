@@ -151,7 +151,8 @@ def test_connect_streams_the_run_and_the_store_goes_live(world):
         store_id, store = connect_store(client)
         assert store["status"] == "live"
         assert store["merchant_name"] == "Hollowbrook Bakery"
-        assert store["counts"] == {"verified": 4, "failed": 0, "unavailable": 1}
+        # live: the clean verified items. the flagged ones wait for the merchant
+        assert store["counts"] == {"verified": 4, "failed": 0, "unavailable": 1, "live": 2}
 
         events = read_events(client, store_id)
         types = [event["type"] for event in events]
@@ -296,7 +297,7 @@ def test_a_store_where_nothing_verifies_is_not_live(world):
     with TestClient(world.app) as client:
         store_id, store = connect_store(client, "https://stores.example/quill-pipkin-studio/")
         assert store["status"] == "failed"
-        assert store["counts"] == {"verified": 0, "failed": 3, "unavailable": 0}
+        assert store["counts"] == {"verified": 0, "failed": 3, "unavailable": 0, "live": 0}
         response = client.post("/stores/" + str(store_id) + "/orders",
                                json={"item_id": "headshot"})
         assert response.status_code == 409
@@ -386,6 +387,10 @@ def test_the_agent_buys_through_the_same_code_and_reports_its_steps(world):
         assert bought["total"] == "12.00"
         assert answer["orders"][0]["created_by"] == "agent"
         assert world.checked == [bought["paypal_order_id"]]
+        # paid directly, no Check: the payment state is captured, PayPal's status rides along
+        checked = answer["steps"][3]["output"]
+        assert checked["status"] == "captured"
+        assert checked["paypal_order_status"] == "COMPLETED"
         assert "12.00" in answer["reply"]
 
         # each tool result went back to Claude in one user message

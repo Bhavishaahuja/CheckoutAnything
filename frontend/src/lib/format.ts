@@ -64,3 +64,9 @@ export function duration(ms: number) {
   const seconds = Math.round((ms % 60_000) / 1000)
   return minutes + "m " + String(seconds).padStart(2, "0") + "s"
 }
+
+// Check's own number for an order, like "#45", the one the Check dashboard shows. null for an
+// order that never went through Check (a manual test buy paid directly)
+export function checkNumber(order: { check_order_id: number | null }): string | null {
+  return order.check_order_id === null ? null : "#" + order.check_order_id
+}

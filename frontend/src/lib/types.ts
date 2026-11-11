@@ -82,6 +82,8 @@ export interface Counts {
   verified: number
   failed: number
   unavailable: number
+  // verified and published, so an agent can buy it. only GET /stores sends it
+  live?: number
 }
 
 export type StoreStatus = "connecting" | "live" | "failed"
@@ -174,6 +176,8 @@ export interface CheckStats {
   fast_streak: number
   fast_threshold_ms: number | null
   median_decision_ms: number | null
+  // how many orders Check has in all, its demo page's included. null on an old API
+  check_total_orders: number | null
 }
 
 // how often Check held each agent's orders, from GET /orders/agent-stats

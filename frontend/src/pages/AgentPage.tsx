@@ -25,6 +25,29 @@ interface Turn {
 
 const STEP_REVEAL_MS = 650
 
+// how many of a store's items an agent can buy. an older API sends no live count, then verified
+function liveCount(store: Store): number {
+  return store.counts.live ?? store.counts.verified
+}
+
+// "4 live", or "1 of 4 live" while some verified items wait for the merchant
+function liveLabel(store: Store): string {
+  const live = liveCount(store)
+  if (live === store.counts.verified) return live + " live"
+  return live + " of " + store.counts.verified + " live"
+}
+
+// check_payment's status, in words
+const PAYMENT_STATES: Record<string, string> = {
+  authorized_held_for_review: "Authorized, held for review",
+  authorized: "Authorized",
+  auto_captured: "Auto-captured",
+  captured: "Captured",
+  voided: "Voided",
+  failed: "Failed",
+  unknown: "Not our order",
+}
+
 function text(value: unknown): string {
   if (value === null || value === undefined) return ""
   return String(value)
@@ -37,13 +60,13 @@ function StepCard({ step }: { step: AgentStep }) {
 
   if (step.tool === "list_stores") {
     icon = <StoreIcon />
-    const found = Array.isArray(output.stores) ? (output.stores as { name: string; verified_items: number }[]) : []
+    const found = Array.isArray(output.stores) ? (output.stores as { name: string; live_items: number }[]) : []
     summary = (
       <div className="flex flex-wrap items-center gap-1.5">
         <span className="text-muted-foreground">{found.length} live {found.length === 1 ? "store" : "stores"}</span>
         {found.map((store) => (
           <Pill key={store.name} tone="muted">
-            {store.name} · {store.verified_items}
+            {store.name} · {store.live_items} live
           </Pill>
         ))}
       </div>
@@ -100,7 +123,22 @@ function StepCard({ step }: { step: AgentStep }) {
     }
   } else if (step.tool === "check_payment") {
     icon = <ListChecks />
-    summary = <span className="text-muted-foreground">PayPal says: {text(output.status) || "see details"}</span>
+    // Check's state of the money is the headline, PayPal's own order status is the small print
+    const state = text(output.status)
+    const held = state === "authorized_held_for_review"
+    const tone = held ? "warn" : state === "captured" || state === "auto_captured" ? "ok" : state === "voided" || state === "failed" ? "muted" : "info"
+    summary = (
+      <div className="flex flex-col gap-1">
+        <div className="flex flex-wrap items-center gap-1.5">
+          <Pill tone={tone}>{PAYMENT_STATES[state] || state || "Unknown"}</Pill>
+          {output.paypal_order_status ? (
+            <span className="text-xs text-muted-foreground">PayPal order status: {text(output.paypal_order_status)}</span>
+          ) : null}
+        </div>
+        {output.summary ? <span className="text-muted-foreground">{text(output.summary)}</span> : null}
+        {held && output.hold_reason ? <span className="text-warn">Held: {text(output.hold_reason)}</span> : null}
+      </div>
+    )
   }
 
   if (step.is_error) {
@@ -153,9 +191,12 @@ export function AgentPage({
   const liveStores = stores.filter((store) => store.status === "live")
   const busy = turns.some((turn) => turn.pending || (turn.answer !== null && turn.shown < turn.answer.steps.length))
 
-  const suggestions = ["Get me a half sourdough loaf, sliced, from Hollowbrook Bakery."]
+  // only stores with something the agent can buy, so no starter prompt is a dead end
+  const suggestions: string[] = []
   for (const store of liveStores) {
-    if (!store.merchant_name.includes("Hollowbrook")) suggestions.push("What can I buy at " + store.merchant_name + "?")
+    if (liveCount(store) === 0) continue
+    if (store.merchant_name.includes("Hollowbrook")) suggestions.unshift("Get me a half sourdough loaf, sliced, from Hollowbrook Bakery.")
+    else suggestions.push("What can I buy at " + store.merchant_name + "?")
   }
 
   // reveal the tool calls of the newest answer one by one
@@ -347,7 +388,7 @@ export function AgentPage({
                     <span className="size-2 shrink-0 rounded-full bg-ok" />
                     <span className="truncate font-medium">{store.merchant_name}</span>
                   </span>
-                  <span className="shrink-0 text-xs text-muted-foreground tabular-nums">{store.counts.verified} items</span>
+                  <span className="shrink-0 text-xs text-muted-foreground tabular-nums">{liveLabel(store)}</span>
                 </li>
               ))}
             </ul>

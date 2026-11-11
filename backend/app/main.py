@@ -14,7 +14,7 @@
 #   POST /agent/chat            demo shopping agent
 #   GET  /orders                all orders
 #   GET  /orders/agent-stats    per agent: orders through Check and how many it held
-#   GET  /check/stats           is Check's rubber-stamp watch on (merchant only, from Check)
+#   GET  /check/stats           Check's rubber-stamp watch and order count (merchant only)
 #   POST /auth/session          the merchant's login, passed through to Check
 #   POST /orders/{id}/review-link   link to the confirm page for an order on hold (Check).
 #                                   needs the login
@@ -515,6 +515,9 @@ def create_app(settings=None, paypal=None, ai_factory=None, fetch=None, agent_cl
             "fast_streak": stats.get("fast_streak") or 0,
             "fast_threshold_ms": stats.get("fast_threshold_ms"),
             "median_decision_ms": stats.get("median_decision_ms"),
+            # every order Check has, demo page orders included, for the line under the Orders
+            # header that explains why Check shows more than this grid
+            "check_total_orders": stats.get("total_orders"),
         }
 
     @app.get("/orders/agent-stats")

@@ -445,6 +445,8 @@ def test_reset_leaves_other_orders_alone(api, http, sessions, capsys):
         session.add(Order(
             id=500, mandate_id=500, items=[], total=1, currency="USD",
             status=OrderStatus.authorized,
+            # a real agent's order. one with no agent at all would be wiped as a stray
+            agent_name=DEFAULT_AGENT_NAME,
             authorization_expires_at=datetime.now(timezone.utc) + timedelta(days=1),
         ))
         session.commit()

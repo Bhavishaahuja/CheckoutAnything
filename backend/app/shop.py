@@ -91,14 +91,19 @@ def run_to_dict(run):
 
 def store_to_dict(session, store):
     spec, _version = latest_spec(session, store.id)
-    counts = {"verified": 0, "failed": 0, "unavailable": 0}
+    # live: verified and published, so an agent can actually buy it. the same rule as get_catalog
+    counts = {"verified": 0, "failed": 0, "unavailable": 0, "live": 0}
     if spec is not None:
         latest = latest_run_per_item(session, store.id)
+        reviews = review.ensure_reviews(session, store, spec)
         for item in spec.items:
             if not item.available:
                 counts["unavailable"] += 1
             elif item.id in latest and latest[item.id].ok:
                 counts["verified"] += 1
+                row = reviews.get(item.id)
+                if row is not None and row.published:
+                    counts["live"] += 1
             elif item.id in latest:
                 counts["failed"] += 1
     return {

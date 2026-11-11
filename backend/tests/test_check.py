@@ -723,3 +723,82 @@ def test_next_variant_over_wraps_around():
     assert next_variant_over(blanket, "large") == "medium"
     assert next_variant_over(blanket, None) == "medium"
     assert next_variant_over(hook, None) is None
+
+
+# ---- check_payment: Check's state of the money first, PayPal's order status second ----
+
+
+def buy_then_check_payment(world, client, store_id):
+    # the agent buys, then reads the payment back with the PayPal order id buy_item returned
+    buy = {"store_id": store_id, "item_id": "sourdough-loaf", "variant_id": "half",
+           "add_on_ids": ["sliced"], "quantity": 1}
+
+    def check_after_buying(request):
+        bought = json.loads(request["messages"][-1]["content"][0]["content"])
+        return Reply([tool_block(
+            "check_payment", {"paypal_order_id": bought["paypal_order_id"]}, "c2"
+        )], "tool_use")
+
+    world.agent_claude.replies = [
+        Reply([tool_block("buy_item", buy, "c1")], "tool_use"),
+        check_after_buying,
+        Reply([text_block("Done.")]),
+    ]
+    response = client.post("/agent/chat", json={"messages": [
+        {"role": "user", "content": REQUEST},
+    ]})
+    assert response.status_code == 200, response.text
+    return response.json()["steps"][1]
+
+
+def test_check_payment_says_a_held_order_is_held_not_completed(world, check):
+    check.decide = ("authorized", "needs_review", MISMATCH)
+    with TestClient(world.app) as client:
+        store_id, _store = connect_store(client)
+        step = buy_then_check_payment(world, client, store_id)
+
+    assert step["tool"] == "check_payment"
+    output = step["output"]
+    assert output["status"] == "authorized_held_for_review"
+    assert output["hold_reason"] == MISMATCH["reason"]
+    assert "no money has moved yet" in output["summary"]
+    # PayPal's own word is still there, labelled as PayPal's and not as the payment state
+    assert output["paypal_order_status"] == "COMPLETED"
+    assert output["capture_id"] is None
+    # and the agent is told how to read it
+    system = world.agent_claude.requests[0]["system"]
+    assert "authorized_held_for_review" in system
+    assert "paypal_order_status" in system
+
+
+def test_check_payment_says_auto_captured_for_a_clean_order(world, check):
+    with TestClient(world.app) as client:
+        store_id, _store = connect_store(client)
+        output = buy_then_check_payment(world, client, store_id)["output"]
+
+    assert output["status"] == "auto_captured"
+    assert "hold_reason" not in output
+    assert output["capture_id"] is not None
+
+
+def test_check_payment_follows_a_decision_made_after_the_buy(world, check):
+    check.decide = ("authorized", "needs_review", MISMATCH)
+    with TestClient(world.app) as client:
+        store_id, _store = connect_store(client)
+        bought = agent_buys(world, client, store_id)
+        paypal_order_id = bought["orders"][0]["paypal_order_id"]
+        # the human approved on the confirm page in the meantime
+        check.human_decides(41, "approve", 4200)
+
+        world.agent_claude.replies = [
+            Reply([tool_block("check_payment", {"paypal_order_id": paypal_order_id}, "c9")],
+                  "tool_use"),
+            Reply([text_block("Done.")]),
+        ]
+        response = client.post("/agent/chat", json={"messages": [
+            {"role": "user", "content": "Did it go through?"},
+        ]})
+
+    output = response.json()["steps"][0]["output"]
+    assert output["status"] == "captured"
+    assert "hold_reason" not in output

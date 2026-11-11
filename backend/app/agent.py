@@ -4,23 +4,25 @@
 #   list_stores      which stores are live
 #   search_catalog   the verified items of one store
 #   buy_item         price server-side, pay with the saved sandbox wallet, capture
-#   check_payment    read the order back from PayPal through the PayPal Agent Toolkit
+#   check_payment    where the money really stands (Check's state), plus PayPal's own order
+#                    status read through the PayPal Agent Toolkit
 #
 # The agent picks ids and a quantity. It never sends a price, and the buy code wouldn't read one.
 #
 # With CHECK_URL set, buy_item doesn't capture. The human's own request goes to Check as a
 # mandate, then the priced order goes to Check, which holds the payment, checks the order
-# against the request, and captures it or asks the human. The agent is only told where the
-# order stands, never why it was held.
+# against the request, and captures it or asks the human. buy_item only tells the agent where the
+# order stands. check_payment adds Check's one-line hold reason, so the agent can explain a hold.
 
 import json
 
 import anthropic
+from sqlalchemy import select
 
 from backend.app import shop
 from backend.app.config import CLAUDE_MODEL
 from backend.app.models import Order
-from backend.app.orders import OrderError
+from backend.app.orders import OrderError, refresh_check_orders
 from backend.app.toolkit import ToolkitError, get_order_details
 
 # a purchase is list -> search -> buy -> check, so this is plenty. it stops a loop running away
@@ -43,7 +45,14 @@ could match, or the store doesn't sell it), ask or say so instead of guessing.
 - Never state a price or total from memory. Prices come from search_catalog and the total \
 comes from buy_item's result.
 - After a successful buy_item, call check_payment once with the PayPal order id to confirm \
-the payment with PayPal.
+where the payment stands. Its "status" is the real state of the money: \
+"captured" or "auto_captured" means the payment was taken, "authorized_held_for_review" means \
+it is authorized but held for the merchant to review and no money has moved yet, "voided" \
+means the hold was released and nothing was charged. "paypal_order_status" is PayPal's own \
+label for the order and is not the payment state: PayPal says COMPLETED for an order that was \
+only authorized, so never report it as the payment being taken. When it is held, say so in \
+plain words, for example "Payment is authorized but held for the merchant to review, no money \
+has moved yet", and give its hold_reason.
 - Then tell the user in two or three plain sentences what was bought, the total, and the \
 PayPal capture id. If something failed, say exactly what the tool reported. Never claim a \
 purchase went through unless buy_item returned status captured.
@@ -122,8 +131,12 @@ TOOLS = [
     {
         "name": "check_payment",
         "description": (
-            "Read an order back from PayPal (through the PayPal Agent Toolkit) to confirm its "
-            "status and captured amount."
+            "Confirm where an order's payment really stands. status is the payment state: "
+            "captured, auto_captured, authorized_held_for_review (authorized, no money moved "
+            "yet, waiting for the merchant), voided or failed, with hold_reason when it is held. "
+            "paypal_order_status is PayPal's own order status, read through the PayPal Agent "
+            "Toolkit. It says COMPLETED even when the payment was only authorized, so it is not "
+            "the payment state."
         ),
         "input_schema": {
             "type": "object",
@@ -171,6 +184,33 @@ def line_label(item, variant_id):
         if variant.id == variant_id:
             return item.name + " (" + variant.label + ")"
     return item.name
+
+
+# check_payment's main status: where the money is, in Check's terms
+HELD = "authorized_held_for_review"
+STATE_SUMMARIES = {
+    HELD: "Payment is authorized but held for the merchant to review, no money has moved yet.",
+    "authorized": "Payment is authorized, no money has moved yet.",
+    "auto_captured": "Check passed the order and the payment was captured on its own.",
+    "captured": "The payment was captured.",
+    "voided": "The hold was released and nothing was charged.",
+    "failed": "The payment failed and nothing was charged.",
+}
+
+
+def payment_state(order):
+    # the order row's state, as one word the agent and the tool card can show
+    if order.status == "authorized":
+        if order.review_state == "needs_review":
+            return HELD
+        return "authorized"
+    if order.status == "captured":
+        if order.review_state == "auto_approved":
+            return "auto_captured"
+        return "captured"
+    if order.status in ("voided", "failed"):
+        return order.status
+    return order.status or "unknown"
 
 
 def filter_items(items, query):
@@ -247,7 +287,8 @@ class ShoppingAgent:
                 "store_id": store["id"],
                 "name": store["merchant_name"],
                 "url": store["source_url"],
-                "verified_items": store["counts"]["verified"],
+                # what it can actually buy there: verified and published by the merchant
+                "live_items": store["counts"]["live"],
             })
         return stores
 
@@ -330,11 +371,56 @@ class ShoppingAgent:
         return result, is_error
 
     def tool_check_payment(self, tool_input):
-        return self.order_reader(
-            self.settings.paypal_client_id,
-            self.settings.paypal_client_secret,
-            str(tool_input.get("paypal_order_id") or ""),
-        )
+        # Check's state first, because PayPal's order status alone misleads: an order that was
+        # authorized and is waiting for a person still reads COMPLETED at PayPal
+        paypal_order_id = str(tool_input.get("paypal_order_id") or "")
+        order = self.session.execute(
+            select(Order).where(Order.paypal_order_id == paypal_order_id)
+        ).scalars().first()
+        if order is not None:
+            # a person may have decided since the buy, so ask Check for the newest state
+            refresh_check_orders(self.session, self.check, [order])
+
+        try:
+            paypal = self.order_reader(
+                self.settings.paypal_client_id,
+                self.settings.paypal_client_secret,
+                paypal_order_id,
+            )
+        except ToolkitError as error:
+            if order is None:
+                raise
+            paypal = {"error": str(error)}
+
+        if order is None:
+            # not one of ours, so PayPal's word is all there is
+            return {
+                "status": "unknown",
+                "summary": "This isn't an order this store placed, only PayPal's view is known.",
+                "paypal_order_status": paypal.get("status"),
+                "paypal_capture_status": paypal.get("capture_status"),
+                "paypal_amount": paypal.get("amount"),
+                "source": paypal.get("source"),
+            }
+
+        state = payment_state(order)
+        result = {
+            "status": state,
+            "summary": STATE_SUMMARIES.get(state, "The payment is " + state + "."),
+            "total": order.total,
+            "currency": order.currency,
+            "capture_id": order.capture_id,
+        }
+        if state == HELD:
+            result["hold_reason"] = order.check_reason or "Check flagged it for a person."
+        # PayPal's own view, kept apart and labelled so it can't be mistaken for the state above
+        result["paypal_order_status"] = paypal.get("status")
+        result["paypal_capture_status"] = paypal.get("capture_status")
+        if paypal.get("error"):
+            result["paypal_error"] = paypal["error"]
+        else:
+            result["source"] = paypal.get("source")
+        return result
 
     # ---- the loop ----
 

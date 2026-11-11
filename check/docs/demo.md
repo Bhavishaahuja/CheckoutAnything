@@ -1,7 +1,7 @@
 # Demo recording prep
 
 Notes for recording the demo video. Everything runs in the PayPal sandbox against the live Render
-deploy: https://leash-frontend.onrender.com (dashboard) and https://leash-api-q3rw.onrender.com (API).
+deploy: https://check-frontend-waod.onrender.com (dashboard) and https://leash-api-q3rw.onrender.com (API).
 
 All commands are Windows cmd, run from the repo root.
 

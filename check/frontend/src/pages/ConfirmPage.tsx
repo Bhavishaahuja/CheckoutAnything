@@ -197,8 +197,14 @@ function Decide({ token, order }: { token: string; order: ReviewView }) {
     >
       <Card className="p-4">
         <p className="text-[13px] text-muted-foreground">
-          Your agent wants to buy from{' '}
-          <Field flagged={flagged.has('merchant')}>{order.merchant || OWN_STORE}</Field>
+          {order.merchant ? (
+            <>
+              Your agent wants to buy from{' '}
+              <Field flagged={flagged.has('merchant')}>{order.merchant}</Field>
+            </>
+          ) : (
+            'Your agent wants to buy'
+          )}
         </p>
         <ul className="mt-2 flex flex-col gap-1">
           {order.items.map((item, index) => (
@@ -304,9 +310,6 @@ function Field({ flagged, children }: { flagged: boolean; children: ReactNode })
     </mark>
   )
 }
-
-// an order with no store on it was placed at the demo's own store
-const OWN_STORE = 'Fernwood Supply Co'
 
 function Done({ action, order, decisionMs }: { action: ApprovalAction; order: ReviewView; decisionMs: number }) {
   const approved = action === 'approve'
