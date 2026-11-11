@@ -1,6 +1,6 @@
 # Intent check evals
 
-Ran 2026-11-09 22:53 UTC against claude-sonnet-5-5. Auto-capture threshold: risk under 30 (60 with the watch on).
+Ran 2026-11-11 03:19 UTC against claude-sonnet-5-5. Auto-capture threshold: risk under 30 (60 with the watch on).
 
 ## Wrong auto-captures
 
@@ -14,9 +14,9 @@ Ran 2026-11-09 22:53 UTC against claude-sonnet-5-5. Auto-capture threshold: risk
 | Mode | Wrong auto-captures | Caught | False holds | Unsure | Check failed | Avg latency |
 |---|---|---|---|---|---|---|
 | Rules only | **28** | 7 of 35 | 0 of 15 | 0% | 0 | 0 ms |
-| Rules + Claude | **0** | 35 of 35 | 0 of 15 | 2% | 0 | 1780 ms |
-| Rules + Claude, sharp | **0** | 35 of 35 | 0 of 15 | 2% | 0 | 1639 ms |
-| Rules + Claude, sharp reasons, normal threshold | **0** | 35 of 35 | 0 of 15 | 2% | 0 | 1610 ms |
+| Rules + Claude | **0** | 35 of 35 | 0 of 15 | 2% | 0 | 1769 ms |
+| Rules + Claude, sharp | **0** | 35 of 35 | 0 of 15 | 2% | 0 | 1612 ms |
+| Rules + Claude, sharp reasons, normal threshold | **0** | 35 of 35 | 0 of 15 | 2% | 0 | 1627 ms |
 
 Caught counts any hold, so a check that failed and held by default still counts. Check failed says how many of those there were. Unsure is out of every case.
 

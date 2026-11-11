@@ -27,6 +27,20 @@ Every agent order is held until it is shown to be what the human asked for.
 4. A clean match is captured on its own. Anything off goes to the human on a one-screen confirm page with a one-line reason: approve captures, reject voids.
 5. A rubber-stamp watch times the approvals. When the human stops really reading them, it asks less often but more pointedly.
 
+### How well the check works
+
+We test it on 50 labeled agent orders: 35 the shopper didn't want (wrong size, wrong color, a substitution, the wrong model, date or quantity, the wrong store, over the cap, a prompt injection) and 15 they did. A wrong auto-capture is money taken for an order the shopper didn't want, so that's the number that has to be zero.
+
+| Mode | Scenarios | Bad orders caught | Wrong auto-captures | Good orders held |
+|---|---|---|---|---|
+| Rules only (no Claude) | 50 | 7 of 35 | 28 | 0 of 15 |
+| Rules + Claude | 50 | **35 of 35** | **0** | 0 of 15 |
+| Rules + Claude, sharp mode | 50 | **35 of 35** | **0** | 0 of 15 |
+
+![Check evals: 50 scenarios, 35 of 35 bad orders caught, 0 wrong auto-captures](docs/evals/check-evals.png)
+
+Ran November 11, 2026 against `claude-sonnet-5-5`. The full report, with every case by category, is [`check/backend/evals/results.md`](check/backend/evals/results.md). Run it yourself from `check/` with `.venv\Scripts\python.exe backend\evals\run_evals.py` (it needs `ANTHROPIC_API_KEY`).
+
 ## Defend
 
 When a buyer disputes a captured order, the merchant already holds the proof. Checkout Anything finds the dispute through PayPal's Disputes API, builds a packet from its own records (what the buyer asked for, what was ordered, how it was checked, who released the money and how long they took), has Claude draft a plain summary of it, and files both with PayPal as evidence.
