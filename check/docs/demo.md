@@ -17,12 +17,12 @@ All commands are Windows cmd, run from the repo root.
    ```
 
    It voids every open hold, deletes every order except the protected ones (the dispute's order,
-   see `DEMO_PROTECTED_PAYPAL_ORDER_IDS`, and any order with a synced dispute), then places 10 real
+   see `PROTECTED_ORDER_IDS`), then places up to 10 real
    sandbox orders as "Checkout Anything" and "Errand Runner": 7 auto-captured, 2 held and approved
    by "demo seed", 1 held and rejected. Nothing is left waiting on a human, and the rubber-stamp
    watch reads 0 of 3. It takes about a minute or two. Run the script without `--reset` to print
-   the counts. If you opened a new dispute at PayPal, run `POST /disputes/sync` (Disputes page,
-   Sync) **before** resetting, so its order is protected.
+   the counts. If you opened a new dispute at PayPal, set `PROTECTED_ORDER_IDS` to its Check order
+   id **before** resetting, so its order is kept. See `docs/demo-dispute.md` in the repo root.
 2. **Open one review link in incognito on a real phone.** The confirm page should load with no
    login. This was never checked in a private tab.
 3. **The demo password stays off the login screen.** Judges get it in Devpost's testing notes.

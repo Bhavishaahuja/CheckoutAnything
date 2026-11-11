@@ -188,7 +188,8 @@ def main():
                 return 1
             print("Voided " + str(status["voided_holds"]) + " holds, deleted "
                   + str(status["deleted_orders"]) + " orders and "
-                  + str(status["deleted_mandates"]) + " mandates, kept orders "
+                  + str(status["deleted_mandates"]) + " mandates and "
+                  + str(status.get("deleted_disputes", 0)) + " disputes, kept orders "
                   + str(status["protected_order_ids"]) + ". Took " + str(took) + "s.")
             print_seed_orders(status)
             for order in status["orders"]:

@@ -127,7 +127,7 @@ TODO: demo video and walkthrough.
 
 `POST /demo/reset` (the dashboard's **Reset demo**, or `backend/scripts/seed_demo.py --reset`) puts the demo back to the same starting point: it voids every open hold at PayPal, deletes every order and mandate that isn't protected, then places the seed from `backend/app/demo_seed_orders.py` through the real agent path (agent key, mandate, order, PayPal hold, intent check, capture or hold). Held seed orders are approved or rejected by the seed and recorded as decided by "demo seed", with no made-up timing, and they never count toward the rubber-stamp watch.
 
-Protected orders are the ones `DEMO_PROTECTED_PAYPAL_ORDER_IDS` names (by default the order the sandbox dispute is on) and any order with a synced dispute. The reset refuses with a `409` while someone has a review page open from the last 10 minutes.
+Protected orders are the ones `PROTECTED_ORDER_IDS` names by their Check order id (the order the sandbox dispute is on, see `docs/demo-dispute.md` in the repo root). Nothing else is kept: an order with a dispute that isn't listed is deleted with its dispute row. A seed order for the same item at the same store as a protected order is skipped, so the grid doesn't show the same story twice. The reset refuses with a `409` while someone has a review page open from the last 10 minutes.
 
 The API needs two agents in `AGENT_API_KEYS` named `Checkout Anything` and `Errand Runner`, both listed in `STORE_NAMING_AGENTS`, and `DEMO_VAULT_ID`. Run these from the check folder, in cmd:
 

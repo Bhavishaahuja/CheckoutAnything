@@ -24,11 +24,14 @@ from backend.app.demo_seed_orders import SEED_ORDERS
 from backend.app.models import (
     Approval,
     ApprovalAction,
+    CheckedBy,
+    Decision,
     Dispute,
     Mandate,
     Order,
     OrderStatus,
     ReviewState,
+    Verdict,
 )
 from backend.scripts import seed_demo
 
@@ -112,7 +115,8 @@ def seed_agents(monkeypatch):
     monkeypatch.setenv("AGENT_API_KEYS", SEED_AGENT_KEYS)
     monkeypatch.setenv("STORE_NAMING_AGENTS", "Checkout Anything,Errand Runner")
     monkeypatch.setenv("DEMO_VAULT_ID", "test-vault")
-    monkeypatch.setenv("DEMO_PROTECTED_PAYPAL_ORDER_IDS", DISPUTED_PAYPAL_ORDER)
+    # nothing protected unless a test says so. the old week1-e2e dispute order is a stray now
+    monkeypatch.delenv("PROTECTED_ORDER_IDS", raising=False)
     get_settings.cache_clear()
     # SQLite has one connection here, so the seed can't run orders side by side
     monkeypatch.setattr(demo_seed, "SEED_WORKERS", 1)
@@ -253,12 +257,15 @@ def test_reset_voids_wipes_and_reseeds_to_the_target_state(client, messy, paypal
 
     # both open holds were voided at PayPal before anything was deleted
     assert sorted(status["voided_order_ids"]) == sorted([messy["open_hold"], messy["stale_open"]])
-    assert status["protected_order_ids"] == [messy["disputed"]]
+    # nothing is protected, so the old dispute order went too, with its dispute row
+    assert status["protected_order_ids"] == []
+    assert status["deleted_disputes"] == 1
+    assert status["skipped_seed_orders"] == []
 
     counts = seed_demo.count_orders(all_orders(client))
-    # the 10 seed orders plus the one the dispute is on
-    assert counts["orders"] == len(SEED_ORDERS) + 1 == 11
-    assert counts["auto_captured"] == 7 + 1
+    # just the 10 seed orders
+    assert counts["orders"] == len(SEED_ORDERS) == 10
+    assert counts["auto_captured"] == 7
     assert counts["approved"] == 2
     assert counts["rejected"] == 1
     assert counts["voided"] == 1
@@ -266,27 +273,124 @@ def test_reset_voids_wipes_and_reseeds_to_the_target_state(client, messy, paypal
     assert counts["pending"] == 0
     assert counts["by_agent"]["Checkout Anything"]["orders"] == 5
     assert counts["by_agent"]["Errand Runner"]["orders"] == 5
-    # the dispute's order has no agent name, it's from before orders had one
-    assert counts["by_agent"]["Unknown agent"]["orders"] == 1
+    # no week1-e2e leftovers with no agent name
+    assert "Unknown agent" not in counts["by_agent"]
     assert "Demo page" not in counts["by_agent"]
 
 
-def test_the_dispute_and_its_order_survive(client, messy, sessions):
+def test_an_unprotected_dispute_order_goes_like_any_other(client, messy, sessions):
+    # the old week1-e2e order with a dispute on it used to be kept forever. with nothing in
+    # PROTECTED_ORDER_IDS it's a stray, and its dispute row goes with it
     reset(client)
     with sessions() as session:
-        order = session.get(Order, messy["disputed"])
-        assert order is not None
-        assert order.paypal_order_id == DISPUTED_PAYPAL_ORDER
-        assert order.status == OrderStatus.captured
-        assert order.mandate.buyer_label == "week1-e2e"
-        assert session.scalars(select(Dispute)).one().order_id == messy["disputed"]
-        # the page left open on it no longer reads "Opened, deciding"
-        assert session.scalars(select(Approval).where(Approval.order_id == order.id)).all() == []
-        # the other old e2e order went, the shared mandate stayed for the one that's kept.
-        # by content, not id: SQLite hands a deleted id to the next new row
-        e2e_orders = session.scalars(select(Order).where(Order.mandate_id == order.mandate_id))
-        assert len(e2e_orders.all()) == 1
+        assert session.get(Order, messy["disputed"]) is None or (
+            # SQLite hands a deleted id to the next new row, so check it's not the old order
+            session.get(Order, messy["disputed"]).paypal_order_id != DISPUTED_PAYPAL_ORDER
+        )
+        assert session.scalars(select(Dispute)).all() == []
+        old = session.scalars(select(Order).where(Order.paypal_order_id == DISPUTED_PAYPAL_ORDER))
+        assert old.all() == []
+        e2e = session.scalars(select(Mandate).where(Mandate.buyer_label == "week1-e2e"))
+        assert e2e.all() == []
         assert session.scalars(select(Order).where(Order.agent_name == "Demo page")).all() == []
+
+
+# ---- PROTECTED_ORDER_IDS ----
+
+
+@pytest.fixture
+def blanket_dispute(sessions):
+    # the order the new sandbox dispute is on: Checkout Anything's agent asked for the Medium
+    # blanket, the order came back Large, Check held it, the human approved it, then disputed it
+    with sessions() as session:
+        mandate = Mandate(
+            buyer_label="Checkout Anything shopper",
+            raw_request="Buy me the Medium Wool Camp Blanket from Fernwood & Thistle Goods",
+            rules={"item": "Wool Camp Blanket", "size": "Medium"},
+            merchant="Fernwood & Thistle Goods",
+        )
+        session.add(mandate)
+        session.flush()
+        order = add_order(session, mandate, OrderStatus.captured, ReviewState.approved,
+                          agent_name="Checkout Anything", paypal_order_id="PP-BLANKET",
+                          capture_id="CAP-BLANKET")
+        order.merchant = "Fernwood & Thistle Goods"
+        order.items = [{"name": "Wool Camp Blanket", "size": "Large", "quantity": 1,
+                        "unit_price": "140.00"}]
+        session.add(Decision(order_id=order.id, verdict=Verdict.mismatch, risk_score=80,
+                             reason="Asked for Medium, the order is Large",
+                             checked_by=CheckedBy.ai))
+        session.add(Approval(order_id=order.id, action=ApprovalAction.approve,
+                             opened_at=ago(hours=2), decided_at=ago(hours=2), decision_ms=4200))
+        session.add(Dispute(paypal_dispute_id="PP-R-NEW-1", order_id=order.id,
+                            reason="MERCHANDISE_OR_SERVICE_NOT_AS_DESCRIBED",
+                            status="WAITING_FOR_SELLER_RESPONSE"))
+        session.commit()
+        return order.id
+
+
+def test_a_protected_order_survives_with_everything_on_it(client, messy, blanket_dispute,
+                                                           sessions, monkeypatch, paypal):
+    monkeypatch.setenv("PROTECTED_ORDER_IDS", str(blanket_dispute))
+    get_settings.cache_clear()
+    response, status = reset(client)
+    # said in the first answer too, Checkout Anything's own reset reads it from there
+    assert response.json()["protected_order_ids"] == [blanket_dispute]
+    assert status["state"] == "done", status
+    assert status["protected_order_ids"] == [blanket_dispute]
+
+    with sessions() as session:
+        order = session.get(Order, blanket_dispute)
+        assert order.paypal_order_id == "PP-BLANKET"
+        assert order.status == OrderStatus.captured
+        assert order.mandate.raw_request.startswith("Buy me the Medium")
+        assert len(order.decisions) == 1
+        assert order.approvals[0].decision_ms == 4200
+        disputes = session.scalars(select(Dispute)).all()
+        # the blanket's dispute stays, the old week1-e2e one went
+        assert len(disputes) == 1
+        assert disputes[0].paypal_dispute_id == "PP-R-NEW-1"
+        assert disputes[0].order_id == blanket_dispute
+    # nothing was voided, captured or placed again for it
+    assert "AUTH-OLD" not in "".join(paypal.captured)
+    for authorization_id in paypal.voided:
+        assert authorization_id != order.authorization_id
+
+
+def test_the_seed_skips_its_own_blanket_story_when_a_real_one_is_kept(
+    client, messy, blanket_dispute, monkeypatch
+):
+    monkeypatch.setenv("PROTECTED_ORDER_IDS", str(blanket_dispute))
+    get_settings.cache_clear()
+    _, status = reset(client)
+    assert status["skipped_seed_orders"] == ["sneaky: small blanket, got medium"]
+    assert status["orders_total"] == len(SEED_ORDERS) - 1
+    blankets = []
+    for order in all_orders(client):
+        for item in order["items"]:
+            if item["name"] == "Wool Camp Blanket":
+                blankets.append(order["id"])
+    # just the kept one, no second blanket held for its size
+    assert blankets == [blanket_dispute]
+
+
+def test_reset_twice_keeps_the_protected_order(client, blanket_dispute, monkeypatch):
+    monkeypatch.setenv("PROTECTED_ORDER_IDS", " #" + str(blanket_dispute) + ", ")
+    get_settings.cache_clear()
+    _, first = reset(client)
+    _, second = reset(client)
+    assert first["protected_order_ids"] == second["protected_order_ids"] == [blanket_dispute]
+    assert second["deleted_orders"] == len(SEED_ORDERS) - 1
+    assert second["deleted_disputes"] == 0
+
+
+def test_a_protected_id_that_isnt_there_keeps_nothing(client, messy, monkeypatch):
+    monkeypatch.setenv("PROTECTED_ORDER_IDS", "99999,not-a-number")
+    get_settings.cache_clear()
+    _, status = reset(client)
+    assert status["state"] == "done"
+    assert status["protected_order_ids"] == []
+    assert len(status["orders"]) == len(SEED_ORDERS)
 
 
 def test_rubber_stamp_watch_starts_at_zero_with_sharp_mode_off(client, messy):
@@ -363,7 +467,7 @@ def test_reset_twice_gives_the_same_state(client, messy):
 
     assert shape(first) == shape(second)
     counts = seed_demo.count_orders(all_orders(client))
-    assert counts["orders"] == 11
+    assert counts["orders"] == 10
     assert counts["pending"] == 0
 
 
@@ -499,6 +603,6 @@ def test_script_resets_and_counts(client, messy, capsys):
     printed = capsys.readouterr().out
     assert "sneaky: tote at the wrong store" in printed
     assert "WRONG" not in printed
-    assert "Orders 11: captured 10 (auto 8, approved 2), held 3, voided 1" in printed
+    assert "Orders 10: captured 9 (auto 7, approved 2), held 3, voided 1" in printed
     assert "Errand Runner: 5 orders, 4 captured, 2 held, 1 voided" in printed
     assert "Rubber-stamp watch: 0 of 3, sharp mode off" in printed
