@@ -110,6 +110,28 @@ def test_a_flagged_item_cant_be_published_until_it_is_confirmed(world):  # noqa:
         assert refused.status_code == 409
 
 
+def test_publishing_a_live_item_again_keeps_it_live(world):  # noqa: F811
+    # the toolbar's Publish only ever sends published: true. a live row ticked alongside a draft
+    # stays live, nothing is taken offline. taking offline is its own call with published: false
+    with TestClient(world.app) as client:
+        store_id, _store = connect_store(client)
+        path = "/stores/" + str(store_id) + "/publish"
+        assert patch(client, store_id, "seeded-rye", {"resolve": ["unit_price"]}).status_code == 200
+
+        mixed = client.post(path, json={"item_ids": ["sourdough-loaf", "seeded-rye"]})
+        assert mixed.status_code == 200, mixed.text
+        assert item_of(mixed.json(), "sourdough-loaf")["published"] is True
+        assert item_of(mixed.json(), "seeded-rye")["published"] is True
+
+        again = client.post(path, json={"item_ids": ["sourdough-loaf"]})
+        assert item_of(again.json(), "sourdough-loaf")["published"] is True
+        assert "sourdough-loaf" in catalog_ids(client, store_id)
+
+        offline = client.post(path, json={"item_ids": ["sourdough-loaf"], "published": False})
+        assert item_of(offline.json(), "sourdough-loaf")["published"] is False
+        assert item_of(offline.json(), "seeded-rye")["published"] is True
+
+
 def test_a_price_edit_is_checked_at_paypal_and_undo_restores_everything(world):  # noqa: F811
     with TestClient(world.app) as client:
         store_id, _store = connect_store(client)
