@@ -1,0 +1,13 @@
+{
+  "case": "price-in-image-js",
+  "kind": "negative",
+  "fixture": "price-in-image-js.html",
+  "built_from": "evals/connect/fixtures/price-in-image-js.html",
+  "expect": "rejected",
+  "expect_why": "The tea prices ($18, $22) are only set by a script or drawn in an image, and the fetcher reads static HTML only (a known limit). The only price in the text is the $5 shipping, a lure. No tea may verify at any price",
+  "items": [
+    {"name": "Smoky Lapsang", "aliases": [], "unit_price": "18.00", "for_sale": true, "variants": [], "add_ons": [], "tricky_fields": {"unit_price": "Price only set by JavaScript"}},
+    {"name": "Spring Sencha", "aliases": [], "unit_price": "22.00", "for_sale": true, "variants": [], "add_ons": [], "tricky_fields": {"unit_price": "Price only in an image"}}
+  ],
+  "forbidden_prices": ["5.00"]
+}

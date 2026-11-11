@@ -1,0 +1,10 @@
+{
+  "case": "example-com",
+  "kind": "negative",
+  "url": "https://example.com/",
+  "built_from": "live page, the IANA example domain. It sells nothing",
+  "expect": "rejected",
+  "expect_why": "Nothing is for sale, so no item may verify and the run has to end in a clean error, not a crash",
+  "items": [],
+  "forbidden_prices": []
+}

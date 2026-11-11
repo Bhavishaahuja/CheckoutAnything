@@ -1,0 +1,46 @@
+{
+  "case": "quill-pipkin-studio",
+  "kind": "store",
+  "url": "https://checkout-anything-stores.onrender.com/quill-pipkin-studio/",
+  "built_from": "demo-stores/quill-pipkin-studio/index.html",
+  "merchant": {"name": "Quill & Pipkin Studio", "currency": "USD"},
+  "shipping": {"type": "none", "amount": "0.00"},
+  "items": [
+    {
+      "name": "Headshot",
+      "aliases": ["Headshots"],
+      "unit_price": "40.00",
+      "for_sale": true,
+      "variants": [],
+      "add_ons": [
+        {"label": "Background", "aliases": [], "price": "15.00"}
+      ],
+      "tricky_fields": {}
+    },
+    {
+      "name": "Half Body",
+      "aliases": ["Half-body"],
+      "unit_price": "65.00",
+      "for_sale": true,
+      "variants": [],
+      "add_ons": [
+        {"label": "Background", "aliases": [], "price": "15.00"}
+      ],
+      "tricky_fields": {}
+    },
+    {
+      "name": "Full Body",
+      "aliases": ["Full-body"],
+      "unit_price": "90.00",
+      "for_sale": true,
+      "variants": [],
+      "add_ons": [
+        {"label": "Background", "aliases": [], "price": "15.00"}
+      ],
+      "tricky_fields": {}
+    }
+  ],
+  "not_items": [
+    "Extra character +50%: a percentage, so it can't be a fixed add-on and must be left out"
+  ]
+}

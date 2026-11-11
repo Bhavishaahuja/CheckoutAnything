@@ -1,0 +1,69 @@
+{
+  "case": "hollowbrook-bakery",
+  "kind": "store",
+  "url": "https://checkout-anything-stores.onrender.com/hollowbrook-bakery/",
+  "built_from": "demo-stores/hollowbrook-bakery/index.html",
+  "merchant": {"name": "Hollowbrook Bakery", "currency": "USD"},
+  "shipping": {"type": "flat", "amount": "6.00"},
+  "items": [
+    {
+      "name": "Sourdough Loaf",
+      "aliases": [],
+      "unit_price": "9.00",
+      "for_sale": true,
+      "variants": [
+        {"label": "Whole loaf", "aliases": ["Whole", "Full loaf", "Full"], "unit_price": "9.00", "base": true},
+        {"label": "Half loaf", "aliases": ["Half"], "unit_price": "5.00", "base": false}
+      ],
+      "add_ons": [
+        {"label": "Sliced", "aliases": ["Slice", "Slicing"], "price": "1.00"}
+      ],
+      "tricky_fields": {}
+    },
+    {
+      "name": "Seeded Rye",
+      "aliases": [],
+      "unit_price": "7.00",
+      "for_sale": true,
+      "variants": [],
+      "add_ons": [],
+      "tricky_fields": {
+        "unit_price": "$8 is crossed out next to the current $7"
+      }
+    },
+    {
+      "name": "Butter Croissant",
+      "aliases": [],
+      "unit_price": "4.00",
+      "for_sale": false,
+      "variants": [],
+      "add_ons": [],
+      "tricky_fields": {
+        "available": "Marked SOLD OUT on this week's menu, may come back"
+      }
+    },
+    {
+      "name": "Cinnamon Morning Bun",
+      "aliases": [],
+      "unit_price": "4.50",
+      "for_sale": true,
+      "variants": [],
+      "add_ons": [],
+      "tricky_fields": {}
+    },
+    {
+      "name": "Olive Focaccia",
+      "aliases": [],
+      "unit_price": "11.00",
+      "for_sale": true,
+      "variants": [],
+      "add_ons": [],
+      "tricky_fields": {
+        "unit_price": "The menu row says ask, the $11 is only in the footnote"
+      }
+    }
+  ],
+  "not_items": [
+    "Want it sliced? +$1 sits under the Sourdough Loaf rows, so it is an add-on there and not its own item"
+  ]
+}

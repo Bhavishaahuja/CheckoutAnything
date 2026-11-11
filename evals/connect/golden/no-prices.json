@@ -1,0 +1,14 @@
+{
+  "case": "no-prices",
+  "kind": "negative",
+  "fixture": "no-prices.html",
+  "built_from": "evals/connect/fixtures/no-prices.html",
+  "expect": "rejected",
+  "expect_why": "Three real products but no prices anywhere (sizes in inches and oz, a year, a reply time). Any verified item means a price was made up",
+  "items": [
+    {"name": "Speckled Serving Bowl", "aliases": [], "unit_price": null, "for_sale": true, "variants": [], "add_ons": [], "tricky_fields": {}},
+    {"name": "Tall Bud Vase", "aliases": [], "unit_price": null, "for_sale": true, "variants": [], "add_ons": [], "tricky_fields": {}},
+    {"name": "Set of Four Tumblers", "aliases": ["Tumblers"], "unit_price": null, "for_sale": true, "variants": [], "add_ons": [], "tricky_fields": {}}
+  ],
+  "forbidden_prices": []
+}
