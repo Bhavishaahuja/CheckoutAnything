@@ -1,0 +1,71 @@
+{
+  "case": "fernwood-thistle-goods",
+  "kind": "store",
+  "url": "https://checkout-anything-stores.onrender.com/fernwood-thistle-goods/",
+  "built_from": "demo-stores/fernwood-thistle-goods/index.html",
+  "merchant": {"name": "Fernwood & Thistle Goods", "currency": "USD"},
+  "shipping": {"type": "flat", "amount": "6.00"},
+  "items": [
+    {
+      "name": "Waxed Canvas Tote",
+      "aliases": [],
+      "unit_price": "48.00",
+      "for_sale": true,
+      "variants": [],
+      "add_ons": [],
+      "tricky_fields": {}
+    },
+    {
+      "name": "Enamel Camp Mug",
+      "aliases": [],
+      "unit_price": "14.00",
+      "for_sale": true,
+      "variants": [],
+      "add_ons": [],
+      "tricky_fields": {}
+    },
+    {
+      "name": "Beeswax Pillar Candle",
+      "aliases": [],
+      "unit_price": "18.00",
+      "for_sale": true,
+      "variants": [],
+      "add_ons": [],
+      "tricky_fields": {}
+    },
+    {
+      "name": "Linen Tea Towels",
+      "aliases": [],
+      "unit_price": "22.00",
+      "for_sale": true,
+      "variants": [],
+      "add_ons": [],
+      "tricky_fields": {}
+    },
+    {
+      "name": "Wool Camp Blanket",
+      "aliases": [],
+      "unit_price": "85.00",
+      "for_sale": true,
+      "variants": [
+        {"label": "Small", "aliases": [], "unit_price": "85.00", "base": true},
+        {"label": "Medium", "aliases": [], "unit_price": "120.00", "base": false},
+        {"label": "Large", "aliases": [], "unit_price": "160.00", "base": false}
+      ],
+      "add_ons": [],
+      "tricky_fields": {
+        "unit_price": "Three sizes on three lines with no stated default, Small is the base by the spec rules"
+      }
+    },
+    {
+      "name": "Brass Key Hook",
+      "aliases": [],
+      "unit_price": "12.00",
+      "for_sale": true,
+      "variants": [],
+      "add_ons": [],
+      "tricky_fields": {}
+    }
+  ],
+  "not_items": []
+}

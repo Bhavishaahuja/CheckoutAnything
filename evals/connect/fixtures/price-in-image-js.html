@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Larkspur Tea Co.</title>
+<script>
+  // the real prices only ever reach the page through this script
+  window.addEventListener("DOMContentLoaded", function () {
+    document.getElementById("price-lapsang").textContent = "$18";
+    document.getElementById("price-sencha").textContent = "$22";
+  });
+</script>
+</head>
+<body>
+<h1>Larkspur Tea Co.</h1>
+<p>Loose leaf tea, packed by hand.</p>
+
+<h2>Smoky Lapsang, 100 g tin</h2>
+<p>Pine smoked black tea from Fujian.</p>
+<p>Price: <span id="price-lapsang"></span></p>
+
+<h2>Spring Sencha, 100 g tin</h2>
+<p>Bright, grassy, first flush.</p>
+<img src="sencha-price-tag.png" alt="Spring Sencha price tag">
+
+<p>Flat $5 shipping on every order.</p>
+<p>Larkspur Tea Co. is a fictional shop made for an eval.</p>
+</body>
+</html>
