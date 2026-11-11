@@ -11,9 +11,12 @@ logger = logging.getLogger(__name__)
 # every Claude call in the app uses this, so a model bump only happens here
 CLAUDE_MODEL = "claude-sonnet-5-5"
 
-# the three fictional demo stores, in the order /demo/reset connects them.
+# the three fictional demo stores, the ones the Connect page offers.
 # the slug is the folder name under demo-stores/ and the fixture file name
 DEMO_STORE_SLUGS = ["fernwood-thistle-goods", "quill-pipkin-studio", "hollowbrook-bakery"]
+# the ones /demo/reset connects, in this order. Quill & Pipkin is left for connecting live on
+# camera, and Check's seed orders (check/backend/app/demo_seed_orders.py) are at these two
+RESET_STORE_SLUGS = ["fernwood-thistle-goods", "hollowbrook-bakery"]
 
 SANDBOX_BASE_URL = "https://api-m.sandbox.paypal.com"
 

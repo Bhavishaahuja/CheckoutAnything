@@ -1,26 +1,33 @@
 # Demo support. Two separate things live here:
 #   POST /demo/orders builds an order from a mandate's rules, right or wrong on purpose, and sends
 #   it down the same path as an agent's order. It's what the /place-order page calls.
-#   POST /demo/reset wipes what backend/scripts/seed_demo.py made: voids the open holds at PayPal,
-#   then deletes the rows. The dashboard can call it, and the script's --reset calls it too, so
-#   both go through reset_seeded_demo. DELETE /demo/seeded is the delete half on its own.
-#   Seeded rows are the ones whose mandate has a buyer_label starting with SEED_LABEL_PREFIX.
-#   Stray orders go too: ones no known agent placed, like the old end-to-end test runs that show
-#   up as "Unknown agent" on the dashboard. See stray_order_ids.
+#   POST /demo/reset puts the demo back to the same starting point every time, in the background:
+#     1. voids every open hold at PayPal (refused up front if a human opened one in the last 10
+#        minutes, or has a payment going through)
+#     2. deletes every order and mandate that isn't protected: the last seed, old test runs,
+#        manual testing, /place-order orders. protected means DEMO_PROTECTED_PAYPAL_ORDER_IDS
+#        names it, or it has a dispute on it, so POST /disputes/sync still finds the dispute
+#     3. places the seed again through the real agent path, see demo_seed.py
+#   GET /demo/reset says how far it got. backend/scripts/seed_demo.py --reset calls both.
 
 import enum
+import logging
+import threading
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from decimal import ROUND_DOWN, ROUND_UP, Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ValidationError
 from sqlalchemy import delete, select, update
 from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.orm import sessionmaker
 
-from backend.app import catalog
+from backend.app import catalog, demo_seed
 from backend.app.auth import require_merchant
-from backend.app.config import STORE_NAME, agent_keys, get_settings
-from backend.app.intent.rules import normalize_merchant
+from backend.app.config import STORE_NAME, get_settings, protected_paypal_order_ids
+from backend.app.demo_seed import SEED_LABEL_PREFIX  # noqa: F401 (seed_demo.py reads it here)
+from backend.app.intent.rules import as_utc, normalize_merchant
 from backend.app.models import (
     Approval,
     Decision,
@@ -32,6 +39,7 @@ from backend.app.models import (
 )
 from backend.app.orders import (
     CENT,
+    CLAIM_EXPIRES_AFTER,
     PAYPAL_FAILURES,
     VOID,
     Claude,
@@ -44,12 +52,12 @@ from backend.app.orders import (
     payment_request_id,
     place_order,
     release_claim,
+    utc_now,
 )
 from backend.app.review import hold_has_expired
 from backend.app.session import RateLimiter, client_address
 
-# the part after the colon names the scenario, which is how a re-run finds what's already there
-SEED_LABEL_PREFIX = "seed-demo:"
+logger = logging.getLogger(__name__)
 
 CLEAN_SHARE_OF_CAP = Decimal("0.80")
 OVER_CAP_SHARE_OF_CAP = Decimal("1.15")
@@ -69,6 +77,10 @@ WRONG_COLORS = ["red", "green", "orange"]
 RESET_MAX_TRIES = 3
 RESET_WINDOW_SECONDS = 60
 reset_limiter = RateLimiter(RESET_MAX_TRIES, RESET_WINDOW_SECONDS)
+
+# a review page opened this recently counts as a human still deciding, and the reset waits for them.
+# one opened longer ago than this was walked away from, and the reset clears it
+MID_DECISION_WINDOW = timedelta(minutes=10)
 
 # who a /place-order order is credited to. the merchant placed it, standing in for an agent, so it
 # gets its own name instead of borrowing a real agent's
@@ -281,93 +293,175 @@ def create_demo_order(body: DemoOrderCreate, session: DbSession, paypal: PayPal,
     return load_order(session, order_id)
 
 
-class ResetSummary(BaseModel):
-    # what POST /demo/reset did
-    voided_holds: int
+
+
+# ---- Reset demo: wipe, then seed ----
+
+
+class SeedOrderOut(BaseModel):
+    # one seed order and where it landed. problem is null when it landed where it should
+    name: str
+    agent_name: str
+    store: str
+    expected: str
+    order_id: int | None
+    status: str | None
+    review_state: str | None
+    problem: str | None
+
+
+class ResetStatus(BaseModel):
+    # what POST /demo/reset is doing, or did last. GET /demo/reset reads it while it runs
+    #   idle      nothing since the API started
+    #   running   step says which part it's on
+    #   done      wiped and reseeded. orders lists every seed order
+    #   failed    error says why. if it failed before the wipe, nothing was deleted
+    state: str
+    step: str | None = None
+    error: str | None = None
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    # kept: the dispute's order, and anything else DEMO_PROTECTED_PAYPAL_ORDER_IDS names
+    protected_order_ids: list[int] = []
+    voided_holds: int = 0
     # so the merchant can match them up with PayPal's records
-    voided_order_ids: list[int]
-    deleted_orders: int
-    deleted_mandates: int
-    # forgotten here only. a dispute stays open at PayPal
-    deleted_disputes: int
+    voided_order_ids: list[int] = []
+    deleted_orders: int = 0
+    deleted_mandates: int = 0
+    # "Opened, deciding" left behind on a kept order, with nobody deciding any more
+    cleared_reviews: int = 0
+    orders_total: int = 0
+    orders_placed: int = 0
+    orders: list[SeedOrderOut] = []
 
 
 class ResetBlocked(Exception):
-    # the reset stopped partway. nothing that's still on hold at PayPal has been deleted
+    # the reset stopped partway, or never started. nothing still on hold at PayPal was deleted
     def __init__(self, status_code, detail):
         super().__init__(str(detail))
         self.status_code = status_code
         self.detail = detail
 
 
-def seeded_mandate_ids(session):
-    query = select(Mandate.id).where(Mandate.buyer_label.like(SEED_LABEL_PREFIX + "%"))
-    return list(session.scalars(query).all())
+class ResetJob:
+    # the one reset this API process runs at a time. in memory, like the rate limit: Render runs
+    # one instance, and a restart mid-reset just leaves it to be pressed again
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.status = ResetStatus(state="idle")
+        self.thread = None
+
+    def snapshot(self):
+        with self.lock:
+            return self.status.model_copy(deep=True)
+
+    def update(self, **changes):
+        with self.lock:
+            for field, value in changes.items():
+                setattr(self.status, field, value)
+
+    def add_order(self, result):
+        with self.lock:
+            self.status.orders.append(SeedOrderOut(**result))
+            self.status.orders_placed = len(self.status.orders)
+            self.status.step = (
+                "Placing seed orders through Check, " + str(self.status.orders_placed)
+                + " of " + str(self.status.orders_total) + " done"
+            )
+
+    def try_start(self):
+        # True if this caller gets to run the reset. one at a time
+        with self.lock:
+            if self.status.state == "running":
+                return False
+            self.status = ResetStatus(
+                state="running", step="Starting", started_at=utc_now(),
+                orders_total=len(demo_seed.SEED_ORDERS),
+            )
+            return True
 
 
-def known_agent_names():
-    # every agent Check can credit an order to: each configured agent key's name, and the
-    # /place-order page
-    names = {DEMO_AGENT_NAME}
-    for name in agent_keys(get_settings()).values():
-        names.add(name)
-    return names
+reset_job = ResetJob()
 
 
-def stray_order_ids(session):
-    # orders that aren't from the seed and weren't placed by any agent Check knows: no agent name
-    # at all (old test runs from before orders were credited to an agent), or a name no key has
-    seeded_ids = set(seeded_mandate_ids(session))
-    known_names = known_agent_names()
-    stray_ids = []
-    for order in session.scalars(select(Order)).all():
-        if order.mandate_id in seeded_ids:
+def protected_order_ids(session):
+    # orders a reset keeps, whatever else it deletes: the ones DEMO_PROTECTED_PAYPAL_ORDER_IDS
+    # names, and any order with a dispute saved on it, so POST /disputes/sync still finds it
+    paypal_ids = protected_paypal_order_ids(get_settings())
+    kept = set()
+    if paypal_ids:
+        query = select(Order.id).where(Order.paypal_order_id.in_(paypal_ids))
+        kept.update(session.scalars(query).all())
+    kept.update(session.scalars(select(Dispute.order_id)).all())
+    return kept
+
+
+def wipe_order_ids(session):
+    # every order a reset deletes: everything that isn't protected. old test runs, the last seed,
+    # orders from manual testing and from /place-order all go, so every reset ends the same
+    kept = protected_order_ids(session)
+    wiped = []
+    for order_id in session.scalars(select(Order.id).order_by(Order.id)).all():
+        if order_id not in kept:
+            wiped.append(order_id)
+    return wiped
+
+
+def has_open_hold(order):
+    # money on hold at PayPal right now. an expired hold has nothing to void
+    return order.status == OrderStatus.authorized and not hold_has_expired(order)
+
+
+def deciding_now(session, order):
+    # why a human is deciding this order right now, or None. a payment that's on its way to PayPal,
+    # or a review page opened in the last MID_DECISION_WINDOW. an older opened page was left behind
+    # and is fair game
+    if order.payment_claimed_at is not None:
+        if utc_now() - as_utc(order.payment_claimed_at) < CLAIM_EXPIRES_AFTER:
+            return "Order " + str(order.id) + " has a payment going through right now"
+    query = select(Approval).where(Approval.order_id == order.id, Approval.action.is_(None))
+    for approval in session.scalars(query).all():
+        if approval.opened_at is None:
             continue
-        if order.agent_name is None or order.agent_name not in known_names:
-            stray_ids.append(order.id)
-    return stray_ids
+        opened_for = utc_now() - as_utc(approval.opened_at)
+        if opened_for < MID_DECISION_WINDOW:
+            minutes = max(1, int(opened_for.total_seconds() // 60))
+            return (
+                "Someone opened the review for order " + str(order.id) + " " + str(minutes)
+                + " min ago and may be deciding it. Try again once they're done, or after "
+                + str(int(MID_DECISION_WINDOW.total_seconds() // 60)) + " minutes"
+            )
+    return None
 
 
-def orders_to_wipe(session):
-    # (order ids, mandate ids) a reset deletes: everything on a seeded mandate, plus the stray
-    # orders. a stray order's mandate only goes when no order that stays still points at it
-    seeded_ids = seeded_mandate_ids(session)
-    seeded_orders = select(Order.id).where(Order.mandate_id.in_(seeded_ids))
-    order_ids = list(session.scalars(seeded_orders).all())
-    stray_ids = stray_order_ids(session)
-    for order_id in stray_ids:
-        if order_id not in order_ids:
-            order_ids.append(order_id)
-
-    mandate_ids = list(seeded_ids)
-    stray_mandate_ids = set()
-    for order in session.scalars(select(Order).where(Order.id.in_(stray_ids))).all():
-        stray_mandate_ids.add(order.mandate_id)
-    for mandate_id in stray_mandate_ids:
-        if mandate_id in mandate_ids:
-            continue
-        others = session.scalars(
-            select(Order.id).where(Order.mandate_id == mandate_id, Order.id.not_in(order_ids))
-        ).all()
-        if not others:
-            mandate_ids.append(mandate_id)
-    return order_ids, mandate_ids
+def mid_decision_blockers(session):
+    # every open hold a reset would void that a human is in the middle of. checked up front, so a
+    # reset that would yank a hold from under someone's thumb never starts
+    blockers = []
+    wiped = wipe_order_ids(session)
+    if wiped:
+        for order in session.scalars(select(Order).where(Order.id.in_(wiped))).all():
+            if not has_open_hold(order):
+                continue
+            reason = deciding_now(session, order)
+            if reason is not None:
+                blockers.append({"order_id": order.id, "message": reason})
+    session.rollback()
+    return blockers
 
 
-def open_seeded_hold_ids(session):
-    # orders a reset wipes that have money on hold at PayPal right now. an expired hold has
-    # nothing to void
-    order_ids, _ = orders_to_wipe(session)
-    query = select(Order).where(Order.id.in_(order_ids))
+def open_hold_ids(session):
+    wiped = wipe_order_ids(session)
     open_ids = []
-    for order in session.scalars(query).all():
-        if order.status == OrderStatus.authorized and not hold_has_expired(order):
-            open_ids.append(order.id)
+    if wiped:
+        for order in session.scalars(select(Order).where(Order.id.in_(wiped))).all():
+            if has_open_hold(order):
+                open_ids.append(order.id)
     session.rollback()
     return open_ids
 
 
-def void_seeded_hold(session, paypal, order_id):
+def void_hold(session, paypal, order_id):
     # the same steps as rejecting from a review link: claim it so a human tapping approve right
     # now can't capture it as well, void with the derived PayPal-Request-Id so a retry can't
     # double up, then save. no approval row, nobody actually reviewed it
@@ -409,70 +503,103 @@ def void_seeded_hold(session, paypal, order_id):
         }) from error
 
 
-def delete_seeded_rows(session):
-    # refuses while any seeded hold is still open, so deleting the row can't leave an authorization
-    # at PayPal that nothing knows about. captures stay at PayPal, this only forgets them here.
-    # returns (orders, mandates, disputes) deleted. stray orders go with the seeded ones
-    wipe_order_ids, mandate_ids = orders_to_wipe(session)
-    order_query = select(Order).where(Order.id.in_(wipe_order_ids)).with_for_update()
-    orders = session.scalars(order_query).all()
+def delete_demo_rows(session):
+    # deletes every order that isn't protected, with its check results and reviews, and every
+    # mandate no kept order points at. refuses while any of those orders still has an open hold,
+    # so deleting a row can't leave an authorization at PayPal that nothing knows about. captures
+    # stay at PayPal, this only forgets them here.
+    # returns (orders deleted, mandates deleted, undecided reviews cleared on kept orders)
+    kept_ids = protected_order_ids(session)
+    order_ids = wipe_order_ids(session)
 
-    open_order_ids = []
-    order_ids = []
-    for order in orders:
-        order_ids.append(order.id)
-        if order.status == OrderStatus.authorized and not hold_has_expired(order):
-            open_order_ids.append(order.id)
-
-    if open_order_ids:
+    open_ids = []
+    if order_ids:
+        query = select(Order).where(Order.id.in_(order_ids)).with_for_update()
+        for order in session.scalars(query).all():
+            if has_open_hold(order):
+                open_ids.append(order.id)
+    if open_ids:
         session.rollback()
         raise ResetBlocked(409, {
             "message": "Void the open holds on these orders first",
-            "open_order_ids": open_order_ids,
+            "open_order_ids": open_ids,
         })
 
-    # an accepted fix links two seeded orders to each other. let go of those links first, so no
-    # database has to work out which of the pair it's allowed to delete first
-    session.execute(
-        update(Order).where(Order.id.in_(order_ids))
-        .values(replaced_by_order_id=None, replaces_order_id=None)
-    )
-    # a dispute points at its order, so it has to go first or Postgres refuses the order delete.
-    # same deal as captures: the dispute stays at PayPal, this only forgets it here
-    deleted_disputes = session.execute(
-        delete(Dispute).where(Dispute.order_id.in_(order_ids))
-    ).rowcount
+    kept_mandate_ids = set()
+    if kept_ids:
+        query = select(Order.mandate_id).where(Order.id.in_(kept_ids))
+        kept_mandate_ids.update(session.scalars(query).all())
+    mandate_ids = []
+    for mandate_id in session.scalars(select(Mandate.id).order_by(Mandate.id)).all():
+        if mandate_id not in kept_mandate_ids:
+            mandate_ids.append(mandate_id)
+
+    # an accepted fix links two orders to each other. let go of every link first, so no database
+    # has to work out which of a pair it's allowed to delete first
+    session.execute(update(Order).values(replaced_by_order_id=None, replaces_order_id=None))
     session.execute(delete(Approval).where(Approval.order_id.in_(order_ids)))
     session.execute(delete(Decision).where(Decision.order_id.in_(order_ids)))
     session.execute(delete(Order).where(Order.id.in_(order_ids)))
     session.execute(delete(Mandate).where(Mandate.id.in_(mandate_ids)))
+    # a kept order can still show "Opened, deciding" from a page someone walked away from
+    cleared = 0
+    if kept_ids:
+        cleared = session.execute(
+            delete(Approval).where(Approval.order_id.in_(kept_ids), Approval.action.is_(None))
+        ).rowcount
     session.commit()
-    return len(order_ids), len(mandate_ids), deleted_disputes
+    return len(order_ids), len(mandate_ids), cleared
 
 
-def reset_seeded_demo(session, paypal):
-    # void every open seeded hold, then delete every seeded row. the first void that fails stops
-    # it with the rows still there, so a hold is never forgotten while it still holds money.
-    # what got voided before that stays voided, and running it again picks up where it stopped
-    voided_order_ids = []
-    for order_id in open_seeded_hold_ids(session):
-        void_seeded_hold(session, paypal, order_id)
-        voided_order_ids.append(order_id)
+def run_reset(session_factory, paypal, claude, job):
+    # the whole reset, on its own thread: void, delete, seed. the first void that fails stops it
+    # with the rows still there, so a hold is never forgotten while it still holds money. running
+    # it again picks up where it stopped
+    try:
+        session = session_factory()
+        try:
+            job.update(protected_order_ids=sorted(protected_order_ids(session)))
+            session.rollback()
 
-    # an order placed against a seeded mandate in the meantime makes this a 409, and that's fine:
-    # it's a new hold, the next reset voids it
-    deleted_orders, deleted_mandates, deleted_disputes = delete_seeded_rows(session)
-    return ResetSummary(
-        voided_holds=len(voided_order_ids),
-        voided_order_ids=voided_order_ids,
-        deleted_orders=deleted_orders,
-        deleted_mandates=deleted_mandates,
-        deleted_disputes=deleted_disputes,
-    )
+            voided_ids = []
+            hold_ids = open_hold_ids(session)
+            for order_id in hold_ids:
+                job.update(step="Voiding open holds at PayPal, " + str(len(voided_ids))
+                           + " of " + str(len(hold_ids)) + " done")
+                void_hold(session, paypal, order_id)
+                voided_ids.append(order_id)
+                job.update(voided_holds=len(voided_ids), voided_order_ids=list(voided_ids))
+
+            job.update(step="Clearing out the old demo orders")
+            deleted_orders, deleted_mandates, cleared = delete_demo_rows(session)
+            job.update(deleted_orders=deleted_orders, deleted_mandates=deleted_mandates,
+                       cleared_reviews=cleared)
+        finally:
+            session.close()
+
+        job.update(step="Placing seed orders through Check, 0 of "
+                   + str(len(demo_seed.SEED_ORDERS)) + " done")
+        demo_seed.place_seed_orders(session_factory, paypal, claude, on_done=job.add_order)
+        job.update(state="done", step=None, finished_at=utc_now())
+    except ResetBlocked as error:
+        message = error.detail.get("message") if isinstance(error.detail, dict) else error.detail
+        job.update(state="failed", step=None, error=str(message), finished_at=utc_now())
+    except Exception as error:  # noqa: BLE001
+        # the thread has nobody to raise to. the log has it in full, the dashboard the short form
+        logger.exception("Reset demo failed")
+        job.update(state="failed", step=None, finished_at=utc_now(),
+                   error="The reset stopped: " + type(error).__name__ + ": " + str(error)[:200])
 
 
-@router.post("/reset", response_model=ResetSummary, dependencies=[Depends(require_merchant)])
-def reset_demo(request: Request, session: DbSession, paypal: PayPal):
+@router.post(
+    "/reset", response_model=ResetStatus, status_code=202,
+    dependencies=[Depends(require_merchant)],
+)
+def reset_demo(request: Request, session: DbSession, paypal: PayPal, claude: Claude):
+    # starts the reset and answers straight away. GET /demo/reset says how it's going
+    if reset_job.snapshot().state == "running":
+        raise HTTPException(status_code=409, detail="A reset is already running")
+
     # counted after the auth check, so only someone logged in can use up the allowance
     wait = reset_limiter.seconds_until_allowed(client_address(request))
     if wait > 0:
@@ -482,21 +609,36 @@ def reset_demo(request: Request, session: DbSession, paypal: PayPal):
             headers={"Retry-After": str(int(wait) + 1)},
         )
 
-    try:
-        return reset_seeded_demo(session, paypal)
-    except ResetBlocked as error:
-        raise HTTPException(status_code=error.status_code, detail=error.detail) from error
+    # both before anything is touched: a reset that can't seed would leave an empty demo, and one
+    # that voids a hold someone is looking at pulls it out from under them
+    problems = demo_seed.setup_problems(get_settings())
+    if problems:
+        raise HTTPException(status_code=503, detail={
+            "message": "Can't seed the demo: " + problems[0], "problems": problems,
+        })
+    blockers = mid_decision_blockers(session)
+    if blockers:
+        order_ids = []
+        for blocker in blockers:
+            order_ids.append(blocker["order_id"])
+        raise HTTPException(status_code=409, detail={
+            "message": blockers[0]["message"], "order_ids": order_ids,
+        })
+
+    if not reset_job.try_start():
+        raise HTTPException(status_code=409, detail="A reset is already running")
+
+    # the thread gets its own sessions on the same database as this request
+    session_factory = sessionmaker(bind=session.get_bind(), expire_on_commit=False)
+    thread = threading.Thread(
+        target=run_reset, args=(session_factory, paypal, claude, reset_job),
+        name="reset-demo", daemon=True,
+    )
+    reset_job.thread = thread
+    thread.start()
+    return reset_job.snapshot()
 
 
-@router.delete("/seeded", dependencies=[Depends(require_merchant)])
-def delete_seeded(session: DbSession):
-    # just the delete half of a reset: a 409 listing the open holds if there are any
-    try:
-        deleted_orders, deleted_mandates, deleted_disputes = delete_seeded_rows(session)
-    except ResetBlocked as error:
-        raise HTTPException(status_code=error.status_code, detail=error.detail) from error
-    return {
-        "deleted_orders": deleted_orders,
-        "deleted_mandates": deleted_mandates,
-        "deleted_disputes": deleted_disputes,
-    }
+@router.get("/reset", response_model=ResetStatus, dependencies=[Depends(require_merchant)])
+def reset_status():
+    return reset_job.snapshot()

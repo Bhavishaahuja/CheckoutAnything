@@ -8,7 +8,7 @@
 #
 # The watch is global, not per shopper. One merchant reviews everything in this demo.
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 
 from backend.app.config import get_settings
 from backend.app.intent.ai_check import FAILED_REASON, TIMED_OUT_REASON
@@ -17,6 +17,10 @@ from backend.app.models import Approval
 FAST_APPROVAL_MS = 2000   # under this, they almost certainly didn't read it
 STREAK_TO_TRIGGER = 3     # this many fast approvals in a row turns the watch on
 LOOKBACK = 10             # how many recent human decisions we look at
+
+# who an approval row says decided it when Reset demo's seed made the call (see demo_seed.py).
+# nobody looked at those orders, so they never count as a human decision here, fast or slow
+SEED_DECIDER = "demo seed"
 
 # what the dashboard shows for an order the watch let through, in place of Claude's reason
 LET_THROUGH_REASON = "Let through: low risk while rubber-stamp watch was on"
@@ -73,6 +77,8 @@ def load_recent_decisions(session):
     query = (
         select(Approval)
         .where(Approval.action.is_not(None))
+        # the seed's decisions aren't human ones. "!=" alone would drop the NULLs too
+        .where(or_(Approval.decided_by.is_(None), Approval.decided_by != SEED_DECIDER))
         .order_by(Approval.decided_at.desc(), Approval.id.desc())
         .limit(LOOKBACK)
     )

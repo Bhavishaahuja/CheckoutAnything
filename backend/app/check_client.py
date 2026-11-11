@@ -127,6 +127,12 @@ class CheckClient:
         # agent never gets to know when the watch is on
         return self._call("GET", "/stats", self.merchant_key)
 
+    def reset_demo(self):
+        # Check's Reset demo: voids open holds, clears the demo orders and places its seed again,
+        # in the background. answers straight away with {state: "running", ...}. 409 while a
+        # human is mid-decision, 429 if reset more than 3 times a minute, 503 if it can't seed
+        return self._call("POST", "/demo/reset", self.merchant_key)
+
     def list_disputes(self, limit=200):
         return self._call("GET", "/disputes", self.merchant_key, params={"limit": limit})
 

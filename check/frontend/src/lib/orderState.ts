@@ -8,6 +8,10 @@ import { heldLabel } from './shortReason'
 // approvals faster than this look like a rubber stamp, not a real look at the order
 export const RUBBER_STAMP_MS = 2000
 
+// who an approval says decided it when Reset demo's seed made the call (SEED_DECIDER in
+// backend/app/rubber_stamp.py). not a person, so never timed and never part of the watch
+export const SEED_DECIDER = 'demo seed'
+
 export function displayStatus(order: Order): DisplayStatus {
   if (order.status === 'authorized' && order.review_state === 'needs_review') {
     return 'needs_review'

@@ -125,17 +125,18 @@ TODO: demo video and walkthrough.
 
 ### Seed demo data
 
-`backend/scripts/seed_demo.py` fills a running API with real sandbox orders through its own endpoints: 5 clean ones that should auto-capture, and 6 sneaky ones that should stop for a human (wrong color, over the price cap, wrong store, expired mandate, odd quantity, and a correct item with injection text in its name). It prints what happened to each and the review links, and exits non-zero if any order landed somewhere unexpected.
+`POST /demo/reset` (the dashboard's **Reset demo**, or `backend/scripts/seed_demo.py --reset`) puts the demo back to the same starting point: it voids every open hold at PayPal, deletes every order and mandate that isn't protected, then places the seed from `backend/app/demo_seed_orders.py` through the real agent path (agent key, mandate, order, PayPal hold, intent check, capture or hold). Held seed orders are approved or rejected by the seed and recorded as decided by "demo seed", with no made-up timing, and they never count toward the rubber-stamp watch.
 
-Running it again doesn't make duplicates. Run these from the repo root, in cmd:
+Protected orders are the ones `DEMO_PROTECTED_PAYPAL_ORDER_IDS` names (by default the order the sandbox dispute is on) and any order with a synced dispute. The reset refuses with a `409` while someone has a review page open from the last 10 minutes.
+
+The API needs two agents in `AGENT_API_KEYS` named `Checkout Anything` and `Errand Runner`, both listed in `STORE_NAMING_AGENTS`, and `DEMO_VAULT_ID`. Run these from the check folder, in cmd:
 
 ```
-.venv\Scripts\python.exe backend\scripts\seed_demo.py
+.venv\Scripts\python.exe backend\scripts\seed_demo.py --reset --base-url https://leash-api-q3rw.onrender.com
 .venv\Scripts\python.exe backend\scripts\seed_demo.py --base-url https://leash-api-q3rw.onrender.com
-.venv\Scripts\python.exe backend\scripts\seed_demo.py --reset
 ```
 
-`--reset` voids any holds still open at PayPal, then deletes the seeded rows. It needs `AGENT_API_KEY` and `MERCHANT_API_KEY` in `.env` matching the API's, and `spikes/.vault_token.json`.
+The first resets and reseeds and prints each seed order. The second just prints the counts (orders, captured, held, voided, by agent) and the rubber-stamp watch. Both need `MERCHANT_API_KEY` in `.env` matching the API's.
 
 ### Week 1 end-to-end check
 

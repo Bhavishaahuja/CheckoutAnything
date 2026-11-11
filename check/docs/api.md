@@ -620,32 +620,44 @@ Success is a `201` with the order object plus `decisions` and `approvals`, like 
 
 ### `POST /demo/reset`
 
-Merchant only: the dashboard's session, or the merchant key, which is what `backend/scripts/seed_demo.py --reset` sends. Wipes the demo back to empty: voids every seeded order that still has an open hold at PayPal, then deletes every seeded order, mandate, check result, approval and dispute row. Seeded means the mandate's `buyer_label` starts with `seed-demo:`. Nothing else is touched. No body.
+Merchant only: the dashboard's session, or the merchant key, which is what `backend/scripts/seed_demo.py --reset` sends. Puts the demo back to the same starting point, in the background. No body.
 
-Success is a `200`:
+1. Voids every order that still has an open hold at PayPal.
+2. Deletes every order, mandate, check result and approval that isn't protected. Protected means `DEMO_PROTECTED_PAYPAL_ORDER_IDS` names its PayPal order id, or it has a synced dispute. A protected order and its dispute stay, and any "Opened, deciding" review left on one is cleared.
+3. Places the seed (`backend/app/demo_seed_orders.py`) as the agents `Checkout Anything` and `Errand Runner`, through the same route code as `POST /mandates` and `POST /orders`. Seed orders' mandates have a `buyer_label` starting with `seed-demo:`. Held ones are approved or rejected by the seed: the approval has `decided_by: "demo seed"`, no `opened_at` and no `decision_ms`, and the rubber-stamp watch leaves it out.
 
-```json
-{
-  "voided_holds": 2,
-  "voided_order_ids": [12, 15],
-  "deleted_orders": 17,
-  "deleted_mandates": 17,
-  "deleted_disputes": 0
-}
-```
-
-Captured orders stay captured at PayPal, and disputes stay open there. The reset only forgets them in Checkout Anything. It doesn't seed again, run the script for that.
+Success is a `202` with the status below, `state: "running"`. Poll `GET /demo/reset` for progress.
 
 | Code | When |
 |---|---|
-| `409` | A human is approving or rejecting one of the seeded orders at that moment. Nothing is deleted. `detail` has `message` and `order_id`, try again in a few seconds |
+| `409` | A human has a payment going through, or opened the review page of an order with an open hold in the last 10 minutes. Nothing is touched. `detail` has `message` and `order_ids`. Also when a reset is already running |
 | `429` | More than 3 resets in a minute from one address. `Retry-After` says how long to wait |
-| `502` | PayPal couldn't void a hold. Holds voided before it stay voided, nothing is deleted, and running the reset again carries on from there. `detail` has `message` and `order_id` |
+| `503` | The seed can't run: an agent is missing from `AGENT_API_KEYS` or `STORE_NAMING_AGENTS`, or `DEMO_VAULT_ID` isn't set. Checked before anything is touched. `detail` has `message` and `problems` |
 
-### `DELETE /demo/seeded`
+### `GET /demo/reset`
 
-Merchant only. The delete half of `POST /demo/reset` on its own. Deletes the seeded orders and mandates, which are the ones with a `buyer_label` starting with `seed-demo:`. Success is a `200` with `deleted_orders`, `deleted_mandates` and `deleted_disputes`.
+Merchant only. Where the last reset is:
 
-Any dispute rows synced onto those orders are deleted too, since an order can't be deleted while a dispute points at it. That only forgets them in Checkout Anything: the dispute stays open at PayPal, the same way a capture does.
+```json
+{
+  "state": "done",
+  "step": null,
+  "error": null,
+  "started_at": "2026-11-11T17:02:10Z",
+  "finished_at": "2026-11-11T17:03:31Z",
+  "protected_order_ids": [29],
+  "voided_holds": 2,
+  "voided_order_ids": [40, 48],
+  "deleted_orders": 20,
+  "deleted_mandates": 4,
+  "cleared_reviews": 0,
+  "orders_total": 10,
+  "orders_placed": 10,
+  "orders": [
+    {"name": "clean: enamel camp mug", "agent_name": "Checkout Anything", "store": "Fernwood & Thistle Goods",
+     "expected": "auto_approved", "order_id": 61, "status": "captured", "review_state": "auto_approved", "problem": null}
+  ]
+}
+```
 
-It's a `409` with `open_order_ids` in `detail` while any of those orders still has an open hold, so nothing gets forgotten at PayPal. Void those first.
+`state` is `idle` (nothing since the API started), `running` (`step` says what it's doing), `done`, or `failed` (`error` says why). A PayPal void that fails stops it before anything is deleted, and running it again carries on. `problem` on a seed order says it didn't land where the seed expected, for example real Claude holding an order the seed meant to be clean. The seed never leaves one on hold: it approves it and says so.

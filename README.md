@@ -305,7 +305,7 @@ The names were searched before use and are not real businesses as far as we coul
 | POST | `/disputes/sync` | ask PayPal for new disputes |
 | GET | `/disputes/{id}/evidence` | the evidence packet and its drafted summary |
 | POST | `/disputes/{id}/redraft`, `/disputes/{id}/submit-evidence` | redraft the summary, file the evidence with PayPal |
-| POST | `/demo/reset` | wipe demo data and reconnect the 3 demo stores |
+| POST | `/demo/reset` | reset Check's demo orders (void holds, clear, reseed), wipe stores and orders here, reconnect Fernwood and Hollowbrook |
 
 Event types: `fetch.started`, `fetch.done`, `extract.started`, `extract.done`, `item.checking`, `item.verified`, `item.failed`, `item.repairing`, `store.ready`, `error`. Each carries `store_id`, `item_id` (if any), a one sentence `message`, and `data`.
 

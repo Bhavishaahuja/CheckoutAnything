@@ -1,45 +1,123 @@
-# POST /demo/reset: void the seeded holds at PayPal, then delete every seeded row. The dashboard
-# calls it with a session, seed_demo.py --reset with the merchant key. PayPal is faked here.
+# POST /demo/reset: void every open hold, delete every demo row that isn't protected, then place the
+# seed again through the real agent path. Claude and PayPal are faked, everything else is the real
+# app: auth, the mandate and order routes, the intent check's hard rules, auto-capture, the
+# rubber-stamp watch and /stats. Whether real Claude holds the same orders only a live run can say.
 
+import uuid
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
 import pytest
 import requests
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from keyed_client import AGENT_HEADERS, MERCHANT_HEADERS
-from sqlalchemy import create_engine, event
+from keyed_client import AGENT_HEADERS, MERCHANT_HEADERS, MERCHANT_KEY
+from sqlalchemy import create_engine, event, select
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from backend.app import demo, orders
+from backend.app import demo, demo_seed, mandates, orders, review, rubber_stamp, stats
 from backend.app.auth import issue_session_token
-from backend.app.config import DEFAULT_AGENT_NAME
+from backend.app.config import get_settings
 from backend.app.db import Base, get_session
-from backend.app.demo import RESET_MAX_TRIES, SEED_LABEL_PREFIX, reset_limiter
+from backend.app.demo_seed_orders import SEED_ORDERS
 from backend.app.models import (
     Approval,
-    Decision,
+    ApprovalAction,
     Dispute,
     Mandate,
     Order,
     OrderStatus,
     ReviewState,
-    Verdict,
 )
+from backend.scripts import seed_demo
+
+DISPUTED_PAYPAL_ORDER = "25136698AG394644B"
+SEED_AGENT_KEYS = "ca-test-key:Checkout Anything,er-test-key:Errand Runner"
+
+# the script sets a real timeout on every call, and TestClient grumbles about being given one
+pytestmark = pytest.mark.filterwarnings("ignore:You should not use the 'timeout' argument")
+
+
+class FakeClaude:
+    # both Claude calls come through here: parsing the mandate, and checking the order. it holds
+    # the two seed orders that are really wrong (a Medium blanket, a whole loaf) and passes the
+    # rest. the tote at the wrong store is the store rule's to catch, not Claude's
+
+    def __init__(self):
+        self.beta = SimpleNamespace(messages=SimpleNamespace(create=self._create))
+
+    def with_options(self, **options):
+        return self
+
+    def _create(self, **kwargs):
+        name = kwargs["tools"][0]["name"]
+        content = kwargs["messages"][0]["content"]
+        if name == "record_mandate":
+            fields = self.parse_mandate(content)
+        else:
+            fields = self.check_order(content)
+        block = SimpleNamespace(type="tool_use", name=name, input=fields)
+        return SimpleNamespace(stop_reason="tool_use", content=[block])
+
+    def parse_mandate(self, content):
+        return {
+            "item": "something", "category": None, "color": None, "size": None,
+            "quantity": None, "max_price": 500, "currency": "USD",
+            "max_price_inclusive": True, "merchant": None, "expires_at": None, "notes": None,
+        }
+
+    def check_order(self, content):
+        order_text = content.split("<order>")[1]
+        wrong_size = "Medium" in order_text
+        whole_loaf = "Sourdough Loaf" in order_text and "Half loaf" not in order_text
+        if wrong_size or whole_loaf:
+            return {"verdict": "mismatch", "risk_score": 80, "reason": "Wrong size.",
+                    "mismatched_fields": ["size"]}
+        return {"verdict": "match", "risk_score": 5, "reason": "Matches.",
+                "mismatched_fields": []}
 
 
 class FakePayPal:
     def __init__(self):
-        self.voids = []
-        # authorization ids whose void fails, like PayPal being down for just that call
-        self.failing = set()
+        self.created = 0
+        self.captured = []
+        self.voided = []
+        self.void_fails = False
+
+    def create_order(self, body, request_id=None):
+        self.created += 1
+        return {"id": "PP" + uuid.uuid4().hex[:10], "status": "COMPLETED", "purchase_units": [{
+            "payments": {"authorizations": [{
+                "id": "AUTH" + uuid.uuid4().hex[:10],
+                "status": "CREATED",
+                "expiration_time": "2099-01-01T00:00:00Z",
+            }]}
+        }]}
+
+    def capture_authorization(self, authorization_id, request_id=None, budget_seconds=None):
+        self.captured.append(authorization_id)
+        return {"id": "CAP" + authorization_id, "status": "COMPLETED"}
 
     def void_authorization(self, authorization_id, request_id=None):
-        if authorization_id in self.failing:
+        if self.void_fails:
             raise requests.ConnectionError("PayPal is down")
-        self.voids.append((authorization_id, request_id))
+        self.voided.append(authorization_id)
         return {"id": authorization_id, "status": "VOIDED"}
+
+
+@pytest.fixture(autouse=True)
+def seed_agents(monkeypatch):
+    # the two agents the seed orders as, both allowed to name the store, and a wallet to pay with
+    monkeypatch.setenv("AGENT_API_KEYS", SEED_AGENT_KEYS)
+    monkeypatch.setenv("STORE_NAMING_AGENTS", "Checkout Anything,Errand Runner")
+    monkeypatch.setenv("DEMO_VAULT_ID", "test-vault")
+    monkeypatch.setenv("DEMO_PROTECTED_PAYPAL_ORDER_IDS", DISPUTED_PAYPAL_ORDER)
+    get_settings.cache_clear()
+    # SQLite has one connection here, so the seed can't run orders side by side
+    monkeypatch.setattr(demo_seed, "SEED_WORKERS", 1)
+    # a fresh job per test, the module one would remember the last test's reset
+    monkeypatch.setattr(demo, "reset_job", demo.ResetJob())
 
 
 @pytest.fixture
@@ -64,9 +142,13 @@ def paypal():
 
 @pytest.fixture
 def client(sessions, paypal):
+    claude = FakeClaude()
     app = FastAPI()
-    app.include_router(demo.router)
+    app.include_router(mandates.router)
     app.include_router(orders.router)
+    app.include_router(review.router)
+    app.include_router(demo.router)
+    app.include_router(stats.router)
 
     def test_session():
         session = sessions()
@@ -76,349 +158,347 @@ def client(sessions, paypal):
             session.close()
 
     app.dependency_overrides[get_session] = test_session
+    app.dependency_overrides[mandates.get_anthropic_client] = lambda: claude
+    app.dependency_overrides[orders.get_anthropic_client] = lambda: claude
     app.dependency_overrides[orders.get_paypal_client] = lambda: paypal
     return TestClient(app)
 
 
-@pytest.fixture
-def dashboard_headers():
-    token, _ = issue_session_token()
-    return {"Authorization": "Bearer " + token}
+def ago(**delta):
+    return datetime.now(timezone.utc) - timedelta(**delta)
 
 
 def later(days=1):
     return datetime.now(timezone.utc) + timedelta(days=days)
 
 
-def add_mandate(session, label):
-    mandate = Mandate(buyer_label=label, raw_request="x", rules={})
-    session.add(mandate)
-    session.flush()
-    return mandate.id
-
-
-def add_order(session, mandate_id, status, review_state, expires_at=None, claimed_at=None,
-              agent_name=DEFAULT_AGENT_NAME):
-    # a real agent order always carries its agent's name. the tests' AGENT_API_KEY is the
-    # default agent, so that's a known one
+def add_order(session, mandate, status, review_state=None, agent_name=None, paypal_order_id=None,
+              expires_at=None, capture_id=None):
     order = Order(
-        mandate_id=mandate_id, items=[], total=10, currency="USD", status=status,
-        agent_name=agent_name,
-        review_state=review_state, authorization_id="AUTH-" + str(session.query(Order).count()),
-        authorization_expires_at=expires_at, payment_claimed_at=claimed_at,
+        mandate_id=mandate.id, items=[], total=10, currency="USD", status=status,
+        review_state=review_state, agent_name=agent_name, paypal_order_id=paypal_order_id,
+        capture_id=capture_id, authorization_id="AUTH-OLD-" + uuid.uuid4().hex[:6],
+        authorization_expires_at=expires_at,
     )
     session.add(order)
     session.flush()
-    return order.id
+    return order
 
 
 @pytest.fixture
-def seeded(sessions):
-    # what a seed run leaves behind, plus one real order that the reset must not touch
+def messy(sessions):
+    # what the live database looks like before the first reset: old week1-e2e runs with no agent,
+    # the one with the sandbox dispute on it, manual testing, a /place-order order, an open hold
+    # nobody opened, and one somebody opened hours ago and walked away from
     ids = {}
     with sessions() as session:
-        seed = add_mandate(session, SEED_LABEL_PREFIX + "clean: camping mug")
-        sneaky = add_mandate(session, SEED_LABEL_PREFIX + "sneaky: wrong color")
-        real = add_mandate(session, "Sam")
+        e2e = Mandate(buyer_label="week1-e2e", raw_request="x", rules={})
+        shopper = Mandate(buyer_label="Checkout Anything shopper", raw_request="y", rules={})
+        session.add_all([e2e, shopper])
+        session.flush()
 
-        ids["captured"] = add_order(session, seed, OrderStatus.captured, ReviewState.auto_approved)
-        ids["open_1"] = add_order(
-            session, sneaky, OrderStatus.authorized, ReviewState.needs_review, later()
-        )
-        ids["open_2"] = add_order(
-            session, sneaky, OrderStatus.authorized, ReviewState.needs_review, later()
-        )
-        # expired at PayPal already, nothing left to void
-        ids["expired"] = add_order(
-            session, sneaky, OrderStatus.authorized, ReviewState.needs_review, later(-1)
-        )
-        ids["real_open"] = add_order(
-            session, real, OrderStatus.authorized, ReviewState.needs_review, later()
-        )
+        disputed = add_order(session, e2e, OrderStatus.captured, ReviewState.auto_approved,
+                             paypal_order_id=DISPUTED_PAYPAL_ORDER, capture_id="6MK69796MX034435J")
+        ids["disputed"] = disputed.id
+        session.add(Dispute(paypal_dispute_id="PP-D-TEST-1", order_id=disputed.id,
+                            reason="MERCHANDISE_OR_SERVICE_NOT_RECEIVED",
+                            status="WAITING_FOR_SELLER_RESPONSE"))
+        # a page on it left open long ago: "Opened, deciding" with nobody deciding
+        session.add(Approval(order_id=disputed.id, opened_at=ago(hours=3)))
 
-        session.add(Decision(order_id=ids["open_1"], verdict=Verdict.mismatch, reason="Wrong",
-                             checked_by="ai"))
-        session.add(Approval(order_id=ids["captured"]))
-        session.add(Dispute(paypal_dispute_id="PP-R-TEST-1", order_id=ids["captured"]))
-        ids["real_mandate"] = real
+        ids["old_e2e"] = add_order(session, e2e, OrderStatus.voided, ReviewState.rejected).id
+        ids["demo_page"] = add_order(session, shopper, OrderStatus.captured, ReviewState.approved,
+                                     agent_name="Demo page").id
+        # three fast human approvals: the watch would be in sharp mode if they survived
+        for minutes in (30, 20, 10):
+            fast = add_order(session, shopper, OrderStatus.captured, ReviewState.approved,
+                             agent_name="Checkout Anything")
+            session.add(Approval(order_id=fast.id, action=ApprovalAction.approve,
+                                 opened_at=ago(minutes=minutes), decided_at=ago(minutes=minutes),
+                                 decision_ms=500))
+        ids["open_hold"] = add_order(session, shopper, OrderStatus.authorized,
+                                     ReviewState.needs_review, agent_name="Checkout Anything",
+                                     expires_at=later()).id
+        stale = add_order(session, shopper, OrderStatus.authorized, ReviewState.needs_review,
+                          agent_name="Checkout Anything", expires_at=later())
+        ids["stale_open"] = stale.id
+        session.add(Approval(order_id=stale.id, opened_at=ago(minutes=50)))
         session.commit()
     return ids
 
 
-def reset(client, headers, address="10.0.0.1"):
-    headers = dict(headers)
-    headers["X-Forwarded-For"] = address
-    return client.post("/demo/reset", headers=headers)
+def reset(client, headers=MERCHANT_HEADERS):
+    # POST, then wait for the background thread, then the final status
+    response = client.post("/demo/reset", headers=headers)
+    if response.status_code == 202:
+        demo.reset_job.thread.join(timeout=30)
+        assert not demo.reset_job.thread.is_alive()
+        return response, client.get("/demo/reset", headers=MERCHANT_HEADERS).json()
+    return response, None
 
 
-# ---- what it does ----
+def all_orders(client):
+    return client.get("/orders?limit=200", headers=MERCHANT_HEADERS).json()
 
 
-def test_reset_voids_the_open_holds_then_deletes_everything_seeded(
-    client, sessions, paypal, seeded, dashboard_headers
-):
-    response = reset(client, dashboard_headers)
+# ---- the state a reset leaves ----
 
-    assert response.status_code == 200
-    assert response.json() == {
-        "voided_holds": 2,
-        "voided_order_ids": [seeded["open_1"], seeded["open_2"]],
-        "deleted_orders": 4,
-        "deleted_mandates": 2,
-        "deleted_disputes": 1,
-    }
+
+def test_reset_voids_wipes_and_reseeds_to_the_target_state(client, messy, paypal, sessions):
+    response, status = reset(client)
+    assert response.status_code == 202
+    assert status["state"] == "done", status
+    for order in status["orders"]:
+        assert order["problem"] is None, order
+
+    # both open holds were voided at PayPal before anything was deleted
+    assert sorted(status["voided_order_ids"]) == sorted([messy["open_hold"], messy["stale_open"]])
+    assert status["protected_order_ids"] == [messy["disputed"]]
+
+    counts = seed_demo.count_orders(all_orders(client))
+    # the 10 seed orders plus the one the dispute is on
+    assert counts["orders"] == len(SEED_ORDERS) + 1 == 11
+    assert counts["auto_captured"] == 7 + 1
+    assert counts["approved"] == 2
+    assert counts["rejected"] == 1
+    assert counts["voided"] == 1
+    assert counts["held"] == 3
+    assert counts["pending"] == 0
+    assert counts["by_agent"]["Checkout Anything"]["orders"] == 5
+    assert counts["by_agent"]["Errand Runner"]["orders"] == 5
+    # the dispute's order has no agent name, it's from before orders had one
+    assert counts["by_agent"]["Unknown agent"]["orders"] == 1
+    assert "Demo page" not in counts["by_agent"]
+
+
+def test_the_dispute_and_its_order_survive(client, messy, sessions):
+    reset(client)
     with sessions() as session:
-        assert session.query(Order).count() == 1
-        assert session.query(Mandate).count() == 1
-        assert session.query(Decision).count() == 0
-        assert session.query(Approval).count() == 0
-        assert session.query(Dispute).count() == 0
+        order = session.get(Order, messy["disputed"])
+        assert order is not None
+        assert order.paypal_order_id == DISPUTED_PAYPAL_ORDER
+        assert order.status == OrderStatus.captured
+        assert order.mandate.buyer_label == "week1-e2e"
+        assert session.scalars(select(Dispute)).one().order_id == messy["disputed"]
+        # the page left open on it no longer reads "Opened, deciding"
+        assert session.scalars(select(Approval).where(Approval.order_id == order.id)).all() == []
+        # the other old e2e order went, the shared mandate stayed for the one that's kept.
+        # by content, not id: SQLite hands a deleted id to the next new row
+        e2e_orders = session.scalars(select(Order).where(Order.mandate_id == order.mandate_id))
+        assert len(e2e_orders.all()) == 1
+        assert session.scalars(select(Order).where(Order.agent_name == "Demo page")).all() == []
 
 
-def test_only_live_seeded_holds_are_voided(client, paypal, seeded, dashboard_headers):
-    reset(client, dashboard_headers)
+def test_rubber_stamp_watch_starts_at_zero_with_sharp_mode_off(client, messy):
+    _, status = reset(client)
+    assert status["state"] == "done"
+    watch = client.get("/stats", headers=MERCHANT_HEADERS).json()
+    assert watch["fast_streak"] == 0
+    assert watch["rubber_stamp_active"] is False
+    # the seed's own decisions aren't in the list the watch reads
+    assert watch["recent_decision_ms"] == []
+    assert watch["median_decision_ms"] is None
 
-    voided = []
-    for authorization_id, _ in paypal.voids:
-        voided.append(authorization_id)
-    # not the captured one, not the expired one, and never the real shopper's
-    assert len(voided) == 2
-    assert "AUTH-0" not in voided
 
-
-def test_a_real_order_is_left_exactly_as_it_was(client, sessions, seeded, dashboard_headers):
-    reset(client, dashboard_headers)
-
+def test_seed_decisions_say_demo_seed_and_have_no_made_up_times(client, messy, sessions):
+    reset(client)
     with sessions() as session:
-        order = session.get(Order, seeded["real_open"])
-        assert order.status == OrderStatus.authorized
-        assert order.review_state == ReviewState.needs_review
-        assert session.get(Mandate, seeded["real_mandate"]) is not None
+        approvals = session.scalars(select(Approval)).all()
+        assert len(approvals) == 3
+        actions = []
+        for approval in approvals:
+            assert approval.decided_by == "demo seed"
+            assert approval.opened_at is None
+            assert approval.decision_ms is None
+            assert approval.decided_at is not None
+            actions.append(approval.action)
+        assert sorted(action.value for action in actions) == ["approve", "approve", "reject"]
 
 
-def test_voids_use_the_derived_request_id_so_a_retry_cant_double_up(
-    client, sessions, paypal, seeded, dashboard_headers
-):
-    with sessions() as session:
-        expected = []
-        for key in ["open_1", "open_2"]:
-            order = session.get(Order, seeded[key])
-            expected.append(orders.payment_request_id(order, orders.VOID))
-
-    reset(client, dashboard_headers)
-
-    sent = []
-    for _, request_id in paypal.voids:
-        sent.append(request_id)
-    assert sent == expected
+def test_quill_and_pipkin_is_nowhere_in_the_seed(client, messy):
+    _, status = reset(client)
+    for order in all_orders(client):
+        assert "Quill" not in (order["merchant"] or "")
+        assert "Quill" not in order["mandate"]["raw_request"]
+    stores = set()
+    for order in status["orders"]:
+        stores.add(order["store"])
+    assert stores == {"Fernwood & Thistle Goods", "Hollowbrook Bakery"}
 
 
-def test_resetting_with_nothing_seeded_is_fine(client, paypal, dashboard_headers):
-    response = reset(client, dashboard_headers)
+def test_every_seed_order_is_real_and_tagged(client, messy, paypal):
+    reset(client)
+    seeded = []
+    for order in all_orders(client):
+        if order["mandate"]["buyer_label"].startswith(demo_seed.SEED_LABEL_PREFIX):
+            seeded.append(order)
+    assert len(seeded) == len(SEED_ORDERS)
+    for order in seeded:
+        # every one was a PayPal order with a hold, and it was checked
+        assert order["paypal_order_id"].startswith("PP")
+        assert order["authorization_id"]
+        assert order["intent_check"] is not None
+    # 10 holds placed, 9 captured (7 clean, 2 approved). the tote and the 2 old holds voided
+    assert paypal.created == len(SEED_ORDERS)
+    assert len(paypal.captured) == 9
+    assert len(paypal.voided) == 3
 
-    assert response.status_code == 200
-    assert response.json() == {"voided_holds": 0, "voided_order_ids": [], "deleted_orders": 0,
-                               "deleted_mandates": 0, "deleted_disputes": 0}
-    assert paypal.voids == []
 
-
-def test_a_second_reset_has_nothing_left_to_do(client, paypal, seeded, dashboard_headers):
-    reset(client, dashboard_headers)
-
-    second = reset(client, dashboard_headers).json()
-
+def test_reset_twice_gives_the_same_state(client, messy):
+    first_response, first = reset(client)
+    second_response, second = reset(client)
+    assert first_response.status_code == second_response.status_code == 202
+    assert second["state"] == "done"
+    # the second one had nothing open to void, and found the first one's seed to delete
     assert second["voided_holds"] == 0
-    assert second["deleted_orders"] == 0
-    assert len(paypal.voids) == 2
+    assert second["deleted_orders"] == len(SEED_ORDERS)
+    assert second["protected_order_ids"] == first["protected_order_ids"]
+
+    def shape(status):
+        rows = []
+        for order in status["orders"]:
+            rows.append((order["name"], order["agent_name"], order["store"], order["status"],
+                         order["review_state"]))
+        return sorted(rows)
+
+    assert shape(first) == shape(second)
+    counts = seed_demo.count_orders(all_orders(client))
+    assert counts["orders"] == 11
+    assert counts["pending"] == 0
 
 
-# ---- when it has to stop ----
+# ---- what stops a reset ----
 
 
-def test_a_failed_void_stops_before_deleting_anything(
-    client, sessions, paypal, seeded, dashboard_headers
-):
-    paypal.failing.add("AUTH-2")
-
-    response = reset(client, dashboard_headers)
-
-    assert response.status_code == 502
-    assert response.json()["detail"]["order_id"] == seeded["open_2"]
+def test_refused_while_a_human_has_a_review_open(client, messy, sessions, paypal):
     with sessions() as session:
-        # every row still there, so the hold PayPal still has isn't forgotten
-        assert session.query(Order).count() == 5
-        failed = session.get(Order, seeded["open_2"])
-        assert failed.status == OrderStatus.authorized
-        # claim let go, so the next reset can try it again
-        assert failed.payment_claimed_at is None
-        # the one before it really was voided, and stays that way
-        assert session.get(Order, seeded["open_1"]).status == OrderStatus.voided
-
-
-def test_running_it_again_after_paypal_recovers_finishes_the_job(
-    client, sessions, paypal, seeded, dashboard_headers
-):
-    paypal.failing.add("AUTH-2")
-    reset(client, dashboard_headers)
-    paypal.failing.clear()
-
-    response = reset(client, dashboard_headers)
-
-    assert response.status_code == 200
-    assert response.json()["voided_order_ids"] == [seeded["open_2"]]
-    with sessions() as session:
-        assert session.query(Order).count() == 1
-
-
-def test_an_order_a_human_is_deciding_right_now_stops_the_reset(
-    client, sessions, paypal, seeded, dashboard_headers
-):
-    # a human just tapped approve and the capture is on its way to PayPal. voiding now could race
-    # it, so the reset backs off
-    with sessions() as session:
-        order = session.get(Order, seeded["open_1"])
-        order.payment_claimed_at = datetime.now(timezone.utc)
+        session.add(Approval(order_id=messy["open_hold"], opened_at=ago(minutes=2)))
         session.commit()
 
-    response = reset(client, dashboard_headers)
-
+    response, _ = reset(client)
     assert response.status_code == 409
-    assert response.json()["detail"]["order_id"] == seeded["open_1"]
-    assert paypal.voids == []
+    detail = response.json()["detail"]
+    assert detail["order_ids"] == [messy["open_hold"]]
+    assert "opened the review" in detail["message"]
+    # nothing voided, nothing deleted, no job started
+    assert paypal.voided == []
+    assert demo.reset_job.snapshot().state == "idle"
     with sessions() as session:
-        assert session.query(Order).count() == 5
+        assert session.get(Order, messy["demo_page"]) is not None
 
 
-# ---- who can call it ----
-
-
-def test_the_merchant_key_works_too(client, seeded):
-    # what seed_demo.py --reset sends
-    assert reset(client, MERCHANT_HEADERS).status_code == 200
-
-
-@pytest.mark.parametrize(
-    "headers",
-    [{}, AGENT_HEADERS, {"X-API-Key": "wrong"}, {"Authorization": "Bearer 123.not-signed"}],
-)
-def test_anyone_else_gets_a_401_and_nothing_happens(client, sessions, paypal, seeded, headers):
-    assert reset(client, headers).status_code == 401
-    assert paypal.voids == []
+def test_refused_while_a_payment_is_going_through(client, messy, sessions, paypal):
     with sessions() as session:
-        assert session.query(Order).count() == 5
+        session.get(Order, messy["open_hold"]).payment_claimed_at = ago(seconds=5)
+        session.commit()
+    response, _ = reset(client)
+    assert response.status_code == 409
+    assert paypal.voided == []
 
 
-# ---- the rate limit ----
+def test_refused_up_front_without_an_errand_runner_key(client, messy, monkeypatch, paypal):
+    monkeypatch.setenv("AGENT_API_KEYS", "ca-test-key:Checkout Anything")
+    get_settings.cache_clear()
+    response, _ = reset(client)
+    assert response.status_code == 503
+    assert "AGENT_API_KEYS has no key named Errand Runner" in response.json()["detail"]["message"]
+    assert paypal.voided == []
 
 
-def test_a_few_resets_a_minute_then_a_429(client, dashboard_headers):
-    for _ in range(RESET_MAX_TRIES):
-        assert reset(client, dashboard_headers).status_code == 200
+def test_refused_up_front_when_errand_runner_cant_name_the_store(client, monkeypatch):
+    monkeypatch.setenv("STORE_NAMING_AGENTS", "Checkout Anything")
+    get_settings.cache_clear()
+    response, _ = reset(client)
+    assert response.status_code == 503
+    assert "STORE_NAMING_AGENTS" in response.json()["detail"]["message"]
 
-    response = reset(client, dashboard_headers)
 
+def test_a_failed_void_stops_it_before_anything_is_deleted(client, messy, sessions, paypal):
+    paypal.void_fails = True
+    response, status = reset(client)
+    assert response.status_code == 202
+    assert status["state"] == "failed"
+    assert "couldn't void" in status["error"]
+    with sessions() as session:
+        assert session.get(Order, messy["open_hold"]).status == OrderStatus.authorized
+        assert session.get(Order, messy["demo_page"]) is not None
+    assert paypal.created == 0
+
+
+def test_only_one_reset_at_a_time(client):
+    demo.reset_job.update(state="running")
+    response = client.post("/demo/reset", headers=MERCHANT_HEADERS)
+    assert response.status_code == 409
+
+
+def test_rate_limited(client):
+    for _ in range(demo.RESET_MAX_TRIES):
+        response, status = reset(client)
+        assert response.status_code == 202
+        assert status["state"] == "done"
+    response, _ = reset(client)
     assert response.status_code == 429
-    assert int(response.headers["Retry-After"]) > 0
 
 
-def test_the_limit_is_per_address(client, dashboard_headers):
-    for _ in range(RESET_MAX_TRIES):
-        reset(client, dashboard_headers, address="10.0.0.1")
-
-    assert reset(client, dashboard_headers, address="10.0.0.1").status_code == 429
-    assert reset(client, dashboard_headers, address="10.0.0.2").status_code == 200
+def test_needs_the_merchant(client):
+    assert client.post("/demo/reset", headers=AGENT_HEADERS).status_code == 401
+    assert client.post("/demo/reset").status_code == 401
+    assert client.get("/demo/reset", headers=AGENT_HEADERS).status_code == 401
 
 
-def test_a_limited_reset_touches_nothing(client, sessions, paypal, seeded, dashboard_headers):
-    for _ in range(RESET_MAX_TRIES):
-        reset_limiter.seconds_until_allowed("10.0.0.1")
+def test_the_dashboard_session_can_reset(client):
+    token, _ = issue_session_token()
+    response, status = reset(client, {"Authorization": "Bearer " + token})
+    assert response.status_code == 202
+    assert status["state"] == "done"
 
-    assert reset(client, dashboard_headers).status_code == 429
-    assert paypal.voids == []
+
+# ---- the watch leaves the seed's decisions out ----
+
+
+def test_seed_decisions_never_count_toward_the_streak(sessions):
     with sessions() as session:
-        assert session.query(Order).count() == 5
-
-
-def test_calls_without_a_login_dont_use_up_the_allowance(client, dashboard_headers):
-    # otherwise anyone could lock the judges out by hammering it with no session
-    for _ in range(10):
-        assert reset(client, {}).status_code == 401
-
-    assert reset(client, dashboard_headers).status_code == 200
-
-
-def test_the_window_lets_go_after_a_minute():
-    for _ in range(RESET_MAX_TRIES):
-        reset_limiter.seconds_until_allowed("10.0.0.9", now=1000.0)
-
-    assert reset_limiter.seconds_until_allowed("10.0.0.9", now=1030.0) > 0
-    assert reset_limiter.seconds_until_allowed("10.0.0.9", now=1061.0) == 0
-
-
-# ---- DELETE /demo/seeded still works on its own ----
-
-
-def test_delete_seeded_still_refuses_while_holds_are_open(client, seeded):
-    response = client.delete("/demo/seeded", headers=MERCHANT_HEADERS)
-
-    assert response.status_code == 409
-    assert sorted(response.json()["detail"]["open_order_ids"]) == [
-        seeded["open_1"], seeded["open_2"],
-    ]
-
-
-# ---- stray orders: not from the seed, not from any agent Check knows ----
-
-
-def test_orders_from_no_known_agent_are_wiped_too(client, sessions, paypal, dashboard_headers):
-    with sessions() as session:
-        # an old end-to-end run: its own mandate, no agent name on the order
-        old_run = add_mandate(session, "week1-e2e")
-        old_open = add_order(session, old_run, OrderStatus.authorized, ReviewState.needs_review,
-                             later(), agent_name=None)
-        old_captured = add_order(session, old_run, OrderStatus.captured,
-                                 ReviewState.auto_approved, agent_name=None)
-        # an agent whose key isn't configured anymore
-        gone = add_mandate(session, "Sam")
-        gone_order = add_order(session, gone, OrderStatus.captured, ReviewState.auto_approved,
-                               agent_name="Retired bot")
-        # a real agent's order stays, and so does the demo page's
-        real = add_mandate(session, "Maya")
-        real_order = add_order(session, real, OrderStatus.captured, ReviewState.auto_approved)
-        demo_order = add_order(session, real, OrderStatus.captured, ReviewState.auto_approved,
-                               agent_name=demo.DEMO_AGENT_NAME)
+        mandate = Mandate(buyer_label="x", raw_request="x", rules={})
+        session.add(mandate)
+        session.flush()
+        # three human fast approvals, then three newer seed ones. the seed's would end the streak
+        # if they counted, since they have no time
+        for index in range(3):
+            order = add_order(session, mandate, OrderStatus.captured, ReviewState.approved)
+            session.add(Approval(order_id=order.id, action=ApprovalAction.approve,
+                                 opened_at=ago(minutes=10 - index),
+                                 decided_at=ago(minutes=10 - index), decision_ms=400))
+        for index in range(3):
+            order = add_order(session, mandate, OrderStatus.captured, ReviewState.approved)
+            session.add(Approval(order_id=order.id, action=ApprovalAction.approve,
+                                 decided_by=rubber_stamp.SEED_DECIDER,
+                                 decided_at=ago(minutes=1 - index / 10)))
         session.commit()
 
-    response = reset(client, dashboard_headers)
-
-    assert response.status_code == 200
-    body = response.json()
-    # the open stray hold was voided at PayPal first, so no money is left held and forgotten
-    assert body["voided_order_ids"] == [old_open]
-    assert body["deleted_orders"] == 3
-    assert body["deleted_mandates"] == 2
-    with sessions() as session:
-        assert session.get(Order, old_open) is None
-        assert session.get(Order, old_captured) is None
-        assert session.get(Order, gone_order) is None
-        assert session.get(Order, real_order) is not None
-        assert session.get(Order, demo_order) is not None
-        assert session.get(Mandate, real) is not None
+        recent = rubber_stamp.load_recent_decisions(session)
+        assert len(recent) == 3
+        for approval in recent:
+            assert approval.decided_by is None
+        assert rubber_stamp.get_fast_streak(recent) == 3
 
 
-def test_a_stray_orders_mandate_stays_while_a_kept_order_uses_it(
-    client, sessions, dashboard_headers
-):
-    with sessions() as session:
-        shared = add_mandate(session, "Sam")
-        stray = add_order(session, shared, OrderStatus.captured, ReviewState.auto_approved,
-                          agent_name=None)
-        kept = add_order(session, shared, OrderStatus.captured, ReviewState.auto_approved)
-        session.commit()
+# ---- the script ----
 
-    reset(client, dashboard_headers)
 
-    with sessions() as session:
-        assert session.get(Order, stray) is None
-        assert session.get(Order, kept) is not None
-        assert session.get(Mandate, shared) is not None
+def test_script_resets_and_counts(client, messy, capsys):
+    api = seed_demo.CheckApi(client, "", MERCHANT_KEY)
+
+    def wait_for_thread(seconds):
+        demo.reset_job.thread.join(timeout=30)
+
+    status = seed_demo.run_reset(api, sleep=wait_for_thread)
+    assert status["state"] == "done"
+    seed_demo.print_seed_orders(status)
+    counts = seed_demo.count_orders(api.call("GET", "/orders?limit=200"))
+    seed_demo.print_counts(counts, api.call("GET", "/stats"))
+    printed = capsys.readouterr().out
+    assert "sneaky: tote at the wrong store" in printed
+    assert "WRONG" not in printed
+    assert "Orders 11: captured 10 (auto 8, approved 2), held 3, voided 1" in printed
+    assert "Errand Runner: 5 orders, 4 captured, 2 held, 1 voided" in printed
+    assert "Rubber-stamp watch: 0 of 3, sharp mode off" in printed

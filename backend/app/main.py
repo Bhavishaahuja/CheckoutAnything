@@ -20,7 +20,8 @@
 #                                   needs the login
 #   GET  /disputes, POST /disputes/sync, GET /disputes/{id}/evidence,
 #   POST /disputes/{id}/redraft, POST /disputes/{id}/submit-evidence   (Defend)
-#   POST /demo/reset            wipe demo data and reconnect the 3 demo stores
+#   POST /demo/reset            reset Check's demo orders, wipe ours, reconnect Fernwood and
+#                               Hollowbrook (Quill & Pipkin is left to connect live)
 
 import json
 import logging
@@ -38,7 +39,13 @@ from sqlalchemy.orm import Session
 from backend.app import check_client, connect, models, review, shop
 from backend.app.agent import BUYER_LABEL, ShoppingAgent
 from backend.app.check_client import CheckError
-from backend.app.config import DEMO_STORE_SLUGS, allowed_fetch_hosts, cors_origins, get_settings
+from backend.app.config import (
+    DEMO_STORE_SLUGS,
+    RESET_STORE_SLUGS,
+    allowed_fetch_hosts,
+    cors_origins,
+    get_settings,
+)
 from backend.app.db import create_tables, get_session, new_session
 from backend.app.demo import load_fixture
 from backend.app.events import bus, sse_format
@@ -208,9 +215,9 @@ def create_app(settings=None, paypal=None, ai_factory=None, fetch=None, agent_cl
                 return store
         return None
 
-    def demo_store_urls():
+    def demo_store_urls(slugs=DEMO_STORE_SLUGS):
         base = settings.demo_stores_base_url.rstrip("/")
-        return [base + "/" + slug + "/" for slug in DEMO_STORE_SLUGS]
+        return [base + "/" + slug + "/" for slug in slugs]
 
     @app.get("/health")
     def health():
@@ -609,14 +616,28 @@ def create_app(settings=None, paypal=None, ai_factory=None, fetch=None, agent_cl
             )
         mode = (body.mode if body else None) or settings.demo_mode
 
+        # Check first: it's the one that can say no (someone is deciding an order right now, or
+        # it was just reset), and then nothing here should be wiped either. it reseeds its orders
+        # in the background while the stores connect here
+        check_reset = None
+        if check is not None and check.can_read:
+            try:
+                check_reset = check.reset_demo()
+            except CheckError as error:
+                if error.status_code in (409, 429, 503):
+                    raise HTTPException(
+                        status_code=error.status_code, detail="Check: " + str(error)
+                    ) from error
+                raise check_failure(error) from error
+
         shop.wipe_everything(session)
         bus.clear()
 
         started = []
-        for url in demo_store_urls():
+        for url in demo_store_urls(RESET_STORE_SLUGS):
             store = begin_connect(session, url, mode)
             started.append({"store_id": store.id, "url": url})
-        return {"mode": mode, "stores": started}
+        return {"mode": mode, "stores": started, "check_reset": check_reset}
 
     return app
 

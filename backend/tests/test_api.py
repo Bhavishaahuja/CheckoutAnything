@@ -326,7 +326,7 @@ def test_replay_without_a_fixture_fails_and_never_fetches(world):
         assert world.fetched == []
 
 
-def test_demo_reset_wipes_and_reconnects_the_three_stores(world):
+def test_demo_reset_wipes_and_reconnects_fernwood_and_hollowbrook(world):
     with TestClient(world.app) as client:
         store_id, _store = connect_store(client)
         client.post("/stores/" + str(store_id) + "/orders", json={"item_id": "seeded-rye"})
@@ -334,15 +334,15 @@ def test_demo_reset_wipes_and_reconnects_the_three_stores(world):
         response = client.post("/demo/reset", json={})
         assert response.status_code == 202
         started = response.json()["stores"]
-        assert len(started) == 3
+        # Quill & Pipkin is left out, it gets connected live on camera
+        assert len(started) == 2
         for one in started:
             wait_until_done(client, one["store_id"])
         wait_for_runs()
 
         stores = client.get("/stores").json()["stores"]
         names = [store["merchant_name"] for store in stores]
-        assert names == ["Fernwood & Thistle Goods", "Quill & Pipkin Studio",
-                         "Hollowbrook Bakery"]
+        assert names == ["Fernwood & Thistle Goods", "Hollowbrook Bakery"]
         for store in stores:
             assert store["status"] == "live"
         assert client.get("/orders").json()["orders"] == []

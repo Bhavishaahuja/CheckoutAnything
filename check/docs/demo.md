@@ -7,15 +7,22 @@ All commands are Windows cmd, run from the repo root.
 
 ## Before you record
 
-1. **Reseed the demo orders** so the dashboard isn't empty. Point the script at Render first:
+1. **Reset the demo** so it starts from the same place every take. Either press **Reset demo** in
+   the Checkout Anything app (it resets Check too and reconnects Fernwood and Hollowbrook), or
+   **Reset demo** on the Check dashboard (orders only), or from cmd with the merchant key:
 
    ```
    set LEASH_API_URL=https://leash-api-q3rw.onrender.com
-   .venv\Scripts\python.exe backend\scripts\seed_demo.py
+   .venv\Scripts\python.exe backend\scripts\seed_demo.py --reset
    ```
 
-   Pass: the last line is `11 of 11 as expected`. A reset first (`--reset`) voids the open seeded
-   holds and deletes the seeded rows. It doesn't touch the `week1-e2e` orders.
+   It voids every open hold, deletes every order except the protected ones (the dispute's order,
+   see `DEMO_PROTECTED_PAYPAL_ORDER_IDS`, and any order with a synced dispute), then places 10 real
+   sandbox orders as "Checkout Anything" and "Errand Runner": 7 auto-captured, 2 held and approved
+   by "demo seed", 1 held and rejected. Nothing is left waiting on a human, and the rubber-stamp
+   watch reads 0 of 3. It takes about a minute or two. Run the script without `--reset` to print
+   the counts. If you opened a new dispute at PayPal, run `POST /disputes/sync` (Disputes page,
+   Sync) **before** resetting, so its order is protected.
 2. **Open one review link in incognito on a real phone.** The confirm page should load with no
    login. This was never checked in a private tab.
 3. **The demo password stays off the login screen.** Judges get it in Devpost's testing notes.

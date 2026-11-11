@@ -252,6 +252,8 @@ class FakeCheck:
         )
         self.fail_mandate = None
         self.fail_order = None
+        self.resets = 0
+        self.fail_reset = None
         self.held_total = None
         self.stats = {
             "total_orders": 7, "auto_captured": 3, "needs_review": 1, "approved": 2,
@@ -259,6 +261,13 @@ class FakeCheck:
             "rubber_stamp_active": True, "fast_threshold_ms": 2000,
             "recent_decision_ms": [900, 1200, 1500],
         }
+
+    def reset_demo(self):
+        # Check's Reset demo. fail_reset is a CheckError to raise instead, like a 409
+        self.resets += 1
+        if self.fail_reset is not None:
+            raise self.fail_reset
+        return {"state": "running", "step": "Starting"}
 
     def create_mandate(self, request_text, merchant, buyer_label):
         if self.fail_mandate is not None:
