@@ -10,6 +10,7 @@ import { Confetti, type ConfettiRef } from "@/components/magicui/confetti"
 import { Button } from "@/components/ui/button"
 import { api } from "@/lib/api"
 import { money } from "@/lib/format"
+import { liveCount as storeLiveCount, liveLabel as storeLiveLabel } from "@/lib/storeCounts"
 import type { AgentReply, AgentStep, ChatMessage, Store } from "@/lib/types"
 import { cn } from "@/lib/utils"
 
@@ -25,16 +26,12 @@ interface Turn {
 
 const STEP_REVEAL_MS = 650
 
-// how many of a store's items an agent can buy. an older API sends no live count, then verified
 function liveCount(store: Store): number {
-  return store.counts.live ?? store.counts.verified
+  return storeLiveCount(store.counts)
 }
 
-// "4 live", or "1 of 4 live" while some verified items wait for the merchant
 function liveLabel(store: Store): string {
-  const live = liveCount(store)
-  if (live === store.counts.verified) return live + " live"
-  return live + " of " + store.counts.verified + " live"
+  return storeLiveLabel(store.counts)
 }
 
 // check_payment's status, in words
@@ -171,6 +168,7 @@ export function AgentPage({
   claudeReady,
   checkReady,
   onOrdersChanged,
+  onStoresChanged,
   onGoToConnect,
 }: {
   stores: Store[]
@@ -178,6 +176,8 @@ export function AgentPage({
   // Check is on (CHECK_URL), which the sloppy demo toggle needs
   checkReady: boolean
   onOrdersChanged: () => void
+  // refetches the store list, so the sidebar's live counts match what list_stores just said
+  onStoresChanged: () => void
   onGoToConnect: () => void
 }) {
   const [turns, setTurns] = useState<Turn[]>([])
@@ -245,6 +245,9 @@ export function AgentPage({
       const message = problem instanceof Error ? problem.message : "The agent call failed"
       setTurns((current) => current.map((turn) => (turn.id === id ? { ...turn, pending: false, error: message } : turn)))
     }
+    // after every turn: a buy can take the last of an item's stock, and the merchant may have
+    // published something while the agent was working
+    onStoresChanged()
   }
 
   const onSubmit = (event: FormEvent) => {

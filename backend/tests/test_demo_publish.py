@@ -92,3 +92,47 @@ def test_the_agent_is_told_how_many_items_it_can_buy(world, publish_bakery):  # 
             session.close()
         assert stores[0]["live_items"] == 4
         assert "verified_items" not in stores[0]
+
+
+def test_the_sidebar_count_and_list_stores_agree_after_every_publish(world):  # noqa: F811
+    # the Agent page sidebar reads GET /stores, the agent reads list_stores. both have to say the
+    # same thing right after a publish, and the sidebar refetches after one to show it
+    from backend.app.agent import ShoppingAgent
+    from backend.app.db import new_session
+
+    def agent_count():
+        session = new_session()
+        try:
+            agent = ShoppingAgent(session, world.paypal, world.settings, client=world.agent_claude)
+            return agent.tool_list_stores()[0]["live_items"]
+        finally:
+            session.close()
+
+    def sidebar_count():
+        store = client.get("/stores").json()["stores"][0]
+        return store["counts"]["live"], store["counts"]["verified"]
+
+    with TestClient(world.app) as client:
+        store_id, _store = connect_store(client, BAKERY_URL)
+        path = "/stores/" + str(store_id) + "/publish"
+        live, verified = sidebar_count()
+        assert live == agent_count()
+        assert live < verified
+
+        # confirm and publish everything that's verified, one at a time
+        payload = client.get("/stores/" + str(store_id) + "/review").json()
+        for item in payload["items"]:
+            if item["published"] or item["blocked_reason"] and "sold out" in item["blocked_reason"]:
+                continue
+            fields = [flag["field"] for flag in item["flags"] if not flag["resolved"]]
+            if fields:
+                client.patch("/stores/" + str(store_id) + "/items/" + item["item_id"],
+                             json={"resolve": fields})
+            response = client.post(path, json={"item_ids": [item["item_id"]]})
+            if response.status_code != 200:
+                continue
+            live, verified = sidebar_count()
+            assert live == agent_count()
+
+        live, verified = sidebar_count()
+        assert live == verified == agent_count()
