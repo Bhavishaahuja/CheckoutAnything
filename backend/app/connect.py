@@ -23,6 +23,15 @@ logger = logging.getLogger(__name__)
 # a public demo shouldn't let one visitor start fifty runs at once
 MAX_RUNS_AT_ONCE = 4
 
+# what the merchant sees when Claude's spec fails validation. the validation message itself
+# ("items: List should have at least 1 item after validation, not 0") goes in the Live steps log
+NO_PRODUCTS_MESSAGE = (
+    "We couldn't find any products with prices on this page, so nothing was published."
+)
+UNREADABLE_SPEC_MESSAGE = (
+    "We couldn't read the products on this page clearly enough, so nothing was published."
+)
+
 running = set()
 running_lock = threading.Lock()
 
@@ -131,7 +140,13 @@ def run_connect(store_id, url, mode, settings, paypal, session_factory,
         emit("extract.started", "Claude is reading the page and writing the store spec.")
         try:
             spec = ai.extract_spec(page)
-        except (SpecError, ExtractionError) as error:
+        except SpecError as error:
+            # a validation message is for us, not the merchant. the real reason stays in the log
+            emit("extract.rejected", "Claude's spec was rejected: " + str(error) + ".")
+            fail(friendly_spec_error(error))
+            return
+        except ExtractionError as error:
+            # these are already plain sentences, like "Claude declined to read this page"
             fail("Claude's spec was rejected: " + str(error) + ".")
             return
         except Exception as error:  # noqa: BLE001
@@ -192,6 +207,17 @@ def run_connect(store_id, url, mode, settings, paypal, session_factory,
     finally:
         session.close()
         release_run(store_id)
+
+
+def friendly_spec_error(error):
+    # parse_spec keeps pydantic's error as the cause, so this looks at the real problem and not
+    # at its wording. a page with nothing for sale (example.com) comes back with no items
+    cause = error.__cause__
+    if hasattr(cause, "errors"):
+        for problem in cause.errors():
+            if tuple(problem["loc"]) == ("items",) and problem["type"] == "too_short":
+                return NO_PRODUCTS_MESSAGE
+    return UNREADABLE_SPEC_MESSAGE
 
 
 def start_connect(store_id, url, mode, settings, paypal, session_factory,

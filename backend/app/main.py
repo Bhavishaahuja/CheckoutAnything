@@ -305,7 +305,14 @@ def create_app(settings=None, paypal=None, ai_factory=None, fetch=None, agent_cl
 
     @app.get("/stores")
     def stores(session: DbSession):
-        return {"stores": shop.list_stores(session)}
+        # a store that failed without verifying a single item (example.com, a typo) gets no chip.
+        # it's still there for its own run view, and Reset demo deletes it with everything else
+        listed = []
+        for store in shop.list_stores(session):
+            if store["status"] == models.FAILED and store["counts"]["verified"] == 0:
+                continue
+            listed.append(store)
+        return {"stores": listed}
 
     @app.get("/stores/{store_id}/catalog")
     def catalog(store_id: int, session: DbSession):

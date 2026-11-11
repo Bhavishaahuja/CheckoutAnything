@@ -6,7 +6,7 @@ import { PageHead, StateCard } from '../components/pageBits'
 import { ApiError, listMandates, placeDemoOrder } from '../api'
 import { ReviewLinkBox } from '../components/ReviewLinkBox'
 import { StatusChip, type DisplayStatus } from '../components/StatusChip'
-import { SCENARIOS, scenarioBlocker } from '../lib/demoScenarios'
+import { SCENARIOS, scenarioBlocker, scenarioDescription } from '../lib/demoScenarios'
 import { SEED_LABEL_PREFIX, describeItem, formatMoney, formatTime } from '../lib/format'
 import { useAsync } from '../lib/useAsync'
 import type { DemoScenario, MandateSummary, PlacedOrder } from '../types'
@@ -138,7 +138,7 @@ function ScenarioPicker({ mandates }: ScenarioPickerProps) {
               <span className="text-[15px] font-semibold tracking-tight">{scenario.title}</span>
               <span className="flex items-center gap-1.5 text-[13px] text-muted-foreground">
                 {placing === scenario.id && <LoaderCircle className="spin-slow size-3.5" aria-hidden />}
-                {placing === scenario.id ? 'Placing...' : (blocker ?? scenario.description)}
+                {placing === scenario.id ? 'Placing...' : (blocker ?? scenarioDescription(mandate, scenario))}
               </span>
             </button>
           )

@@ -327,7 +327,7 @@ export function ConnectPage({
                   <span className="text-muted-foreground">
                     {liveCount === run.counts.verified
                       ? "A shopping agent can buy its " + liveCount + " verified " + (liveCount === 1 ? "item" : "items") + " through PayPal right now."
-                      : liveCount + " of its " + run.counts.verified + " verified items are live on PayPal. The rest wait for you to confirm the amber cells and publish."}
+                      : liveCount + " of its " + run.counts.verified + " verified " + (run.counts.verified === 1 ? "item" : "items") + " " + (liveCount === 1 ? "is" : "are") + " live on PayPal. " + (run.counts.verified - liveCount === 1 ? "The other one waits" : "The rest wait") + " for you to confirm the amber cells and publish."}
                   </span>
                 </span>
                 <button type="button" onClick={onGoToAgent} className="flex items-center gap-1 font-medium text-primary hover:underline">
