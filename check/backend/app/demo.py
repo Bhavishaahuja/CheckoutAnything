@@ -5,6 +5,8 @@
 #   then deletes the rows. The dashboard can call it, and the script's --reset calls it too, so
 #   both go through reset_seeded_demo. DELETE /demo/seeded is the delete half on its own.
 #   Seeded rows are the ones whose mandate has a buyer_label starting with SEED_LABEL_PREFIX.
+#   Stray orders go too: ones no known agent placed, like the old end-to-end test runs that show
+#   up as "Unknown agent" on the dashboard. See stray_order_ids.
 
 import enum
 from dataclasses import dataclass
@@ -17,7 +19,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from backend.app import catalog
 from backend.app.auth import require_merchant
-from backend.app.config import STORE_NAME, get_settings
+from backend.app.config import STORE_NAME, agent_keys, get_settings
 from backend.app.intent.rules import normalize_merchant
 from backend.app.models import (
     Approval,
@@ -303,9 +305,60 @@ def seeded_mandate_ids(session):
     return list(session.scalars(query).all())
 
 
+def known_agent_names():
+    # every agent Check can credit an order to: each configured agent key's name, and the
+    # /place-order page
+    names = {DEMO_AGENT_NAME}
+    for name in agent_keys(get_settings()).values():
+        names.add(name)
+    return names
+
+
+def stray_order_ids(session):
+    # orders that aren't from the seed and weren't placed by any agent Check knows: no agent name
+    # at all (old test runs from before orders were credited to an agent), or a name no key has
+    seeded_ids = set(seeded_mandate_ids(session))
+    known_names = known_agent_names()
+    stray_ids = []
+    for order in session.scalars(select(Order)).all():
+        if order.mandate_id in seeded_ids:
+            continue
+        if order.agent_name is None or order.agent_name not in known_names:
+            stray_ids.append(order.id)
+    return stray_ids
+
+
+def orders_to_wipe(session):
+    # (order ids, mandate ids) a reset deletes: everything on a seeded mandate, plus the stray
+    # orders. a stray order's mandate only goes when no order that stays still points at it
+    seeded_ids = seeded_mandate_ids(session)
+    seeded_orders = select(Order.id).where(Order.mandate_id.in_(seeded_ids))
+    order_ids = list(session.scalars(seeded_orders).all())
+    stray_ids = stray_order_ids(session)
+    for order_id in stray_ids:
+        if order_id not in order_ids:
+            order_ids.append(order_id)
+
+    mandate_ids = list(seeded_ids)
+    stray_mandate_ids = set()
+    for order in session.scalars(select(Order).where(Order.id.in_(stray_ids))).all():
+        stray_mandate_ids.add(order.mandate_id)
+    for mandate_id in stray_mandate_ids:
+        if mandate_id in mandate_ids:
+            continue
+        others = session.scalars(
+            select(Order.id).where(Order.mandate_id == mandate_id, Order.id.not_in(order_ids))
+        ).all()
+        if not others:
+            mandate_ids.append(mandate_id)
+    return order_ids, mandate_ids
+
+
 def open_seeded_hold_ids(session):
-    # seeded orders with money on hold at PayPal right now. an expired hold has nothing to void
-    query = select(Order).where(Order.mandate_id.in_(seeded_mandate_ids(session)))
+    # orders a reset wipes that have money on hold at PayPal right now. an expired hold has
+    # nothing to void
+    order_ids, _ = orders_to_wipe(session)
+    query = select(Order).where(Order.id.in_(order_ids))
     open_ids = []
     for order in session.scalars(query).all():
         if order.status == OrderStatus.authorized and not hold_has_expired(order):
@@ -359,9 +412,9 @@ def void_seeded_hold(session, paypal, order_id):
 def delete_seeded_rows(session):
     # refuses while any seeded hold is still open, so deleting the row can't leave an authorization
     # at PayPal that nothing knows about. captures stay at PayPal, this only forgets them here.
-    # returns (orders, mandates, disputes) deleted
-    mandate_ids = seeded_mandate_ids(session)
-    order_query = select(Order).where(Order.mandate_id.in_(mandate_ids)).with_for_update()
+    # returns (orders, mandates, disputes) deleted. stray orders go with the seeded ones
+    wipe_order_ids, mandate_ids = orders_to_wipe(session)
+    order_query = select(Order).where(Order.id.in_(wipe_order_ids)).with_for_update()
     orders = session.scalars(order_query).all()
 
     open_order_ids = []

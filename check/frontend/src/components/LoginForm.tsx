@@ -42,7 +42,7 @@ export function LoginForm({ onLoggedIn, expired = false }: LoginFormProps) {
         <p className="text-sm text-pretty text-muted-foreground">
           {expired
             ? 'Your session ran out. Log in again to keep going.'
-            : 'Fernwood Supply Co staff only. Agent orders and review links live behind this.'}
+            : 'Merchant staff only. Agent orders and review links live behind this.'}
         </p>
       </div>
       <Card className="p-4">

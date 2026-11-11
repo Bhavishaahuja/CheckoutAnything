@@ -72,7 +72,7 @@ def check_anthropic():
         reply = client.messages.create(
             model="claude-sonnet-5-5",
             max_tokens=50,
-            messages=[{"role": "user", "content": "Reply with exactly: Leash is alive"}],
+            messages=[{"role": "user", "content": "Reply with exactly: Check is alive"}],
         )
     except Exception as err:
         print("  Failed:", err)

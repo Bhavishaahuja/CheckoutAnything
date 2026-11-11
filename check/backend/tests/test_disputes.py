@@ -413,6 +413,23 @@ def test_an_order_with_no_store_is_still_the_demo_stores(client, db_sessions, pa
         "Checkout Anything proof of intent: Fernwood Supply Co"
 
 
+def test_an_order_with_no_store_takes_its_mandates_store(client, db_sessions, paypal):
+    # an order from Checkout Anything that came in before its store was passed along: the mandate
+    # still names the store the buyer picked, so the evidence uses that and not the demo store
+    with db_sessions() as session:
+        order = session.get(Order, 1)
+        order.merchant = None
+        order.mandate.merchant = "Fernwood & Thistle Goods"
+        session.commit()
+    dispute_id = add_dispute_row(db_sessions)
+
+    packet = client.get("/disputes/" + str(dispute_id) + "/evidence").json()["packet"]
+
+    assert packet["order"]["store"] == "Fernwood & Thistle Goods"
+    assert disputes.packet_lines(packet)[0] == \
+        "Checkout Anything proof of intent: Fernwood & Thistle Goods"
+
+
 def test_the_summary_prompt_takes_the_merchant_from_the_packet():
     # no store is written into the prompt. Claude is pointed at the order's own store instead
     assert "Fernwood" not in dispute_prompt.SYSTEM_PROMPT
@@ -525,7 +542,10 @@ def test_the_prompt_asks_for_plain_english_not_field_names(client, db_sessions, 
     client.get("/disputes/" + str(dispute_id) + "/evidence")
     system = claude.requests[0]["system"]
     assert "never copy them into the notes" in system
-    assert "Checkout Anything was in its normal review mode" in system
+    assert "Check was in its normal review mode" in system
+    # the checker is called Check, never by the old codename
+    assert 'Always call it "Check"' in system
+    assert "Leash" not in system
     assert 'true is "up to $90", false is "under $90"' in system
     assert 'Never add "(inclusive)", "(not inclusive)"' in system
 

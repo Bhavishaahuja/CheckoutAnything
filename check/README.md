@@ -11,8 +11,8 @@ AI shopping agents are starting to place real orders, and merchants have no way 
 ## Local setup (Windows PowerShell)
 
 ```powershell
-git clone https://github.com/Bhavishaahuja/leash.git
-cd leash
+git clone https://github.com/Bhavishaahuja/CheckoutAnything.git
+cd CheckoutAnything\check
 
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1

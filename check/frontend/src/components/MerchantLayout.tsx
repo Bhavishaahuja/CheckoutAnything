@@ -57,7 +57,7 @@ export function MerchantLayout() {
         links={headerLinks}
         tools={
           <>
-            <span className="ca-header__note">Fernwood Supply Co</span>
+            <span className="ca-header__note">Check dashboard</span>
             {loggedIn && (
               <>
                 <NavLink to="/place-order" className="ca-header__tool">

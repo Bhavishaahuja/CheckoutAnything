@@ -14,6 +14,7 @@ from sqlalchemy.pool import StaticPool
 
 from backend.app import demo, orders
 from backend.app.auth import issue_session_token
+from backend.app.config import DEFAULT_AGENT_NAME
 from backend.app.db import Base, get_session
 from backend.app.demo import RESET_MAX_TRIES, SEED_LABEL_PREFIX, reset_limiter
 from backend.app.models import (
@@ -96,9 +97,13 @@ def add_mandate(session, label):
     return mandate.id
 
 
-def add_order(session, mandate_id, status, review_state, expires_at=None, claimed_at=None):
+def add_order(session, mandate_id, status, review_state, expires_at=None, claimed_at=None,
+              agent_name=DEFAULT_AGENT_NAME):
+    # a real agent order always carries its agent's name. the tests' AGENT_API_KEY is the
+    # default agent, so that's a known one
     order = Order(
         mandate_id=mandate_id, items=[], total=10, currency="USD", status=status,
+        agent_name=agent_name,
         review_state=review_state, authorization_id="AUTH-" + str(session.query(Order).count()),
         authorization_expires_at=expires_at, payment_claimed_at=claimed_at,
     )
@@ -360,3 +365,60 @@ def test_delete_seeded_still_refuses_while_holds_are_open(client, seeded):
     assert sorted(response.json()["detail"]["open_order_ids"]) == [
         seeded["open_1"], seeded["open_2"],
     ]
+
+
+# ---- stray orders: not from the seed, not from any agent Check knows ----
+
+
+def test_orders_from_no_known_agent_are_wiped_too(client, sessions, paypal, dashboard_headers):
+    with sessions() as session:
+        # an old end-to-end run: its own mandate, no agent name on the order
+        old_run = add_mandate(session, "week1-e2e")
+        old_open = add_order(session, old_run, OrderStatus.authorized, ReviewState.needs_review,
+                             later(), agent_name=None)
+        old_captured = add_order(session, old_run, OrderStatus.captured,
+                                 ReviewState.auto_approved, agent_name=None)
+        # an agent whose key isn't configured anymore
+        gone = add_mandate(session, "Sam")
+        gone_order = add_order(session, gone, OrderStatus.captured, ReviewState.auto_approved,
+                               agent_name="Retired bot")
+        # a real agent's order stays, and so does the demo page's
+        real = add_mandate(session, "Maya")
+        real_order = add_order(session, real, OrderStatus.captured, ReviewState.auto_approved)
+        demo_order = add_order(session, real, OrderStatus.captured, ReviewState.auto_approved,
+                               agent_name=demo.DEMO_AGENT_NAME)
+        session.commit()
+
+    response = reset(client, dashboard_headers)
+
+    assert response.status_code == 200
+    body = response.json()
+    # the open stray hold was voided at PayPal first, so no money is left held and forgotten
+    assert body["voided_order_ids"] == [old_open]
+    assert body["deleted_orders"] == 3
+    assert body["deleted_mandates"] == 2
+    with sessions() as session:
+        assert session.get(Order, old_open) is None
+        assert session.get(Order, old_captured) is None
+        assert session.get(Order, gone_order) is None
+        assert session.get(Order, real_order) is not None
+        assert session.get(Order, demo_order) is not None
+        assert session.get(Mandate, real) is not None
+
+
+def test_a_stray_orders_mandate_stays_while_a_kept_order_uses_it(
+    client, sessions, dashboard_headers
+):
+    with sessions() as session:
+        shared = add_mandate(session, "Sam")
+        stray = add_order(session, shared, OrderStatus.captured, ReviewState.auto_approved,
+                          agent_name=None)
+        kept = add_order(session, shared, OrderStatus.captured, ReviewState.auto_approved)
+        session.commit()
+
+    reset(client, dashboard_headers)
+
+    with sessions() as session:
+        assert session.get(Order, stray) is None
+        assert session.get(Order, kept) is not None
+        assert session.get(Mandate, shared) is not None
