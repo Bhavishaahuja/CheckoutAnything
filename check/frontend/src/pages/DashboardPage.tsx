@@ -9,7 +9,6 @@ import {
   RowSelectionModule,
   RowStyleModule,
   ValidationModule,
-  themeQuartz,
   type ColDef,
   type IRowNode,
   type RowClassParams,
@@ -19,7 +18,11 @@ import {
 } from 'ag-grid-community'
 import { LicenseManager, RowGroupingModule } from 'ag-grid-enterprise'
 import { AgGridReact } from 'ag-grid-react'
+import { LoaderCircle, Search } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Card, ErrorNote, Switch } from '@/components/bits'
+import { calmTheme } from '@/lib/gridTheme'
+import { cn } from '@/lib/utils'
 import { DEMO_RESET_EVENT, getStats, listOrders } from '../api'
 import { OrderPanel } from '../components/OrderPanel'
 import { StatsTiles } from '../components/StatsTiles'
@@ -71,37 +74,10 @@ if (agGridLicenseKey) {
 // what a group row's name is when an old order has no agent on it
 const UNKNOWN_AGENT = 'Unknown agent'
 
-// Quartz, reading the tokens in index.css so the grid restyles with the rest of the app
-const gridTheme = themeQuartz.withParams({
-  fontFamily: 'inherit',
-  fontSize: 14,
-  foregroundColor: 'var(--ink)',
-  backgroundColor: 'var(--surface)',
-  headerBackgroundColor: 'var(--surface)',
-  headerTextColor: 'var(--ink-muted)',
-  headerFontFamily: 'var(--mono)',
-  headerFontWeight: 500,
-  headerFontSize: 11.5,
-  // a 1px ink rule under the headers, per the spec
-  headerRowBorder: { color: 'var(--ink)' },
-  borderColor: 'var(--border)',
-  // hover is drawn as an outline in index.css, not a fill
-  rowHoverColor: 'transparent',
-  selectedRowBackgroundColor: 'var(--primary-soft)',
-  // the wash on a cell whose value just changed (enableCellChangeFlash)
-  valueChangeValueHighlightBackgroundColor: 'var(--highlight)',
-  accentColor: 'var(--focus)',
-  wrapperBorder: false,
-  wrapperBorderRadius: 0,
-  rowBorder: { color: 'var(--divider)' },
-  columnBorder: false,
-  spacing: 7,
-})
-
 // the row's color says where the money is, the same four meanings as the Checkout Anything
 // Orders grid: amber on hold for a human, green captured, gray voided (a fixed order is a voided
 // one). everything here went through Check, so there is no "paid directly" row to leave plain.
-// the classes are in index.css
+// the classes are in legacy.css, with the same mixes as the Checkout Anything app's
 const ROW_CLASS_RULES: RowClassRules<Order> = {
   'row--needs-review': (params) => params.data?.review_state === 'needs_review',
   'row--held': (params) => params.data?.status === 'authorized' && params.data?.review_state === 'needs_review',
@@ -186,7 +162,7 @@ export function DashboardPage() {
       sort: 'desc',
       hide: narrow,
       width: 150,
-      cellClass: 'muted mono',
+      cellClass: 'muted tabular-nums',
     }
     const orderColumn: ColDef<Order> = {
       headerName: 'Order',
@@ -424,72 +400,82 @@ export function DashboardPage() {
   }
 
   return (
-    <section>
-      <div className="page__head">
-        <div>
-          <h1 className="page__title">Agent orders</h1>
-          <p className="page__lede">
-            Payments are held until the order matches what the shopper asked for.
-          </p>
-        </div>
+    <section className="flex flex-col gap-4">
+      <div>
+        <h1 className="text-2xl font-semibold tracking-tight">Agent orders</h1>
+        <p className="mt-1 text-sm text-muted-foreground">
+          Payments are held until the order matches what the shopper asked for.
+        </p>
       </div>
 
       <StatsTiles stats={stats} />
 
-      <div className="card">
-        {orders.status === 'loading' && <p className="state">Loading orders...</p>}
+      <Card className="overflow-hidden">
+        {orders.status === 'loading' && (
+          <p className="flex items-center justify-center gap-2 py-16 text-sm text-muted-foreground" role="status">
+            <LoaderCircle className="spin-slow size-4" aria-hidden /> Loading orders...
+          </p>
+        )}
         {orders.status === 'error' && (
-          <p className="state state--error">Couldn't load orders: {orders.error.message}</p>
+          <div className="p-4">
+            <ErrorNote>Couldn't load orders: {orders.error.message}</ErrorNote>
+          </div>
         )}
         {orders.status === 'ready' && orders.data.length === 0 && (
-          <p className="state">No agent orders yet.</p>
+          <p className="py-16 text-center text-sm text-muted-foreground">No agent orders yet.</p>
         )}
         {orders.status === 'ready' && orders.data.length > 0 && (
           <>
-            <div className="grid-toolbar">
-              <div className="segmented" role="group" aria-label="Filter orders">
+            <div className="flex min-h-12 flex-wrap items-center gap-x-3 gap-y-2 border-b border-border px-4 py-2">
+              <div className="flex rounded-lg bg-muted p-0.5" role="group" aria-label="Filter orders">
                 {FILTERS.map((option) => (
                   <button
                     key={option.id}
                     type="button"
-                    className="segmented__button"
+                    className={cn(
+                      'flex h-7 items-center gap-1.5 rounded-md px-2.5 text-[13px] font-medium whitespace-nowrap transition-colors',
+                      filter === option.id
+                        ? 'bg-card text-foreground shadow-sm'
+                        : 'text-muted-foreground hover:text-foreground',
+                    )}
                     aria-pressed={filter === option.id}
                     onClick={() => setFilter(option.id)}
                   >
                     {option.label}
                     {option.id === 'needs_review' && needsReviewCount > 0 && (
-                      <span className="segmented__count">{needsReviewCount}</span>
+                      <span className="rounded-full bg-warn-soft px-1.5 text-[11px] leading-4 font-semibold text-warn tabular-nums">
+                        {needsReviewCount}
+                      </span>
                     )}
                   </button>
                 ))}
               </div>
-              <div className="grid-toolbar__end">
-                <button
-                  type="button"
-                  className="segmented__button segmented__button--solo"
-                  aria-pressed={groupByAgent}
-                  onClick={() => setGroupByAgent((value) => !value)}
-                >
-                  Group by agent
-                </button>
-                <span className={'live' + (stale ? ' live--stale' : '')} role="status">
-                  <span className="live__dot" aria-hidden="true" />
+              <div className="ml-auto flex flex-wrap items-center gap-x-3 gap-y-2">
+                <span className="flex items-center gap-1.5 text-xs text-muted-foreground" role="status">
+                  <span
+                    className={cn('size-1.5 rounded-full', stale ? 'bg-warn' : 'animate-pulse bg-ok')}
+                    aria-hidden="true"
+                  />
                   {stale ? 'Reconnecting...' : 'Live'}
                 </span>
-                <input
-                  type="search"
-                  className="search"
-                  placeholder="Search item, buyer or order #"
-                  aria-label="Search orders"
-                  value={search}
-                  onChange={(event) => setSearch(event.target.value)}
-                />
+                <Switch checked={groupByAgent} onChange={setGroupByAgent} label="Group by agent" />
+                <div className="flex h-8 items-center gap-1.5 rounded-lg border border-border px-2.5 focus-within:border-primary">
+                  <Search className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
+                  <input
+                    type="search"
+                    className="w-48 min-w-0 bg-transparent text-[13px] outline-none placeholder:text-muted-foreground/70"
+                    placeholder="Search item, buyer or order #"
+                    aria-label="Search orders"
+                    value={search}
+                    onChange={(event) => setSearch(event.target.value)}
+                  />
+                </div>
               </div>
             </div>
             <div className="grid-wrap">
               <AgGridReact<Order>
                 ref={gridRef}
-                theme={gridTheme}
+                theme={calmTheme}
                 rowData={orders.data}
                 columnDefs={columnDefs}
                 defaultColDef={defaultColDef}
@@ -518,12 +504,12 @@ export function DashboardPage() {
                     setSelectedId(event.data.id)
                   }
                 }}
-                overlayNoRowsTemplate='<span class="muted">No orders match this filter.</span>'
+                overlayNoRowsTemplate='<span style="color: var(--muted-foreground); font-size: 13px">No orders match this filter.</span>'
               />
             </div>
           </>
         )}
-      </div>
+      </Card>
 
       {selectedOrder && <OrderPanel order={selectedOrder} onClose={closePanel} onGoToOrder={goToOrder} />}
     </section>

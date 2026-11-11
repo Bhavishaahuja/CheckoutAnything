@@ -8,6 +8,7 @@
 @import "@fontsource-variable/geist";
 @import "@fontsource-variable/geist-mono";
 @import "./legacy.css";
+@import "./grid.css";
 
 @custom-variant dark (&:is(.dark *));
 

@@ -421,95 +421,6 @@ p {
   max-width: 100%;
 }
 
-.grid-wrap {
-  /* AG Grid needs a minimum width for all its columns, so it scrolls inside the card on phones */
-  min-width: 0;
-}
-
-.grid-wrap .ag-row {
-  cursor: pointer;
-}
-
-.grid-wrap .ag-header-cell-text {
-  text-transform: uppercase;
-  letter-spacing: 0.07em;
-}
-
-/* hover is a thin outline, not a fill, so held rows keep their color */
-.grid-wrap .ag-row-hover {
-  box-shadow:
-    inset 0 1px 0 var(--row-hover-line),
-    inset 0 -1px 0 var(--row-hover-line);
-}
-
-.grid-wrap .ag-cell {
-  display: flex;
-  align-items: center;
-}
-
-/* a thin left rule on rows that need a human, so they stand out without shouting */
-/* impeccable-disable-next-line side-tab -- status cue for held rows, intentional */
-.grid-wrap .row--needs-review .ag-cell:first-child {
-  box-shadow: inset 3px 0 0 var(--review);
-}
-
-/* a row wears the color of where its money is: amber on hold for a human, green captured, gray
-   voided. the same meanings as the Checkout Anything Orders grid, from this app's own tokens */
-.grid-wrap .ag-row.row--held {
-  background-color: var(--authorized-bg);
-}
-
-.grid-wrap .ag-row.row--captured {
-  background-color: var(--captured-bg);
-}
-
-.grid-wrap .ag-row.row--voided {
-  background-color: var(--voided-bg);
-  color: var(--voided-ink);
-}
-
-/* a row that just changed status flashes its new color, then fades back to its resting tint.
-   stronger than the tint, or the flash wouldn't show on a row that is already colored. FLASH_MS in
-   DashboardPage.tsx matches the animation length */
-.grid-wrap .row--flash {
-  animation: row-flash 2.4s ease-out;
-}
-
-.grid-wrap .row--flash-needs_review {
-  --flash-color: color-mix(in srgb, var(--authorized) 32%, var(--surface));
-}
-
-.grid-wrap .row--flash-authorized,
-.grid-wrap .row--flash-created {
-  --flash-color: color-mix(in srgb, var(--authorized) 32%, var(--surface));
-}
-
-.grid-wrap .row--flash-captured {
-  --flash-color: color-mix(in srgb, var(--captured) 32%, var(--surface));
-}
-
-.grid-wrap .row--flash-fixed,
-.grid-wrap .row--flash-voided {
-  --flash-color: color-mix(in srgb, var(--voided) 32%, var(--surface));
-}
-
-.grid-wrap .row--flash-failed {
-  --flash-color: color-mix(in srgb, var(--failed) 32%, var(--surface));
-}
-
-@keyframes row-flash {
-  0%,
-  40% {
-    background-color: var(--flash-color);
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .grid-wrap .row--flash {
-    animation-duration: 0.01s;
-  }
-}
-
 .grid-toolbar__end {
   display: flex;
   align-items: center;
@@ -577,7 +488,6 @@ p {
 }
 
 .held-rate__percent {
-  font-family: var(--mono);
   font-weight: 650;
   font-variant-numeric: tabular-nums;
 }
@@ -587,15 +497,9 @@ p {
   color: var(--ink-muted);
 }
 
-.grid-wrap .ag-row-group {
-  background: var(--surface-sunk);
-  font-weight: 600;
-}
-
 .num,
 .num-cell {
   text-align: right;
-  font-family: var(--mono);
   font-variant-numeric: tabular-nums;
 }
 
