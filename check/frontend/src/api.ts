@@ -2,7 +2,6 @@
 // before the backend is live: set VITE_USE_MOCKS=false in .env.local to hit the real API.
 
 import { scenarioBlocker } from './lib/demoScenarios'
-import { SEED_LABEL_PREFIX } from './lib/format'
 import { mockMandates, mockOrders, mockPlacedOrder } from './mocks'
 import type {
   AcceptFixResult,
@@ -17,7 +16,7 @@ import type {
   OrderDetail,
   PlacedOrder,
   ReviewLink,
-  ResetSummary,
+  ResetStatus,
   ReviewView,
   Stats,
 } from './types'
@@ -457,37 +456,69 @@ export async function getStats(): Promise<Stats> {
 // fired on window after a demo reset, so the dashboard refetches right away instead of on the next poll
 export const DEMO_RESET_EVENT = 'leash:demo-reset'
 
-// same rule as the backend: only seeded rows (buyer_label starts with seed-demo:) are touched
-function resetMockDemo(): ResetSummary {
+// the mock reset clears every order, the way the real one clears everything that isn't protected.
+// there's no seed to place without the API, so it ends with an empty grid
+function resetMockDemo(): ResetStatus {
   const voidedIds: number[] = []
   const deletedMandates = new Set<number>()
-  let deletedOrders = 0
-  for (let index = mockStore.length - 1; index >= 0; index -= 1) {
-    const order = mockStore[index]
-    if (!order.mandate.buyer_label.startsWith(SEED_LABEL_PREFIX)) {
-      continue
-    }
+  const deletedOrders = mockStore.length
+  for (const order of mockStore) {
     if (order.status === 'authorized') {
       voidedIds.push(order.id)
     }
     deletedMandates.add(order.mandate_id)
-    deletedOrders += 1
-    mockStore.splice(index, 1)
   }
+  mockStore.splice(0, mockStore.length)
+  const now = new Date().toISOString()
   return {
+    state: 'done',
+    step: null,
+    error: null,
+    started_at: now,
+    finished_at: now,
+    protected_order_ids: [],
     voided_holds: voidedIds.length,
     voided_order_ids: voidedIds,
     deleted_orders: deletedOrders,
     deleted_mandates: deletedMandates.size,
-    deleted_disputes: 0,
+    cleared_reviews: 0,
+    orders_total: 0,
+    orders_placed: 0,
+    orders: [],
   }
 }
 
-// voids open seeded holds at PayPal, then deletes the seeded rows. 429 if run more than 3 times a minute
-export async function resetDemo(): Promise<ResetSummary> {
-  const summary = USE_MOCKS ? await mockDelay(resetMockDemo()) : await request<ResetSummary>('/demo/reset', { method: 'POST' })
+// how often the dashboard asks how the reset is going
+const RESET_POLL_MS = 2000
+// it normally takes a minute or two. after this the strip stops waiting, the reset itself carries on
+const RESET_GIVE_UP_MS = 10 * 60 * 1000
+
+// starts Reset demo on the API (void open holds, clear the demo orders, place the seed again) and
+// waits for it, calling onProgress with each status. 409 while a human is mid-decision, 429 if
+// pressed more than 3 times a minute
+export async function resetDemo(onProgress: (status: ResetStatus) => void): Promise<ResetStatus> {
+  if (USE_MOCKS) {
+    const summary = await mockDelay(resetMockDemo())
+    window.dispatchEvent(new Event(DEMO_RESET_EVENT))
+    return summary
+  }
+
+  let status = await request<ResetStatus>('/demo/reset', { method: 'POST' })
+  const startedAt = Date.now()
+  while (status.state === 'running') {
+    onProgress(status)
+    if (Date.now() - startedAt > RESET_GIVE_UP_MS) {
+      throw new Error('The reset is taking longer than usual. It carries on in the background, check back in a minute')
+    }
+    await new Promise((resolve) => window.setTimeout(resolve, RESET_POLL_MS))
+    status = await request<ResetStatus>('/demo/reset')
+  }
+  // the grid and the tiles refetch now, whether it worked or stopped partway
   window.dispatchEvent(new Event(DEMO_RESET_EVENT))
-  return summary
+  if (status.state === 'failed') {
+    throw new Error(status.error ?? 'The reset stopped partway')
+  }
+  return status
 }
 
 export async function getOrder(orderId: number): Promise<OrderDetail> {

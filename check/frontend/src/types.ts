@@ -312,11 +312,34 @@ export interface Stats {
 }
 
 // POST /demo/reset: what the reset did. it wipes seeded rows, it doesn't seed again
-export interface ResetSummary {
+// one order Reset demo placed, and where it landed. problem is null when it landed where it should
+export interface SeedOrder {
+  name: string
+  agent_name: string
+  store: string
+  expected: string
+  order_id: number | null
+  status: string | null
+  review_state: string | null
+  problem: string | null
+}
+
+// GET /demo/reset: what the reset is doing, or did last. it runs in the background on the API
+export interface ResetStatus {
+  state: 'idle' | 'running' | 'done' | 'failed'
+  // which part it's on while running
+  step: string | null
+  error: string | null
+  started_at: string | null
+  finished_at: string | null
+  // kept whatever happens: the order the sandbox dispute is on
+  protected_order_ids: number[]
   voided_holds: number
   voided_order_ids: number[]
   deleted_orders: number
   deleted_mandates: number
-  // forgotten in Leash only, a dispute stays open at PayPal
-  deleted_disputes: number
+  cleared_reviews: number
+  orders_total: number
+  orders_placed: number
+  orders: SeedOrder[]
 }

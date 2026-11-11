@@ -73,7 +73,7 @@ def test_reset_demo_leaves_every_starter_store_with_something_to_buy(world, publ
         # "What can I buy at" prompt for a store whose live count is above zero
         assert live_by_name["Hollowbrook Bakery"] == 4
         assert live_by_name["Fernwood & Thistle Goods"] > 0
-        bakery_id = started[2]["store_id"]
+        bakery_id = started[1]["store_id"]
         bought = client.post("/stores/" + str(bakery_id) + "/orders", json=SOURDOUGH)
         assert bought.status_code == 201, bought.text
 

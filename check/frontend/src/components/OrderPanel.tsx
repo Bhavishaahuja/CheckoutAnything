@@ -4,7 +4,7 @@
 import { useEffect, useRef } from 'react'
 import { compareMandate } from '../lib/compare'
 import { buyerName, describeItem, formatDateTime, formatDuration, formatMoney } from '../lib/format'
-import { DECISION_LABELS, RUBBER_STAMP_MS, decisionKind, displayStatus, isRubberStamp, statusLabel } from '../lib/orderState'
+import { DECISION_LABELS, RUBBER_STAMP_MS, SEED_DECIDER, decisionKind, displayStatus, isRubberStamp, statusLabel } from '../lib/orderState'
 import type { Order } from '../types'
 import { ReviewLinkBox } from './ReviewLinkBox'
 import { RiskBar } from './RiskBar'
@@ -226,6 +226,26 @@ function DecisionSection({ order }: { order: Order }) {
         <h3 className="eyebrow">Human decision</h3>
         <p className="muted">
           {order.review_state === 'needs_review' ? 'The human has not opened the link yet.' : 'No review needed.'}
+        </p>
+      </section>
+    )
+  }
+
+  if (approval.decided_by === SEED_DECIDER) {
+    // Reset demo's seed decided this one. nobody opened it, so there's no time to show, and the
+    // rubber-stamp watch doesn't count it
+    return (
+      <section className="panel__section">
+        <h3 className="eyebrow">Decision</h3>
+        <dl className="facts">
+          <dt>Decided by</dt>
+          <dd>{SEED_DECIDER}</dd>
+          <dt>Decided</dt>
+          <dd>{formatDateTime(approval.decided_at)}</dd>
+        </dl>
+        <p className="muted">
+          Placed and decided by the demo seed script, not a person. It isn't timed and doesn't count toward the
+          rubber-stamp watch.
         </p>
       </section>
     )
