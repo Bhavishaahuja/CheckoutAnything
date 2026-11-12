@@ -77,7 +77,7 @@ pytest
 
 ## Architecture
 
-TODO
+This service is part of Checkout Anything. See the root [README](../README.md) for the architecture diagram.
 
 ## Security model
 
@@ -117,11 +117,11 @@ What it doesn't protect, and what a production version would change:
 
 ## Sandbox logins
 
-TODO
+This service is part of Checkout Anything. See the root [README](../README.md) for the logins judges need.
 
 ## Demo
 
-TODO: demo video and walkthrough.
+This service is part of Checkout Anything. See the root [README](../README.md) for the demo video and the hosted demo links.
 
 ### Seed demo data
 
@@ -153,7 +153,7 @@ It's sandbox, so no real money moves. Each run costs one small Claude call.
 
 ## Tools used
 
-TODO
+This service is part of Checkout Anything. See the root [README](../README.md) for every PayPal API and how Claude is used (Built with).
 
 ## License
 

@@ -253,9 +253,16 @@ python backend\scripts\setup_vault.py
 
 It makes a $1.00 sandbox order that asks to save the wallet, waits for you to approve it, captures it and prints the id.
 
-### Sandbox buyer login for judges
+### Logins for judges
 
-TODO (Bhavi): add the sandbox buyer email and password here before submitting. Judges do not need it to use the hosted demo, the agent pays with the saved wallet. It is only needed to look at the buyer's side in the PayPal sandbox.
+The hosted demo needs no login to connect a store, run the shopping agent or browse the grids. The agent pays with a saved sandbox wallet, so no buyer approval is needed.
+
+| What | Where | Login |
+|---|---|---|
+| Reviewing an order on hold (Review button in Orders) and the Check dashboard | https://checkout-anything.onrender.com, https://check-frontend-waod.onrender.com | Merchant password: `leashmerchant` |
+| The buyer's side in the PayPal sandbox (optional) | https://www.sandbox.paypal.com | 'shared with judges' |
+
+These are sandbox-only test accounts. No real money moves.
 
 ### Tests
 
@@ -333,10 +340,18 @@ Event types: `fetch.started`, `fetch.done`, `extract.started`, `extract.done`, `
 ## Built with
 
 - **Claude (Anthropic API, Claude Sonnet 5.5)**: writes the `store_spec` through a strict tool call, repairs items that fail verification, and runs the shopping agent with tool use.
+- **Claude in Check**: turns the human's request into a mandate, compares each order with its mandate after the fixed rules run (match, mismatch or unsure, with a one-line reason), and drafts the plain-language dispute summary.
 - **PayPal Orders v2, create order**: one real sandbox order per item during verification, and the paid order when an agent buys.
 - **PayPal Orders v2, show order details**: reading each verification order back to compare PayPal's record with the spec.
 - **PayPal Orders v2, capture**: the one-time wallet setup order. Vault-paid orders capture inside the create call.
 - **PayPal Vault (payment tokens, saved PayPal wallet)**: the agent pays with `payment_source.paypal.vault_id`, so no buyer popup is needed.
+- **PayPal Orders v2, create with intent `AUTHORIZE` (Check)**: every agent order is created against the vaulted wallet and only authorized, so money is held, not taken.
+- **PayPal Payments v2, capture authorization (Check)**: a clean match is captured on its own, and a held order is captured when the human approves.
+- **PayPal Payments v2, void authorization (Check)**: a rejected order is voided, so nothing is charged. Accept fix voids the wrong order and places the right one.
+- **PayPal Payments v2, show authorization and show capture (Check)**: reading back where the money really is.
+- **PayPal Disputes API v1, list disputes and show dispute details (Defend)**: finds disputes on captured orders by transaction id.
+- **PayPal Disputes API v1, provide evidence (Defend)**: files the evidence packet (summary plus PDF) with PayPal.
+- **PayPal OAuth 2.0 client credentials**: access tokens for every call above.
 - **PayPal Agent Toolkit (Python)**: the shopping agent's `check_payment` tool reads the order back through the Toolkit's `get_order_details`.
 - **AG Grid**: Community for the catalog review grid and the orders grids, Enterprise row grouping for the Check dashboard, see [How we use AG Grid](#how-we-use-ag-grid).
 - **FastAPI, SQLAlchemy, Postgres, React, Vite, Render.**
